@@ -3,4 +3,9 @@
 
 /galois
 /lightnn
-/searchlite
+/vectorbase
+/rust-lib
+/whisper-rs
+/pkg
+/bin
+/llm-rs

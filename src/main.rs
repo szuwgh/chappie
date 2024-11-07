@@ -1,5 +1,5 @@
 use clap::Parser;
-
+mod fuzzy;
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
