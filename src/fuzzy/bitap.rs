@@ -2,18 +2,18 @@ use std::{collections::HashMap, usize};
 
 // https://en.wikipedia.org/wiki/Bitap_algorithm
 #[derive(Debug)]
-struct Match {
+pub(crate) struct Match {
     pub distance: usize,
     pub end: usize,
 }
 
-struct Bitap {
+pub(crate) struct Bitap {
     length: usize,
     masks: HashMap<char, usize>,
 }
 
 impl Bitap {
-    fn new(pattern: &str) -> Bitap {
+    pub(crate) fn new(pattern: &str) -> Bitap {
         let mut masks = HashMap::new();
         let mut length = 0;
         for (i, b) in pattern.chars().enumerate() {
@@ -29,7 +29,7 @@ impl Bitap {
         }
     }
 
-    fn search<'a>(&'a self, text: &'a str) -> impl Iterator<Item = usize> + 'a {
+    pub(crate) fn search<'a>(&'a self, text: &'a str) -> impl Iterator<Item = usize> + 'a {
         let m = self.length;
         let mut r: usize = !1usize; // Ini
         let matches = text.chars().enumerate().filter_map(move |(i, b)| {
@@ -43,7 +43,7 @@ impl Bitap {
         matches
     }
 
-    fn fuzzy_search<'a>(
+    pub(crate) fn fuzzy_search<'a>(
         &'a self,
         text: &'a str,
         max_distance: usize,
@@ -84,9 +84,9 @@ mod tests {
     use super::*;
     #[test]
     fn test_bitapsearch() {
-        let p = "跳去前几行字";
+        let p = "跳过前几个字";
         let t = "如果你想从一个字符串中跳过前几个字并从之后的位置开始截取";
-        let actual = Bitap::new(p).fuzzy_search(t, 2).collect::<Vec<_>>();
+        let actual = Bitap::new(p).fuzzy_search(t, 1).collect::<Vec<_>>();
         println!("{:?}: find({:?}, {:?})", actual, p, t);
     }
 

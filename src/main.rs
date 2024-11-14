@@ -1,5 +1,10 @@
+use crate::tui::show_file;
 use clap::Parser;
+use std::io;
 mod fuzzy;
+mod text;
+mod tui;
+mod util;
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -14,9 +19,6 @@ struct Args {
 }
 
 fn main() {
-    let args = Args::parse();
-
-    for _ in 0..args.count {
-        println!("Hello {}!", args.name)
-    }
+    show_file();
+    //   show_file_from_mmap();
 }

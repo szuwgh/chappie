@@ -2,7 +2,7 @@ use std::cmp::max;
 // https://go.dev/src/strings/search.go
 // https://en.wikipedia.org/wiki/Boyer-Moore_string_search_algorithm
 
-struct BoyerMoore<'a> {
+pub(crate) struct BoyerMoore<'a> {
     pattern: &'a str,
 
     bad_char_skip: [usize; 256],
@@ -11,7 +11,7 @@ struct BoyerMoore<'a> {
 }
 
 impl<'a> BoyerMoore<'a> {
-    fn new(pattern: &str) -> BoyerMoore {
+    pub(crate) fn new(pattern: &str) -> BoyerMoore {
         let pattern_bytes = pattern.as_bytes();
         let mut good_suffix_skip = vec![pattern_bytes.len(); pattern_bytes.len()];
 
@@ -45,7 +45,7 @@ impl<'a> BoyerMoore<'a> {
         }
     }
 
-    fn next(&'a self, text: &'a str) -> impl Iterator<Item = usize> + 'a {
+    pub(crate) fn find(&'a self, text: &'a str) -> impl Iterator<Item = usize> + 'a {
         let text_bytes = text.as_bytes();
         let mut i = self.pattern.as_bytes().len() - 1;
         std::iter::from_fn(move || {
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn test_boyermoore() {
         let bm = BoyerMoore::new("abc");
-        let i: Vec<usize> = bm.next("abcadceagedcabcge").collect();
+        let i: Vec<usize> = bm.find("abcadceagedcabcge").collect();
         println!("{:?}", i);
     }
 
@@ -106,7 +106,7 @@ mod tests {
         let pattern = "英文";
         let bm = BoyerMoore::new(pattern);
         let text = "12396874,这是中文文本，包含一些特殊字符：@#%&*()，以及英文文字: Hello World! <>/。阿拉伯文: السلام عليكم。英文,韩文: 안녕하세요。日文: こんにちは。#RustExample 英文";
-        for i in bm.next(text) {
+        for i in bm.find(text) {
             println!(
                 "{},{:?}",
                 i,
