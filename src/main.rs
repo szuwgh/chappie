@@ -1,6 +1,6 @@
 use crate::tui::show_file;
 use clap::Parser;
-use std::io;
+mod chatapi;
 mod fuzzy;
 mod text;
 mod tui;

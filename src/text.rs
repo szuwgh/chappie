@@ -2,7 +2,7 @@ use std::fmt::{Debug, Write};
 
 use unicode_width::UnicodeWidthChar;
 
-use crate::fuzzy::fuzzy_search;
+use crate::fuzzy::{FuzzySearch, Match};
 
 //每十页建立一个索引
 const PAGE_GROUP: usize = 10;
@@ -10,11 +10,16 @@ const PAGE_GROUP: usize = 10;
 pub(crate) struct LineTxt<'a> {
     text: &'a str,
     line_num: usize,
+    match_fuzzy: Option<Match>,
 }
 
 impl<'a> LineTxt<'a> {
-    fn new(text: &'a str, line_num: usize) -> LineTxt {
-        LineTxt { text, line_num }
+    fn new(text: &'a str, line_num: usize, match_fuzzy: Option<Match>) -> LineTxt {
+        LineTxt {
+            text,
+            line_num,
+            match_fuzzy,
+        }
     }
 
     pub(crate) fn get_text(&self) -> &'a str {
@@ -23,6 +28,10 @@ impl<'a> LineTxt<'a> {
 
     pub(crate) fn get_line_num(&self) -> usize {
         self.line_num
+    }
+
+    pub(crate) fn get_match(&self) -> &Option<Match> {
+        &self.match_fuzzy
     }
 }
 
@@ -40,6 +49,7 @@ pub(crate) struct SimpleTextEngine<'a> {
     max_line_num: usize,
     max_page_num: usize,
     eof: bool,
+    fuzzy: FuzzySearch,
 }
 
 impl<'a> SimpleTextEngine<'a> {
@@ -53,6 +63,7 @@ impl<'a> SimpleTextEngine<'a> {
             max_line_num: 0,
             max_page_num: 0,
             eof: false,
+            fuzzy: FuzzySearch::new(),
         }
     }
 
@@ -72,7 +83,12 @@ impl<'a> SimpleTextEngine<'a> {
     //     self.get_line(line_num)
     // }
 
-    pub(crate) fn get_line(&mut self, line_num: usize, pattern: &str) -> Option<Vec<LineTxt<'a>>> {
+    pub(crate) fn get_line(
+        &mut self,
+        line_num: usize,
+        pattern: &str,
+        is_exact: bool,
+    ) -> Option<Vec<LineTxt<'a>>> {
         assert!(line_num >= 1);
         //获取页数
         let page_num = self.get_page_num(line_num);
@@ -90,7 +106,7 @@ impl<'a> SimpleTextEngine<'a> {
         //剩余的行数
         let skip_line = line_num - start_page_num * self.height;
 
-        self.get_text(page_offset, start_page_num, skip_line, pattern)
+        self.get_text(page_offset, start_page_num, skip_line, pattern, is_exact)
     }
 
     // 获取文本
@@ -100,6 +116,7 @@ impl<'a> SimpleTextEngine<'a> {
         start_page_num: usize,
         skip_line: usize,
         pattern: &str,
+        is_exact: bool,
     ) -> Option<Vec<LineTxt<'a>>> {
         // if offset >= self.text.len() {
         //     return None;
@@ -139,12 +156,20 @@ impl<'a> SimpleTextEngine<'a> {
                         } else {
                             let txt = &line_txt[line_offset..end];
                             if pattern.len() > 0 {
-                                let m = fuzzy_search(pattern, txt, true);
+                                let m = self.fuzzy.find(pattern, txt, is_exact);
                                 if m.is_match() {
-                                    split_lines.push(LineTxt::new(txt, start_line_num + line_num));
+                                    split_lines.push(LineTxt::new(
+                                        txt,
+                                        start_line_num + line_num,
+                                        Some(m),
+                                    ));
                                 }
                             } else {
-                                split_lines.push(LineTxt::new(txt, start_line_num + line_num));
+                                split_lines.push(LineTxt::new(
+                                    txt,
+                                    start_line_num + line_num,
+                                    None,
+                                ));
                             }
                             if split_lines.len() >= self.height {
                                 return Some(split_lines);
@@ -173,12 +198,16 @@ impl<'a> SimpleTextEngine<'a> {
                     } else {
                         let txt = &line_txt[line_offset..];
                         if pattern.len() > 0 {
-                            let m = fuzzy_search(pattern, txt, true);
+                            let m = self.fuzzy.find(pattern, txt, is_exact);
                             if m.is_match() {
-                                split_lines.push(LineTxt::new(txt, start_line_num + line_num));
+                                split_lines.push(LineTxt::new(
+                                    txt,
+                                    start_line_num + line_num,
+                                    Some(m),
+                                ));
                             }
                         } else {
-                            split_lines.push(LineTxt::new(txt, start_line_num + line_num));
+                            split_lines.push(LineTxt::new(txt, start_line_num + line_num, None));
                         }
                         if split_lines.len() >= self.height {
                             return Some(split_lines);
@@ -222,7 +251,7 @@ mod tests {
 
         for i in (1..=1800).step_by(37) {
             println!("--------{}---------", i);
-            if let Some(a1) = eg.get_line(i, "") {
+            if let Some(a1) = eg.get_line(i, "", true) {
                 for v in a1.into_iter() {
                     println!("{:?}", v);
                 }
@@ -230,7 +259,7 @@ mod tests {
             println!("{:?}", eg.get_max_scroll_num())
         }
         println!("--------{}---------", 1666);
-        if let Some(a1) = eg.get_line(1666, "") {
+        if let Some(a1) = eg.get_line(1666, "", true) {
             for v in a1.into_iter() {
                 println!("{:?}", v);
             }

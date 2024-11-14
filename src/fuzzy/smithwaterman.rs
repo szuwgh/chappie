@@ -8,17 +8,14 @@ pub(crate) const MAXDIMS: usize = 9182;
 const MINDIMS: usize = 512;
 
 //
-pub(crate) struct SmithWaterman {
-    cache: Vec<i16>,
+pub(crate) struct SmithWaterman<'a> {
+    cache: &'a mut [i16],
     n: usize,
 }
 
-impl SmithWaterman {
-    pub(crate) fn new() -> SmithWaterman {
-        SmithWaterman {
-            cache: vec![0i16; MINDIMS],
-            n: 0,
-        }
+impl<'a> SmithWaterman<'a> {
+    pub(crate) fn new(cache: &'a mut [i16]) -> SmithWaterman<'a> {
+        SmithWaterman { cache: cache, n: 0 }
     }
 }
 
@@ -64,7 +61,7 @@ impl<'a> Matrix<'a> {
     }
 }
 
-impl SmithWaterman {
+impl<'a> SmithWaterman<'a> {
     pub(crate) fn find(&mut self, pattern: &str, text: &str) -> Vec<Match> {
         // let pattern = p.as_bytes();
         // let text = t.as_bytes();
@@ -74,21 +71,21 @@ impl SmithWaterman {
         if m > MAXDIMS {
             panic!("Cannot be larger than the maximum dimension 9182");
         }
-        let l = self.cache.len();
-        if m > l {
-            //扩容
-            self.cache.resize(min(MAXDIMS, max(l * 2, m)), 0);
-        } else {
-            //缩容
-            if l > MINDIMS {
-                self.n += 1;
-                if self.n > 10 {
-                    self.cache.truncate(max(MINDIMS, max(l / 5, m))); // 将 Vec 的长度缩小到 3
-                    self.cache.shrink_to_fit(); // 将容量缩小到当前元素数
-                    self.n = 0;
-                }
-            }
-        }
+        // let l = self.cache.len();
+        // if m > l {
+        //     //扩容
+        //     self.cache.resize(min(MAXDIMS, max(l * 2, m)), 0);
+        // } else {
+        //     //缩容
+        //     if l > MINDIMS {
+        //         self.n += 1;
+        //         if self.n > 10 {
+        //             self.cache.truncate(max(MINDIMS, max(l / 5, m))); // 将 Vec 的长度缩小到 3
+        //             self.cache.shrink_to_fit(); // 将容量缩小到当前元素数
+        //             self.n = 0;
+        //         }
+        //     }
+        // }
         let alloc = &mut self.cache[..m];
         alloc.fill(0);
         let mut score_matrix = Matrix::new(alloc, len1 + 1, len2 + 1);
@@ -164,7 +161,8 @@ mod tests {
 
     #[test]
     fn test_smith_waterman() {
-        let mut sw = SmithWaterman::new();
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
 
         let text = "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads. Elasticsearch is the foundation of Elastics open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more.";
         let pattern = "applications";
@@ -235,10 +233,11 @@ mod tests {
 
     #[test]
     fn test_smith_waterman3() {
-        let mut sw = SmithWaterman::new();
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
 
-        let text = "hxllo abc";
-        let pattern = "tt";
+        let text = "hello abc";
+        let pattern = "hxlloo";
 
         let m = sw.find(pattern, text);
         for v in m.iter() {
@@ -253,7 +252,8 @@ mod tests {
 
     #[test]
     fn test_smith_waterman2() {
-        let mut sw = SmithWaterman::new();
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
 
         let text = "检查端口是否启动的函数";
         let pattern = "端口";

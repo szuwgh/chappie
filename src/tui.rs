@@ -31,7 +31,6 @@ use std::fs::File;
 use std::io::{self, BufReader, Read, Write};
 use std::process::exit;
 
-use crate::fuzzy::fuzzy_search;
 use crate::fuzzy::Match;
 use crate::text::SimpleTextEngine;
 struct ChapUI {}
@@ -39,6 +38,15 @@ struct ChapUI {}
 impl ChapUI {
     fn new() {}
 }
+
+struct TextView {}
+
+struct FuzzyInput {}
+
+struct ChatText {}
+
+struct ChatInput {}
+
 const SCROLL_STEP: usize = 1; // 每次滚动的行数
 const LINES_PER_PAGE: usize = 20; // 每页显示多少行
 
@@ -67,8 +75,21 @@ pub(crate) fn show_file() -> io::Result<()> {
     let mut scroll = 1;
     // 输入内容缓冲区
     let mut input = String::new();
+    let mut is_exact: bool = true;
     loop {
-        let content = eg.get_line(scroll, &input);
+        let inp = if let Some(first_char) = &input.chars().next() {
+            if *first_char == '/' {
+                is_exact = false;
+                &input[1..]
+            } else {
+                is_exact = true;
+                &input
+            }
+        } else {
+            is_exact = true;
+            &input
+        };
+        let content = eg.get_line(scroll, inp, is_exact);
         // 在终端显示文件内容
         terminal.draw(|f| {
             let chunks = Layout::default()
@@ -100,7 +121,7 @@ pub(crate) fn show_file() -> io::Result<()> {
 
             let block = Block::default().borders(Borders::ALL).title("File Content");
             if let Some(c) = &content {
-                let (navi, visible_content) = get_content(c, &input, cur_line, heigth);
+                let (navi, visible_content) = get_content(c, cur_line, heigth);
                 let text_para = Paragraph::new(visible_content).block(block);
                 f.render_widget(text_para, nav_text_chunks[1]);
                 let nav_paragraph = Paragraph::new(navi);
@@ -116,73 +137,87 @@ pub(crate) fn show_file() -> io::Result<()> {
             f.render_widget(block, chunks[1]);
         })?;
 
-        // 监听键盘输入
-        if let event::Event::Key(KeyEvent {
-            code, modifiers, ..
-        }) = event::read()?
-        {
-            match (code, modifiers) {
-                (KeyCode::Esc, _) => break, // 按下Esc退出
-                (KeyCode::Enter, _) => {
-                    input.clear();
-                    if let Some(c) = &content {
-                        if cur_line < c.len() {
-                            scroll = c[cur_line].get_line_num();
-                            cur_line = min_line;
+        loop {
+            // 监听键盘输入
+            if let event::Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) = event::read()?
+            {
+                match (code, modifiers) {
+                    (KeyCode::Esc, _) => {
+                        terminal.clear()?;
+                        disable_raw_mode()?;
+                        exit(0);
+                    } // 按下Esc退出
+                    (KeyCode::Enter, _) => {
+                        input.clear();
+                        if let Some(c) = &content {
+                            if cur_line < c.len() {
+                                scroll = c[cur_line].get_line_num();
+                                cur_line = min_line;
+                            }
                         }
+                        break;
                     }
-                }
-                (KeyCode::Down, KeyModifiers::CONTROL) => {
-                    // 下一页
-                    // 删除最后一个字符
-                    if let Some(max_scroll_num) = eg.get_max_scroll_num() {
-                        scroll = (scroll + heigth).min(max_scroll_num)
-                    } else {
-                        scroll = scroll + heigth;
-                    }
-                }
-                (KeyCode::Up, KeyModifiers::CONTROL) => {
-                    if scroll > heigth {
-                        scroll = (scroll - heigth).max(1);
-                    } else {
-                        scroll = 1;
-                    }
-                }
-                (KeyCode::Up, _) => {
-                    // 向上滚动
-                    if cur_line == min_line {
-                        scroll = (scroll - 1).max(1);
-                    } else if cur_line > min_line {
-                        cur_line = cur_line - 1;
-                    }
-                }
-                (KeyCode::Down, _) => {
-                    // 向下滚动
-                    if cur_line == max_line {
+                    (KeyCode::Down, KeyModifiers::CONTROL) => {
+                        // 下一页
+                        // 删除最后一个字符
                         if let Some(max_scroll_num) = eg.get_max_scroll_num() {
-                            if scroll <= max_scroll_num {
+                            scroll = (scroll + heigth).min(max_scroll_num)
+                        } else {
+                            scroll = scroll + heigth;
+                        }
+                        break;
+                    }
+                    (KeyCode::Up, KeyModifiers::CONTROL) => {
+                        if scroll > heigth {
+                            scroll = (scroll - heigth).max(1);
+                        } else {
+                            scroll = 1;
+                        }
+                        break;
+                    }
+                    (KeyCode::Up, _) => {
+                        // 向上滚动
+                        if cur_line == min_line {
+                            scroll = (scroll - 1).max(1);
+                        } else if cur_line > min_line {
+                            cur_line = cur_line - 1;
+                        }
+                        break;
+                    }
+                    (KeyCode::Down, _) => {
+                        // 向下滚动
+                        if cur_line == max_line {
+                            if let Some(max_scroll_num) = eg.get_max_scroll_num() {
+                                if scroll <= max_scroll_num {
+                                    scroll = scroll + 1;
+                                }
+                            } else {
                                 scroll = scroll + 1;
                             }
-                        } else {
-                            scroll = scroll + 1;
+                        } else if cur_line < max_line {
+                            cur_line = cur_line + 1;
                         }
-                    } else if cur_line < max_line {
-                        cur_line = cur_line + 1;
+                        break;
                     }
-                }
-                (KeyCode::Char(c), _) => {
-                    input.push(c); // 添加字符到输入缓冲区
-                }
-                (KeyCode::Backspace, _) => {
-                    input.pop(); // 删除最后一个字符
-                }
+                    (KeyCode::Char(c), _) => {
+                        input.push(c); // 添加字符到输入缓冲区
+                        scroll = 1;
+                        break;
+                    }
+                    (KeyCode::Backspace, _) => {
+                        input.pop(); // 删除最后一个字符
+                        scroll = 1;
+                        break;
+                    }
 
-                _ => {}
+                    _ => {}
+                }
             }
         }
     }
-    terminal.clear()?;
-    disable_raw_mode()?;
+
     Ok(())
 }
 
@@ -195,7 +230,6 @@ fn map_file(path: &str) -> io::Result<Mmap> {
 
 fn get_content<'a>(
     content: &'a Vec<LineTxt<'a>>,
-    input: &str,
     cur_line: usize,
     height: usize,
 ) -> (Text<'a>, Text<'a>) {
@@ -203,8 +237,8 @@ fn get_content<'a>(
     for (i, line) in content.into_iter().enumerate() {
         let mut spans = Vec::new();
         let text = line.get_text();
-        if input.len() >= 2 {
-            let m = fuzzy_search(input, text, false);
+        let mf = line.get_match(); //fuzzy_search(input, text, false);
+        if let Some(m) = mf {
             match m {
                 Match::Char(_) => {
                     todo!()
@@ -232,6 +266,7 @@ fn get_content<'a>(
                 }
             }
         }
+
         if i == cur_line {
             lines.push(Line::from(Span::styled(
                 text,
@@ -264,94 +299,6 @@ fn get_content<'a>(
 }
 
 // 获取要显示的内容（根据终端高度和偏移量）
-fn get_visible_content<'a>(
-    mmap: &'a [u8],
-    offset: usize,
-    terminal_height: usize,
-    terminal_width: usize,
-    cur_line: usize,
-    input: &str,
-) -> (Text<'a>, Text<'a>, bool) {
-    let lines_iter = mmap.split(|&byte| byte == b'\n');
-    let mut lines = Vec::new();
-
-    // 设置游标
-    let start = offset;
-    let mut skip_iter = lines_iter.skip(start).peekable();
-    // 迭代器按行读取文件内容
-    for (i, line) in skip_iter.by_ref().enumerate() {
-        if i >= terminal_height - 2 - 3 {
-            break;
-        }
-        let text = std::str::from_utf8(line).unwrap();
-        let mut spans = Vec::new();
-        if input.len() >= 2 {
-            let m = fuzzy_search(input, text, false);
-            match m {
-                Match::Char(_) => {
-                    todo!()
-                }
-                Match::Byte(v) => {
-                    let mut current_idx = 0;
-                    for bm in v.into_iter() {
-                        if current_idx < bm.start && bm.start <= line.len() {
-                            spans.push(Span::raw(&text[current_idx..bm.start]));
-                        }
-                        // 添加高亮文本
-                        if bm.start < line.len() && bm.end <= line.len() {
-                            spans.push(Span::styled(
-                                &text[bm.start..bm.end],
-                                Style::default().bg(Color::Green),
-                            ));
-                        }
-                        // 更新当前索引为高亮区间的结束位置
-                        current_idx = bm.end;
-                    }
-                    // 添加剩余的文本（如果有）
-                    if current_idx < line.len() {
-                        spans.push(Span::raw(
-                            std::str::from_utf8(&line[current_idx..]).unwrap(),
-                        ));
-                    }
-                }
-            }
-        }
-        if i == cur_line {
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().bg(Color::Yellow), // 设置背景颜色为蓝色
-            )));
-        } else {
-            if spans.len() > 0 {
-                lines.push(Line::from(spans));
-            } else {
-                lines.push(Line::from(text));
-            }
-        }
-    }
-    // 判断是否有剩余行
-    let is_left = if skip_iter.peek().is_some() {
-        true
-    } else {
-        false
-    };
-    let nav_text = Text::from(
-        lines
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
-                if i == cur_line {
-                    Line::from(Span::styled(">", Style::default().fg(Color::Yellow)))
-                // 高亮当前行
-                } else {
-                    Line::from(" ") // 非当前行为空白
-                }
-            })
-            .collect::<Vec<Line>>(),
-    );
-    let text = Text::from(lines);
-    (nav_text, text, is_left)
-}
 
 #[cfg(test)]
 mod tests {
