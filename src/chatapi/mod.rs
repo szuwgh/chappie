@@ -1,1 +1,1 @@
-mod grop;
+pub(crate) mod grop;

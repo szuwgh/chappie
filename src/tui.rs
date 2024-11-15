@@ -1,3 +1,4 @@
+use crate::chatapi::grop::ApiGroq;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
 use crate::text::LineTxt;
@@ -13,7 +14,9 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     ExecutableCommand,
 };
+use groq_api_rs::completion::client::Groq;
 use memmap2::Mmap;
+use once_cell::sync::Lazy;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::prelude::Direction;
@@ -28,18 +31,21 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
-use std::fs::File;
 use std::io;
 use std::mem;
 use std::process::exit;
+use tokio::sync::mpsc;
+use tokio::time::Duration;
+
 pub(crate) struct ChapUI {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     navi: Navigation,
     tv: TextView,
     fuzzy_inp: FuzzyInput,
-    chat_tv: ChatText,
+    chat_tv: TextView,
     chat_inp: ChatInput,
     focus: Focus,
+    prompt_tx: mpsc::Sender<String>,
 }
 
 enum FocusType {
@@ -92,7 +98,7 @@ impl Focus {
 }
 
 impl ChapUI {
-    pub(crate) fn new() -> ChapResult<ChapUI> {
+    pub(crate) fn new(prompt_tx: mpsc::Sender<String>) -> ChapResult<ChapUI> {
         enable_raw_mode()?;
         let stdout = std::io::stdout();
         let backend = CrosstermBackend::new(stdout);
@@ -113,6 +119,8 @@ impl ChapUI {
         let tv_heigth = terminal_height - 4;
         // 文本框显示内容的宽度
         let tv_width = (terminal_width as f32 * 0.6) as usize - 3;
+
+        let chat_tv_width = (terminal_width as f32 * 0.4) as usize - 2;
 
         let max_line = terminal_height - 6;
 
@@ -165,7 +173,10 @@ impl ChapUI {
             rect: left_chunks[1],
         };
 
-        let chat_tv = ChatText {
+        let chat_tv = TextView {
+            height: tv_heigth,
+            width: chat_tv_width,
+            scroll: 1,
             rect: right_chunks[0],
         };
 
@@ -182,14 +193,27 @@ impl ChapUI {
             chat_tv: chat_tv,
             chat_inp: chat_inp,
             focus: Focus::new(),
+            prompt_tx: prompt_tx,
         })
     }
 
-    pub(crate) fn render(&mut self, bytes: &[u8]) -> ChapResult<()> {
-        let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
+    pub(crate) async fn render(
+        &mut self,
+        bytes: &[u8],
+        mut llm_res_rx: mpsc::Receiver<String>,
+    ) -> ChapResult<()> {
+        let mut eg: SimpleTextEngine<'_> =
+            SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
+        let mut chat_txt = String::with_capacity(1024);
         loop {
             let (inp, is_exact) = self.fuzzy_inp.get_inp_exact();
             let content = eg.get_line(self.tv.get_scroll(), inp, is_exact);
+
+            let mut chat_eg = SimpleTextEngine::new(
+                chat_txt.as_bytes(),
+                self.chat_tv.get_height(),
+                self.chat_tv.get_width(),
+            );
             self.terminal.draw(|f| {
                 // 左下输入框区
                 let (txt_clr, inp_clr, chat_clr_, chat_inp_clr) = self.focus.get_colors();
@@ -198,6 +222,11 @@ impl ChapUI {
                     .style(Style::default().fg(inp_clr)); // 设置输入框样式
                 f.render_widget(input_box, self.fuzzy_inp.get_rect());
 
+                // 左下输入框区
+                let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                    .block(Block::default().title("search").borders(Borders::ALL))
+                    .style(Style::default().fg(inp_clr)); // 设置输入框样式
+                f.render_widget(input_box, self.fuzzy_inp.get_rect());
                 let block = Block::default().borders(Borders::ALL).title("File Content");
                 if let Some(c) = &content {
                     let (navi, visible_content) =
@@ -213,11 +242,20 @@ impl ChapUI {
                     // println!("scorll:{}", scroll);
                     //  println!("get_max_scroll_num:{:?}", eg.get_max_scroll_num());
                 }
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .title("LLM Chat")
-                    .style(Style::default().fg(chat_clr_));
-                f.render_widget(block, self.chat_tv.get_rect());
+                let content2 = chat_eg.get_line(self.chat_tv.get_scroll(), "", is_exact);
+                if let Some(c) = content2 {
+                    let chat_content = get_chat_content(&c);
+                    let chat_tv = Paragraph::new(chat_content)
+                        .block(Block::default().title("Chat LLM").borders(Borders::ALL))
+                        .style(Style::default().fg(chat_clr_));
+                    f.render_widget(chat_tv, self.chat_tv.get_rect());
+                } else {
+                    let chat_tv = Paragraph::new("")
+                        .block(Block::default().title("Chat LLM").borders(Borders::ALL))
+                        .style(Style::default().fg(chat_clr_));
+                    f.render_widget(chat_tv, self.chat_tv.get_rect());
+                }
+
                 // 右侧部分可以显示空白或其他内容
                 // let block = Block::default().borders(Borders::ALL).title("LLM Chat");
                 let input_box = Paragraph::new(Text::raw(self.chat_inp.get_inp()))
@@ -225,137 +263,172 @@ impl ChapUI {
                     .style(Style::default().fg(chat_inp_clr)); // 设置输入框样式
                 f.render_widget(input_box, self.chat_inp.get_rect());
             })?;
+
             loop {
+                tokio::select! {
+                    Some(msg) = llm_res_rx.recv() => {
+                        chat_txt.push_str(&msg);
+                        chat_txt.push_str("\n\n");
+                        break;
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(25)) => {
+                    }
+                }
                 // 监听键盘输入
-                if let event::Event::Key(KeyEvent {
-                    code, modifiers, ..
-                }) = event::read()?
-                {
-                    match (code, modifiers) {
-                        (KeyCode::Esc, _) => {
-                            self.fuzzy_inp.clear();
-                            break;
-                        } // 按下Esc退出
-                        (KeyCode::Tab, _) => {
-                            // 按下 Tab 键，切换焦点
-                            self.focus.next();
-                            break;
-                        }
-                        (KeyCode::Enter, _) => match self.focus.current() {
-                            FocusType::Txt => {
+                if event::poll(Duration::from_millis(25)).unwrap() {
+                    if let event::Event::Key(KeyEvent {
+                        code, modifiers, ..
+                    }) = event::read()?
+                    {
+                        match (code, modifiers) {
+                            (KeyCode::Esc, _) => {
                                 self.fuzzy_inp.clear();
-                                if let Some(c) = &content {
-                                    let cur_line = self.navi.get_cur_line();
-                                    if cur_line < c.len() {
-                                        self.tv.set_scroll(c[cur_line].get_line_num());
-                                        self.navi.to_min_line();
-                                    }
-                                }
+                                self.chat_inp.clear();
                                 break;
                             }
-                            FocusType::ChatInput => {}
+                            (KeyCode::Tab, _) => {
+                                // 按下 Tab 键，切换焦点
+                                self.focus.next();
+                                break;
+                            }
+                            (KeyCode::Enter, _) => match self.focus.current() {
+                                FocusType::Txt => {
+                                    self.fuzzy_inp.clear();
+                                    if let Some(c) = &content {
+                                        let cur_line = self.navi.get_cur_line();
+                                        if cur_line < c.len() {
+                                            self.tv.set_scroll(c[cur_line].get_line_num());
+                                            self.navi.to_min_line();
+                                        }
+                                    }
+                                    break;
+                                }
+                                FocusType::ChatInput => {
+                                    let message = self.chat_inp.get_inp().to_string();
+                                    if message.trim().len() > 0 {
+                                        // if let Some(max_line_num) = chat_eg.get_max_scroll_num() {
+                                        self.chat_tv.set_scroll(chat_eg.get_last_line().max(1));
+                                        // }
+                                        chat_txt.push_str(&format!("----------------------------\n{}\n----------------------------\n",message));
+                                        let _ = self.prompt_tx.send(message.to_string()).await;
+                                        self.chat_inp.clear();
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            },
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                // 按下Esc退出
+                                self.terminal.clear()?;
+                                disable_raw_mode()?;
+                                exit(0);
+                            }
+                            (KeyCode::Down, KeyModifiers::CONTROL) => {
+                                // 下一页
+                                match self.focus.current() {
+                                    FocusType::Txt => {
+                                        self.tv.down_page(eg.get_max_scroll_num());
+                                        break;
+                                    }
+                                    FocusType::ChatTxt => {
+                                        self.chat_tv.down_page(chat_eg.get_max_scroll_num());
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+
+                                break;
+                            }
+                            (KeyCode::Up, KeyModifiers::CONTROL) => {
+                                match self.focus.current() {
+                                    FocusType::Txt => {
+                                        self.tv.up_page();
+                                        break;
+                                    }
+                                    FocusType::ChatTxt => {
+                                        self.chat_tv.up_page();
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+
+                                break;
+                            }
+                            (KeyCode::Up, _) => {
+                                // 向上滚动
+                                match self.focus.current() {
+                                    FocusType::Txt => {
+                                        if self.navi.is_top() {
+                                            self.tv.up_line();
+                                        } else {
+                                            self.navi.up_line();
+                                        }
+                                        break;
+                                    }
+                                    FocusType::ChatTxt => {
+                                        self.chat_tv.up_line();
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            (KeyCode::Down, _) => {
+                                // 向下滚动
+                                match self.focus.current() {
+                                    FocusType::Txt => {
+                                        if self.navi.is_bottom() {
+                                            self.tv.down_line(eg.get_max_scroll_num());
+                                        } else {
+                                            self.navi.down_line();
+                                        }
+                                        break;
+                                    }
+                                    FocusType::ChatTxt => {
+                                        self.chat_tv.down_line(chat_eg.get_max_scroll_num());
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            (KeyCode::Char(c), _) => {
+                                match self.focus.current() {
+                                    FocusType::FuzzyInput => {
+                                        self.fuzzy_inp.push(c); // 添加字符到输入缓冲区
+                                        self.tv.set_scroll(1);
+                                        break;
+                                    }
+                                    FocusType::ChatInput => {
+                                        self.chat_inp.push(c); // 添加字符到输入缓冲区
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+
+                                break;
+                            }
+                            (KeyCode::Backspace, _) => {
+                                match self.focus.current() {
+                                    FocusType::FuzzyInput => {
+                                        self.fuzzy_inp.pop();
+                                        self.tv.set_scroll(1);
+                                        break;
+                                    }
+                                    FocusType::ChatInput => {
+                                        self.chat_inp.pop();
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+
+                                break;
+                            }
+
                             _ => {}
-                        },
-                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                            // 下一页
-                            // 删除最后一个字符
-                            self.terminal.clear()?;
-                            disable_raw_mode()?;
-                            exit(0);
                         }
-                        (KeyCode::Down, KeyModifiers::CONTROL) => {
-                            // 下一页
-                            match self.focus.current() {
-                                FocusType::Txt => {
-                                    self.tv.down_page(eg.get_max_scroll_num());
-                                    break;
-                                }
-                                _ => {}
-                            }
-
-                            break;
-                        }
-                        (KeyCode::Up, KeyModifiers::CONTROL) => {
-                            match self.focus.current() {
-                                FocusType::Txt => {
-                                    self.tv.up_page();
-                                    break;
-                                }
-                                _ => {}
-                            }
-
-                            break;
-                        }
-                        (KeyCode::Up, _) => {
-                            // 向上滚动
-                            match self.focus.current() {
-                                FocusType::Txt => {
-                                    if self.navi.is_top() {
-                                        self.tv.up_line();
-                                        //scroll = (scroll - 1).max(1);
-                                    } else {
-                                        self.navi.up_line();
-                                    }
-                                    break;
-                                }
-                                _ => {}
-                            }
-                        }
-                        (KeyCode::Down, _) => {
-                            // 向下滚动
-                            match self.focus.current() {
-                                FocusType::Txt => {
-                                    if self.navi.is_bottom() {
-                                        self.tv.down_line(eg.get_max_scroll_num());
-                                    } else {
-                                        self.navi.down_line();
-                                    }
-                                    break;
-                                }
-                                _ => {}
-                            }
-
-                            break;
-                        }
-                        (KeyCode::Char(c), _) => {
-                            match self.focus.current() {
-                                FocusType::FuzzyInput => {
-                                    self.fuzzy_inp.push(c); // 添加字符到输入缓冲区
-                                    self.tv.set_scroll(1);
-                                    break;
-                                }
-                                FocusType::ChatInput => {
-                                    self.chat_inp.push(c); // 添加字符到输入缓冲区
-                                    break;
-                                }
-                                _ => {}
-                            }
-
-                            break;
-                        }
-                        (KeyCode::Backspace, _) => {
-                            match self.focus.current() {
-                                FocusType::FuzzyInput => {
-                                    self.fuzzy_inp.pop();
-                                    self.tv.set_scroll(1);
-                                    break;
-                                }
-                                FocusType::ChatInput => {
-                                    self.chat_inp.pop();
-                                    break;
-                                }
-                                _ => {}
-                            }
-
-                            break;
-                        }
-
-                        _ => {}
                     }
                 }
             }
         }
-        Ok(())
     }
 }
 
@@ -460,7 +533,7 @@ impl TextView {
 
     fn down_page(&mut self, max_num: Option<usize>) {
         if let Some(max_scroll_num) = max_num {
-            self.scroll = (self.scroll + self.height).min(max_scroll_num)
+            self.scroll = ((self.scroll + self.height).min(max_scroll_num)).max(1)
         } else {
             self.scroll += self.height;
         }
@@ -507,12 +580,60 @@ impl FuzzyInput {
 }
 
 struct ChatText {
+    height: usize,
+    width: usize,
+    scroll: usize,
     rect: Rect,
 }
 
 impl ChatText {
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn get_height(&self) -> usize {
+        self.height
+    }
+
+    fn get_width(&self) -> usize {
+        self.width
+    }
+    fn get_scroll(&self) -> usize {
+        self.scroll
+    }
+
+    fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll
+    }
+
+    fn up_line(&mut self) {
+        self.scroll = (self.scroll - 1).max(1);
+    }
+
+    fn down_line(&mut self, max_num: Option<usize>) {
+        if let Some(max_scroll_num) = max_num {
+            if self.scroll <= max_scroll_num {
+                self.scroll += 1;
+            }
+        } else {
+            self.scroll += 1;
+        }
+    }
+
+    fn up_page(&mut self) {
+        if self.scroll > self.height {
+            self.scroll = (self.scroll - self.height).max(1);
+        } else {
+            self.scroll = 1;
+        }
+    }
+
+    fn down_page(&mut self, max_num: Option<usize>) {
+        if let Some(max_scroll_num) = max_num {
+            self.scroll = (self.scroll + self.height).min(max_scroll_num)
+        } else {
+            self.scroll += self.height - 1;
+        }
     }
 }
 
@@ -542,194 +663,49 @@ impl ChatInput {
     }
 }
 
-// pub(crate) fn show_file() -> io::Result<()> {
-//     enable_raw_mode()?;
-//     let stdout = std::io::stdout();
-//     let backend = CrosstermBackend::new(stdout);
-//     let mut terminal = Terminal::new(backend)?;
-
-//     // 清空终端屏幕
-//     terminal.clear()?;
-//     let file_path = "/opt/rsproject/chappie/vectorbase/src/disk.rs";
-//     let mmap = map_file(file_path)?;
-
-//     // 获取终端尺寸
-//     let size = terminal.size()?;
-//     //终端高度
-//     let terminal_height = size.height as usize;
-//     let terminal_with = size.width as usize;
-//     // 用于控制显示内容的偏移量
-//     let heigth = terminal_height - 4;
-//     let mut max_line = terminal_height - 6;
-//     let min_line = 0;
-//     let mut cur_line = max_line;
-//     let mut eg = SimpleTextEngine::new(&mmap, heigth, terminal_with / 2 - 1 - 1 - 1);
-//     let mut scroll = 1;
-//     // 输入内容缓冲区
-//     let mut input = String::new();
-//     let mut is_exact: bool = true;
-//     loop {
-//         let inp = if let Some(first_char) = &input.chars().next() {
-//             if *first_char == '/' {
-//                 is_exact = false;
-//                 &input[1..]
-//             } else {
-//                 is_exact = true;
-//                 &input
-//             }
-//         } else {
-//             is_exact = true;
-//             &input
-//         };
-//         let content = eg.get_line(scroll, inp, is_exact);
-//         // 在终端显示文件内容
-//         terminal.draw(|f| {
-//             let chunks = Layout::default()
-//                 .direction(Direction::Horizontal)
-//                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-//                 .split(f.area());
-
-//             //文本框和输入框
-//             let left_chunks = Layout::default()
-//                 .direction(Direction::Vertical)
-//                 .constraints([Constraint::Min(3), Constraint::Length(3)].as_ref())
-//                 .split(chunks[0]); // chunks[1] 是左侧区域
-
-//             let nav_text_chunks = Layout::default()
-//                 .direction(Direction::Horizontal)
-//                 .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
-//                 .split(left_chunks[0]); // chunks[1] 是左侧区域
-
-//             let nav = Layout::default()
-//                 .direction(Direction::Vertical)
-//                 .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
-//                 .split(nav_text_chunks[0]); // chunks[1] 是左侧区域
-
-//             // 左下输入框区
-//             let input_box = Paragraph::new(Text::raw(&input))
-//                 .block(Block::default().title("Input1").borders(Borders::ALL))
-//                 .style(Style::default().fg(Color::Green)); // 设置输入框样式
-//             f.render_widget(input_box, left_chunks[1]);
-
-//             let block = Block::default().borders(Borders::ALL).title("File Content");
-//             if let Some(c) = &content {
-//                 let (navi, visible_content) = get_content(c, cur_line, heigth);
-//                 let text_para = Paragraph::new(visible_content).block(block);
-//                 f.render_widget(text_para, nav_text_chunks[1]);
-//                 let nav_paragraph = Paragraph::new(navi);
-//                 f.render_widget(nav_paragraph, nav[1]);
-//                 // max_line = c.len();
-//             } else {
-//                 // println!("scorll:{}", scroll);
-//                 //  println!("get_max_scroll_num:{:?}", eg.get_max_scroll_num());
-//             }
-
-//             // 右侧部分可以显示空白或其他内容
-//             let block = Block::default().borders(Borders::ALL).title("LLM Chat");
-//             f.render_widget(block, chunks[1]);
-
-//             let input_box = Paragraph::new(Text::raw(""))
-//                 .block(Block::default().title("Input1").borders(Borders::ALL))
-//                 .style(Style::default().fg(Color::Green)); // 设置输入框样式
-//             f.render_widget(input_box, left_chunks[1]);
-//         })?;
-
-//         loop {
-//             // 监听键盘输入
-//             if let event::Event::Key(KeyEvent {
-//                 code, modifiers, ..
-//             }) = event::read()?
-//             {
-//                 match (code, modifiers) {
-//                     (KeyCode::Esc, _) => {
-//                         input.clear();
-//                         break;
-//                     } // 按下Esc退出
-//                     (KeyCode::Enter, _) => {
-//                         input.clear();
-//                         if let Some(c) = &content {
-//                             if cur_line < c.len() {
-//                                 scroll = c[cur_line].get_line_num();
-//                                 cur_line = min_line;
-//                             }
-//                         }
-//                         break;
-//                     }
-//                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-//                         // 下一页
-//                         // 删除最后一个字符
-//                         terminal.clear()?;
-//                         disable_raw_mode()?;
-//                         exit(0);
-//                     }
-//                     (KeyCode::Down, KeyModifiers::CONTROL) => {
-//                         // 下一页
-//                         // 删除最后一个字符
-//                         if let Some(max_scroll_num) = eg.get_max_scroll_num() {
-//                             scroll = (scroll + heigth).min(max_scroll_num)
-//                         } else {
-//                             scroll = scroll + heigth;
-//                         }
-//                         break;
-//                     }
-//                     (KeyCode::Up, KeyModifiers::CONTROL) => {
-//                         if scroll > heigth {
-//                             scroll = (scroll - heigth).max(1);
-//                         } else {
-//                             scroll = 1;
-//                         }
-//                         break;
-//                     }
-//                     (KeyCode::Up, _) => {
-//                         // 向上滚动
-//                         if cur_line == min_line {
-//                             scroll = (scroll - 1).max(1);
-//                         } else if cur_line > min_line {
-//                             cur_line = cur_line - 1;
-//                         }
-//                         break;
-//                     }
-//                     (KeyCode::Down, _) => {
-//                         // 向下滚动
-//                         if cur_line == max_line {
-//                             if let Some(max_scroll_num) = eg.get_max_scroll_num() {
-//                                 if scroll <= max_scroll_num {
-//                                     scroll = scroll + 1;
-//                                 }
-//                             } else {
-//                                 scroll = scroll + 1;
-//                             }
-//                         } else if cur_line < max_line {
-//                             cur_line = cur_line + 1;
-//                         }
-//                         break;
-//                     }
-//                     (KeyCode::Char(c), _) => {
-//                         input.push(c); // 添加字符到输入缓冲区
-//                         scroll = 1;
-//                         break;
-//                     }
-//                     (KeyCode::Backspace, _) => {
-//                         input.pop(); // 删除最后一个字符
-//                         scroll = 1;
-//                         break;
-//                     }
-
-//                     _ => {}
-//                 }
-//             }
-//         }
-//     }
-
-//     Ok(())
-// }
-
-// // 使用 mmap 映射文件到内存
-// fn map_file(path: &str) -> io::Result<Mmap> {
-//     let file = File::open(path)?;
-//     let mmap = unsafe { Mmap::map(&file)? };
-//     Ok(mmap)
-// }
+fn get_chat_content<'a>(content: &'a Vec<LineTxt<'a>>) -> (Text<'a>) {
+    let mut lines = Vec::new();
+    for (i, line) in content.into_iter().enumerate() {
+        let mut spans = Vec::new();
+        let text = line.get_text();
+        let mf = line.get_match(); //fuzzy_search(input, text, false);
+        if let Some(m) = mf {
+            match m {
+                Match::Char(_) => {
+                    todo!()
+                }
+                Match::Byte(v) => {
+                    let mut current_idx = 0;
+                    for bm in v.into_iter() {
+                        if current_idx < bm.start && bm.start <= text.len() {
+                            spans.push(Span::raw(&text[current_idx..bm.start]));
+                        }
+                        // 添加高亮文本
+                        if bm.start < text.len() && bm.end <= text.len() {
+                            spans.push(Span::styled(
+                                &text[bm.start..bm.end],
+                                Style::default().bg(Color::Green),
+                            ));
+                        }
+                        // 更新当前索引为高亮区间的结束位置
+                        current_idx = bm.end;
+                    }
+                    // 添加剩余的文本（如果有）
+                    if current_idx < text.len() {
+                        spans.push(Span::raw(&text[current_idx..]));
+                    }
+                }
+            }
+        }
+        if spans.len() > 0 {
+            lines.push(Line::from(spans));
+        } else {
+            lines.push(Line::from(text));
+        }
+    }
+    let text = Text::from(lines);
+    text
+}
 
 fn get_content<'a>(
     content: &'a Vec<LineTxt<'a>>,
@@ -773,7 +749,7 @@ fn get_content<'a>(
         if i == cur_line {
             lines.push(Line::from(Span::styled(
                 text,
-                Style::default().bg(Color::Yellow), // 设置背景颜色为蓝色
+                Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
             )));
         } else {
             if spans.len() > 0 {
@@ -789,7 +765,7 @@ fn get_content<'a>(
             .enumerate()
             .map(|(i, _)| {
                 if i == cur_line {
-                    Line::from(Span::styled(">", Style::default().fg(Color::Yellow)))
+                    Line::from(Span::styled(">", Style::default().fg(Color::LightRed)))
                 // 高亮当前行
                 } else {
                     Line::from(" ") // 非当前行为空白

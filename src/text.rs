@@ -43,6 +43,7 @@ impl<'a> Debug for LineTxt<'a> {
 
 pub(crate) struct SimpleTextEngine<'a> {
     text: &'a [u8],
+    max_bytes: usize,
     height: usize, //最大行数
     with: usize,   //最大列数
     page_offset_list: Vec<usize>,
@@ -54,11 +55,13 @@ pub(crate) struct SimpleTextEngine<'a> {
 
 impl<'a> SimpleTextEngine<'a> {
     pub(crate) fn new(text: &'a [u8], height: usize, with: usize) -> SimpleTextEngine<'a> {
+        assert!(height > 0);
+        assert!(with > 0);
         SimpleTextEngine {
             text: text,
+            max_bytes: text.len(),
             height: height, //最大行数
             with: with,     //最大列数
-            // next_line_offset: 0, //下一行的偏移量
             page_offset_list: vec![0],
             max_line_num: 0,
             max_page_num: 0,
@@ -73,15 +76,75 @@ impl<'a> SimpleTextEngine<'a> {
 
     pub(crate) fn get_max_scroll_num(&self) -> Option<usize> {
         if self.eof {
-            return Some(self.max_line_num - self.height);
+            return Some(self.max_line_num.saturating_sub(self.height));
         }
         None
     }
 
-    // pub(crate) fn get_page(&mut self, page_num: usize) -> Option<Vec<&'a str>> {
-    //     let line_num = page_num * self.height;
-    //     self.get_line(line_num)
-    // }
+    pub(crate) fn get_last_line(&mut self) -> usize {
+        let page_offset = if let Some(offset) = self.page_offset_list.last() {
+            *offset
+        } else {
+            0
+        };
+        let start_page_num = (self.page_offset_list.len() - 1) * PAGE_GROUP;
+        //开始的行数
+        //开始滑动到最后一行
+        let mmap = &self.text[page_offset..];
+        let mut start = 0;
+        let start_line_num = start_page_num * self.height;
+        let mut line_num = 0;
+        let mut page_num = start_page_num;
+        for (i, byte) in mmap.iter().enumerate() {
+            if *byte == b'\n' || i == self.max_bytes - 1 {
+                let line = &mmap[start..=i];
+                let line_txt = std::str::from_utf8(line).unwrap();
+                let mut current_width = 0; //最近的矿都
+                let mut line_offset = 0; //
+                let mut current_bytes = 0;
+                for ch in line_txt.chars() {
+                    let ch_width = ch.width().unwrap_or(0);
+                    //检查是否超过屏幕宽度
+                    if current_width + ch_width > self.with {
+                        let end = (line_offset + current_bytes).min(line_txt.len());
+                        line_num += 1; //行数加1
+                        if line_num % self.height == 0 {
+                            //到达一页
+                            page_num += 1; //页数加1
+                            let m = page_num / PAGE_GROUP;
+                            let n = page_num % PAGE_GROUP;
+                            if n == 0 && m > self.page_offset_list.len() - 1 {
+                                //保存页数的偏移量
+                                self.page_offset_list.push(page_offset + end + 1);
+                            }
+                        }
+                        line_offset += current_bytes;
+                        current_width = 0;
+                        current_bytes = 0;
+                    }
+                    current_width += ch_width;
+                    current_bytes += ch.len_utf8();
+                }
+                if current_bytes > 0 {
+                    line_num += 1;
+                    if line_num % self.height == 0 {
+                        page_num += 1; //页数加1
+                        let m = page_num / PAGE_GROUP;
+                        let n = page_num % PAGE_GROUP;
+                        if n == 0 && m > self.page_offset_list.len() - 1 {
+                            //保存页数的偏移量
+                            self.page_offset_list.push(page_offset + i + 1);
+                        }
+                    }
+                    start = i + 1;
+                }
+            }
+        }
+        self.max_line_num = start_line_num + line_num + 1;
+        self.max_page_num = page_num;
+        self.eof = true;
+        return start_line_num + line_num + 1;
+    }
 
     pub(crate) fn get_line(
         &mut self,
@@ -118,11 +181,7 @@ impl<'a> SimpleTextEngine<'a> {
         pattern: &str,
         is_exact: bool,
     ) -> Option<Vec<LineTxt<'a>>> {
-        // if offset >= self.text.len() {
-        //     return None;
-        // }
         //获取这行所在的页数
-
         let mmap = &self.text[page_offset..];
         let mut split_lines = Vec::new();
         let mut start = 0;
@@ -130,11 +189,11 @@ impl<'a> SimpleTextEngine<'a> {
         let mut line_num = 0;
         let mut page_num = start_page_num;
         for (i, byte) in mmap.iter().enumerate() {
-            if *byte == b'\n' {
+            if *byte == b'\n' || i == self.max_bytes - 1 {
                 let line = &mmap[start..=i];
                 let line_txt = std::str::from_utf8(line).unwrap();
-                let mut current_width = 0;
-                let mut line_offset = 0;
+                let mut current_width = 0; //最近的矿都
+                let mut line_offset = 0; //
                 let mut current_bytes = 0;
                 for ch in line_txt.chars() {
                     let ch_width = ch.width().unwrap_or(0);
@@ -213,17 +272,15 @@ impl<'a> SimpleTextEngine<'a> {
                             return Some(split_lines);
                         }
                     }
+                    start = i + 1;
                 }
-                start = i + 1;
             }
         }
         //没有剩余
-        if split_lines.len() < self.height {
-            if !self.eof {
-                self.max_line_num = start_line_num + line_num + 1;
-                self.max_page_num = page_num;
-                self.eof = true;
-            }
+        if page_offset + start >= self.max_bytes {
+            self.max_line_num = start_line_num + line_num + 1;
+            self.max_page_num = page_num;
+            self.eof = true;
         }
         if split_lines.len() > 0 {
             Some(split_lines)
@@ -265,6 +322,25 @@ mod tests {
             }
         }
         println!("{:?}", eg.get_max_scroll_num());
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_last() -> io::Result<()> {
+        let file_path = "/opt/rsproject/chappie/vectorbase/src/disk.rs";
+        let mmap = map_file(file_path)?;
+        // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
+        // println!("{},{}", visible_content, length);
+        // Ok(())
+
+        let mut eg = SimpleTextEngine::new(&mmap, 37, 75);
+        eg.get_line(100, "", true);
+        println!("last_line:{}", eg.get_last_line());
+        if let Some(a1) = eg.get_line(1594 + 1, "", true) {
+            for v in a1.into_iter() {
+                println!("{:?}", v);
+            }
+        }
         Ok(())
     }
 }
