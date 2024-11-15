@@ -267,25 +267,4 @@ mod tests {
         println!("{:?}", eg.get_max_scroll_num());
         Ok(())
     }
-
-    // #[test]
-    // fn test_next_page2() -> io::Result<()> {
-    //     let file_path = "/opt/rsproject/chappie/vectorbase/src/disk.rs";
-    //     let mmap = map_file(file_path)?;
-    //     // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
-    //     // println!("{},{}", visible_content, length);
-    //     // Ok(())
-
-    //     let mut eg = SimpleTextEngine::new(&mmap, 37, 75);
-    //     for i in 1..=50 {
-    //         println!("--------{}---------", i);
-    //         if let Some(a1) = eg.get_page(i, "") {
-    //             for v in a1.into_iter() {
-    //                 println!("{:?}", v);
-    //             }
-    //         }
-    //         println!("{:?}", eg.get_max_scroll_num())
-    //     }
-    //     Ok(())
-    // }
 }
