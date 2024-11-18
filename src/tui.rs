@@ -1,12 +1,15 @@
 use crate::chatapi::grop::ApiGroq;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
-use crate::text::LineTxt;
+use crate::text::LineMeta;
+use crate::text::SimpleString;
 use crate::text::SimpleTextEngine;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
+use crossterm::execute;
 use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
+use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::{
     cursor::{self, MoveTo},
     event::{self, Event, KeyCode},
@@ -14,6 +17,7 @@ use crossterm::{
     terminal::{self, Clear, ClearType},
     ExecutableCommand,
 };
+use fastembed::TextEmbedding;
 use groq_api_rs::completion::client::Groq;
 use memmap2::Mmap;
 use once_cell::sync::Lazy;
@@ -21,9 +25,11 @@ use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::prelude::Direction;
 use ratatui::prelude::Layout;
+use ratatui::prelude::Position;
 use ratatui::prelude::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
+use ratatui::symbols::line;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
@@ -34,8 +40,11 @@ use ratatui::Terminal;
 use std::io;
 use std::mem;
 use std::process::exit;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
+use unicode_width::UnicodeWidthStr;
+use vectorbase::collection::Collection;
 
 pub(crate) struct ChapUI {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
@@ -46,6 +55,8 @@ pub(crate) struct ChapUI {
     chat_inp: ChatInput,
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
+    vb: Collection,
+    embed_model: Arc<TextEmbedding>,
 }
 
 enum FocusType {
@@ -98,9 +109,14 @@ impl Focus {
 }
 
 impl ChapUI {
-    pub(crate) fn new(prompt_tx: mpsc::Sender<String>) -> ChapResult<ChapUI> {
+    pub(crate) fn new(
+        prompt_tx: mpsc::Sender<String>,
+        vb: Collection,
+        embed_model: Arc<TextEmbedding>,
+    ) -> ChapResult<ChapUI> {
+        let mut stdout = std::io::stdout();
+        execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
         enable_raw_mode()?;
-        let stdout = std::io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
         // 显示光标
@@ -116,13 +132,13 @@ impl ChapUI {
         let terminal_width = size.width as usize;
 
         // 文本框显示内容的高度
-        let tv_heigth = terminal_height - 4;
+        let tv_heigth = terminal_height - 2;
         // 文本框显示内容的宽度
         let tv_width = (terminal_width as f32 * 0.6) as usize - 3;
 
-        let chat_tv_width = (terminal_width as f32 * 0.4) as usize - 2;
+        let chat_tv_width = (terminal_width as f32 * 0.4) as usize - 3;
 
-        let max_line = terminal_height - 6;
+        let max_line = terminal_height - 3;
 
         let rect = Rect::new(0, 0, size.width, size.height);
         let chunks = Layout::default()
@@ -133,13 +149,13 @@ impl ChapUI {
         //文本框和输入框
         let left_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(3), Constraint::Length(2)].as_ref())
             .split(chunks[0]); // chunks[1] 是左侧区域
 
         //LLM聊天和输入框
         let right_chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(3), Constraint::Length(3)].as_ref())
+            .constraints([Constraint::Min(3), Constraint::Length(2)].as_ref())
             .split(chunks[1]); // chunks[1] 是左侧区域
 
         //导航栏和文本框
@@ -148,17 +164,23 @@ impl ChapUI {
             .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
             .split(left_chunks[0]); // chunks[1] 是左侧区域
 
-        //导航栏
-        let nav = Layout::default()
-            .direction(Direction::Vertical)
+        let search_chunks = Layout::default()
+            .direction(Direction::Horizontal)
             .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
-            .split(nav_text_chunks[0]); // chunks[1] 是左侧区域
+            .split(left_chunks[1]); // chunks[1] 是左侧区域
+
+        //导航栏
+        // let nav = Layout::default()
+        //     .direction(Direction::Vertical)
+        //     .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
+        //     .split(nav_text_chunks[0]); // chunks[1] 是左侧区域
 
         let navi = Navigation {
             max_line: max_line,
             min_line: 0,
-            cur_line: 1,
-            rect: nav[1],
+            cur_line: 0,
+            rect: nav_text_chunks[0],
+            select_line: None,
         };
 
         let tv = TextView {
@@ -170,7 +192,7 @@ impl ChapUI {
 
         let fuzzy_inp = FuzzyInput {
             input: String::new(),
-            rect: left_chunks[1],
+            rect: search_chunks[1],
         };
 
         let chat_tv = TextView {
@@ -194,81 +216,122 @@ impl ChapUI {
             chat_inp: chat_inp,
             focus: Focus::new(),
             prompt_tx: prompt_tx,
+            vb: vb,
+            embed_model: embed_model,
         })
     }
 
     pub(crate) async fn render(
         &mut self,
-        bytes: &[u8],
+        bytes: Mmap,
         mut llm_res_rx: mpsc::Receiver<String>,
     ) -> ChapResult<()> {
-        let mut eg: SimpleTextEngine<'_> =
-            SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
-        let mut chat_txt = String::with_capacity(1024);
+        let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
+        let mut chat_eg = SimpleTextEngine::new(
+            SimpleString::new(String::with_capacity(1024)),
+            self.chat_tv.get_height(),
+            self.chat_tv.get_width(),
+        );
         loop {
-            let (inp, is_exact) = self.fuzzy_inp.get_inp_exact();
-            let content = eg.get_line(self.tv.get_scroll(), inp, is_exact);
+            let line_meta = {
+                let (inp, is_exact) = self.fuzzy_inp.get_inp_exact();
+                let (tv_content, line_meta) = eg.get_line(self.tv.get_scroll(), inp, is_exact);
+                self.terminal.draw(|f| {
+                    let (txt_clr, inp_clr, chat_clr_, chat_inp_clr) = self.focus.get_colors();
+                    // 左下输入框区
+                    let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                        .block(
+                            Block::default()
+                                .title("search")
+                                .borders(Borders::TOP | Borders::LEFT),
+                        )
+                        .style(Style::default().fg(inp_clr)); // 设置输入框样式
+                    f.render_widget(input_box, self.fuzzy_inp.get_rect());
+                    let block = Block::default().borders(Borders::LEFT);
 
-            let mut chat_eg = SimpleTextEngine::new(
-                chat_txt.as_bytes(),
-                self.chat_tv.get_height(),
-                self.chat_tv.get_width(),
-            );
-            self.terminal.draw(|f| {
-                // 左下输入框区
-                let (txt_clr, inp_clr, chat_clr_, chat_inp_clr) = self.focus.get_colors();
-                let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
-                    .block(Block::default().title("search").borders(Borders::ALL))
-                    .style(Style::default().fg(inp_clr)); // 设置输入框样式
-                f.render_widget(input_box, self.fuzzy_inp.get_rect());
+                    if let Some(c) = &tv_content {
+                        let (navi, visible_content) = get_content(
+                            c,
+                            &line_meta,
+                            self.navi.get_cur_line(),
+                            &self.navi.select_line,
+                            self.tv.get_height(),
+                        );
+                        let text_para = Paragraph::new(visible_content)
+                            .block(block)
+                            .style(Style::default().fg(txt_clr));
+                        f.render_widget(text_para, self.tv.get_rect());
+                        let nav_paragraph = Paragraph::new(navi);
+                        f.render_widget(nav_paragraph, self.navi.get_rect());
+                    } else {
+                        let text_para = Paragraph::new("")
+                            .block(block)
+                            .style(Style::default().fg(txt_clr));
+                        f.render_widget(text_para, self.tv.get_rect());
+                        let nav_paragraph = Paragraph::new("");
+                        f.render_widget(nav_paragraph, self.navi.get_rect());
+                    }
+                    let (chat_content, chat_line_meta) =
+                        chat_eg.get_line(self.chat_tv.get_scroll(), "", is_exact);
+                    if let Some(c) = &chat_content {
+                        let chat_content = get_chat_content(&c, &chat_line_meta);
+                        let chat_tv = Paragraph::new(chat_content)
+                            .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                            .style(Style::default().fg(chat_clr_));
+                        f.render_widget(chat_tv, self.chat_tv.get_rect());
+                    } else {
+                        let chat_tv = Paragraph::new("")
+                            .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                            .style(Style::default().fg(chat_clr_));
+                        f.render_widget(chat_tv, self.chat_tv.get_rect());
+                    }
 
-                // 左下输入框区
-                let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
-                    .block(Block::default().title("search").borders(Borders::ALL))
-                    .style(Style::default().fg(inp_clr)); // 设置输入框样式
-                f.render_widget(input_box, self.fuzzy_inp.get_rect());
-                let block = Block::default().borders(Borders::ALL).title("File Content");
-                if let Some(c) = &content {
-                    let (navi, visible_content) =
-                        get_content(c, self.navi.get_cur_line(), self.tv.get_height());
-                    let text_para = Paragraph::new(visible_content)
-                        .block(block)
-                        .style(Style::default().fg(txt_clr));
-                    f.render_widget(text_para, self.tv.get_rect());
-                    let nav_paragraph = Paragraph::new(navi);
-                    f.render_widget(nav_paragraph, self.navi.get_rect());
-                    // max_line = c.len();
-                } else {
-                    // println!("scorll:{}", scroll);
-                    //  println!("get_max_scroll_num:{:?}", eg.get_max_scroll_num());
-                }
-                let content2 = chat_eg.get_line(self.chat_tv.get_scroll(), "", is_exact);
-                if let Some(c) = content2 {
-                    let chat_content = get_chat_content(&c);
-                    let chat_tv = Paragraph::new(chat_content)
-                        .block(Block::default().title("Chat LLM").borders(Borders::ALL))
-                        .style(Style::default().fg(chat_clr_));
-                    f.render_widget(chat_tv, self.chat_tv.get_rect());
-                } else {
-                    let chat_tv = Paragraph::new("")
-                        .block(Block::default().title("Chat LLM").borders(Borders::ALL))
-                        .style(Style::default().fg(chat_clr_));
-                    f.render_widget(chat_tv, self.chat_tv.get_rect());
-                }
+                    // 右侧部分可以显示空白或其他内容
+                    // let block = Block::default().borders(Borders::ALL).title("LLM Chat");
+                    let input_box = Paragraph::new(Text::raw(self.chat_inp.get_inp()))
+                        .block(
+                            Block::default()
+                                .title("prompt")
+                                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT),
+                        )
+                        .style(Style::default().fg(chat_inp_clr)); // 设置输入框样式
+                    f.render_widget(input_box, self.chat_inp.get_rect());
 
-                // 右侧部分可以显示空白或其他内容
-                // let block = Block::default().borders(Borders::ALL).title("LLM Chat");
-                let input_box = Paragraph::new(Text::raw(self.chat_inp.get_inp()))
-                    .block(Block::default().title("prompt").borders(Borders::ALL))
-                    .style(Style::default().fg(chat_inp_clr)); // 设置输入框样式
-                f.render_widget(input_box, self.chat_inp.get_rect());
-            })?;
+                    match self.focus.current() {
+                        FocusType::FuzzyInput => {
+                            // 将光标移动到输入框中合适的位置
+                            let inp_len = self.fuzzy_inp.get_inp().width();
+                            let x = if inp_len == 0 {
+                                self.fuzzy_inp.get_rect().x + 2
+                            } else {
+                                self.fuzzy_inp.get_rect().x + inp_len as u16 + 1
+                            };
+
+                            let y = self.fuzzy_inp.get_rect().y + 1; // 输入框的 Y 起点
+                            f.set_cursor_position(Position { x, y });
+                        }
+                        FocusType::ChatInput => {
+                            // 将光标移动到输入框中合适的位置
+                            let inp_len = self.chat_inp.get_inp().width();
+                            let x = if inp_len == 0 {
+                                self.chat_inp.get_rect().x + 2
+                            } else {
+                                self.chat_inp.get_rect().x + inp_len as u16 + 1
+                            };
+                            let y = self.chat_inp.get_rect().y + 1; // 输入框的 Y 起点
+                            f.set_cursor_position(Position { x, y });
+                        }
+                        _ => {}
+                    };
+                })?;
+                line_meta
+            };
 
             loop {
                 tokio::select! {
                     Some(msg) = llm_res_rx.recv() => {
-                        chat_txt.push_str(&msg);
-                        chat_txt.push_str("\n\n");
+                        chat_eg.push_str(&msg);
+                        chat_eg.push_str("\n\n");
                         break;
                     }
                     _ = tokio::time::sleep(Duration::from_millis(25)) => {
@@ -284,6 +347,7 @@ impl ChapUI {
                             (KeyCode::Esc, _) => {
                                 self.fuzzy_inp.clear();
                                 self.chat_inp.clear();
+                                self.navi.select_line = None;
                                 break;
                             }
                             (KeyCode::Tab, _) => {
@@ -291,25 +355,60 @@ impl ChapUI {
                                 self.focus.next();
                                 break;
                             }
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                crossterm::terminal::disable_raw_mode()?;
+                                execute!(
+                                    self.terminal.backend_mut(),
+                                    LeaveAlternateScreen // 离开备用屏幕
+                                )?;
+                                self.terminal.show_cursor()?; // 确保光标可见
+                                                              //  self.terminal.clear()?;
+                                exit(0);
+                            }
                             (KeyCode::Enter, _) => match self.focus.current() {
                                 FocusType::Txt => {
-                                    self.fuzzy_inp.clear();
-                                    if let Some(c) = &content {
+                                    if let Some((_, _)) = self.navi.select_line {
+                                        self.focus.next();
+                                        self.focus.next();
+                                        self.focus.next();
+                                    } else {
+                                        self.fuzzy_inp.clear();
+                                        //if let Some(c) = &tv_content {
                                         let cur_line = self.navi.get_cur_line();
-                                        if cur_line < c.len() {
-                                            self.tv.set_scroll(c[cur_line].get_line_num());
+                                        if cur_line < line_meta.len() {
+                                            self.tv.set_scroll(line_meta[cur_line].get_line_num());
                                             self.navi.to_min_line();
                                         }
+                                        // }
                                     }
+
                                     break;
                                 }
                                 FocusType::ChatInput => {
-                                    let message = self.chat_inp.get_inp().to_string();
+                                    let chat_inp = self.chat_inp.get_inp();
+                                    if chat_inp.len() == 0 {
+                                        break;
+                                    }
+                                    let mut message = String::new();
+                                    if let Some((start_line, end_line)) = self.navi.select_line {
+                                        if let (Some(line), _) =
+                                            eg.get_start_end(start_line, end_line)
+                                        {
+                                            for l in line.iter() {
+                                                message.push_str(l);
+                                            }
+                                        }
+                                    }
+                                    message.push_str("\n");
+                                    message.push_str(chat_inp);
+
+                                    if let Ok(searcher) = self.vb.searcher() {
+                                        //  searcher.query(tensor, 10)
+                                    }
+
                                     if message.trim().len() > 0 {
-                                        // if let Some(max_line_num) = chat_eg.get_max_scroll_num() {
                                         self.chat_tv.set_scroll(chat_eg.get_last_line().max(1));
-                                        // }
-                                        chat_txt.push_str(&format!("----------------------------\n{}\n----------------------------\n",message));
+                                        chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",message));
                                         let _ = self.prompt_tx.send(message.to_string()).await;
                                         self.chat_inp.clear();
                                         break;
@@ -317,37 +416,122 @@ impl ChapUI {
                                 }
                                 _ => {}
                             },
-                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                // 按下Esc退出
-                                self.terminal.clear()?;
-                                disable_raw_mode()?;
-                                exit(0);
+                            (KeyCode::Down, KeyModifiers::SHIFT) => {
+                                // 下一页
+                                match self.focus.current() {
+                                    FocusType::Txt => {
+                                        let sel_line = if self.navi.is_bottom() {
+                                            self.tv.down_line(eg.get_max_scroll_num());
+                                            self.tv.scroll + self.tv.get_height()
+                                        } else {
+                                            self.navi.down_line();
+                                            let cur_line = self.navi.get_cur_line();
+                                            if cur_line >= line_meta.len() {
+                                                break;
+                                            }
+                                            let sel_line = line_meta[cur_line].get_line_num();
+                                            sel_line
+                                        };
+                                        match self.navi.select_line {
+                                            Some((st, en)) => {
+                                                if sel_line == en {
+                                                    if let Some(max_num) = eg.get_max_scroll_num() {
+                                                        if sel_line == max_num {
+                                                            self.navi.select_line =
+                                                                Some((st, sel_line));
+                                                        }
+                                                    } else {
+                                                        self.navi.select_line =
+                                                            Some((sel_line, sel_line));
+                                                    }
+                                                } else if sel_line > st && sel_line > en {
+                                                    self.navi.select_line = Some((st, sel_line));
+                                                } else if sel_line > st && sel_line < en {
+                                                    self.navi.select_line = Some((sel_line, en));
+                                                }
+                                            }
+                                            None => {
+                                                self.navi.select_line =
+                                                    Some((sel_line - 1, sel_line - 1));
+                                            }
+                                        }
+
+                                        break;
+                                    }
+                                    FocusType::ChatTxt => {
+                                        self.chat_tv.down_line(chat_eg.get_max_scroll_num());
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                                break;
+                            }
+                            (KeyCode::Up, KeyModifiers::SHIFT) => {
+                                match self.focus.current() {
+                                    FocusType::Txt => {
+                                        let sel_line = if self.navi.is_top() {
+                                            self.tv.up_line();
+                                            (self.tv.scroll - 1).max(1)
+                                        } else {
+                                            self.navi.up_line();
+
+                                            let cur_line = self.navi.get_cur_line();
+                                            if cur_line >= line_meta.len() {
+                                                break;
+                                            }
+                                            let sel_line = line_meta[cur_line].get_line_num();
+                                            sel_line
+                                        };
+
+                                        match self.navi.select_line {
+                                            Some((st, en)) => {
+                                                if sel_line == st {
+                                                    if sel_line == 1 {
+                                                        self.navi.select_line = Some((st, en));
+                                                    } else {
+                                                        self.navi.select_line =
+                                                            Some((sel_line, sel_line));
+                                                    }
+                                                } else if sel_line > st && sel_line < en {
+                                                    self.navi.select_line = Some((st, sel_line));
+                                                } else if sel_line < st {
+                                                    self.navi.select_line = Some((sel_line, en));
+                                                }
+                                            }
+                                            None => {
+                                                self.navi.select_line =
+                                                    Some((sel_line + 1, sel_line + 1));
+                                            }
+                                        }
+                                    }
+
+                                    FocusType::ChatTxt => {
+                                        // self.chat_tv.up_line();
+                                    }
+                                    _ => {}
+                                }
+                                break;
                             }
                             (KeyCode::Down, KeyModifiers::CONTROL) => {
                                 // 下一页
                                 match self.focus.current() {
                                     FocusType::Txt => {
                                         self.tv.down_page(eg.get_max_scroll_num());
-                                        break;
                                     }
                                     FocusType::ChatTxt => {
                                         self.chat_tv.down_page(chat_eg.get_max_scroll_num());
-                                        break;
                                     }
                                     _ => {}
                                 }
-
                                 break;
                             }
                             (KeyCode::Up, KeyModifiers::CONTROL) => {
                                 match self.focus.current() {
                                     FocusType::Txt => {
                                         self.tv.up_page();
-                                        break;
                                     }
                                     FocusType::ChatTxt => {
                                         self.chat_tv.up_page();
-                                        break;
                                     }
                                     _ => {}
                                 }
@@ -436,6 +620,7 @@ struct Navigation {
     min_line: usize,
     max_line: usize,
     cur_line: usize,
+    select_line: Option<(usize, usize)>,
     rect: Rect,
 }
 
@@ -484,7 +669,7 @@ impl Navigation {
 struct TextView {
     height: usize,
     width: usize,
-    scroll: usize,
+    scroll: usize, //当前页 第一行 行数
     rect: Rect,
 }
 
@@ -663,12 +848,12 @@ impl ChatInput {
     }
 }
 
-fn get_chat_content<'a>(content: &'a Vec<LineTxt<'a>>) -> (Text<'a>) {
+fn get_chat_content<'a>(content: &'a Vec<&'a str>, line_meta: &Vec<LineMeta>) -> (Text<'a>) {
+    assert!(content.len() == line_meta.len());
     let mut lines = Vec::new();
-    for (i, line) in content.into_iter().enumerate() {
+    for (i, text) in content.into_iter().enumerate() {
         let mut spans = Vec::new();
-        let text = line.get_text();
-        let mf = line.get_match(); //fuzzy_search(input, text, false);
+        let mf = line_meta[i].get_match(); //fuzzy_search(input, text, false);
         if let Some(m) = mf {
             match m {
                 Match::Char(_) => {
@@ -700,7 +885,7 @@ fn get_chat_content<'a>(content: &'a Vec<LineTxt<'a>>) -> (Text<'a>) {
         if spans.len() > 0 {
             lines.push(Line::from(spans));
         } else {
-            lines.push(Line::from(text));
+            lines.push(Line::from(*text));
         }
     }
     let text = Text::from(lines);
@@ -708,15 +893,17 @@ fn get_chat_content<'a>(content: &'a Vec<LineTxt<'a>>) -> (Text<'a>) {
 }
 
 fn get_content<'a>(
-    content: &'a Vec<LineTxt<'a>>,
+    content: &'a Vec<&str>,
+    line_meta: &Vec<LineMeta>,
     cur_line: usize,
+    select_line: &Option<(usize, usize)>,
     height: usize,
 ) -> (Text<'a>, Text<'a>) {
+    assert!(content.len() == line_meta.len());
     let mut lines = Vec::new();
-    for (i, line) in content.into_iter().enumerate() {
+    for (i, text) in content.into_iter().enumerate() {
         let mut spans = Vec::new();
-        let text = line.get_text();
-        let mf = line.get_match(); //fuzzy_search(input, text, false);
+        let mf = line_meta[i].get_match(); //fuzzy_search(input, text, false);
         if let Some(m) = mf {
             match m {
                 Match::Char(_) => {
@@ -745,17 +932,33 @@ fn get_content<'a>(
                 }
             }
         }
-
-        if i == cur_line {
-            lines.push(Line::from(Span::styled(
-                text,
-                Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
-            )));
-        } else {
-            if spans.len() > 0 {
-                lines.push(Line::from(spans));
+        if let Some((st, en)) = select_line {
+            if (line_meta[i].get_line_num() >= *st && line_meta[i].get_line_num() <= *en)
+                || i == cur_line
+            {
+                lines.push(Line::from(Span::styled(
+                    *text,
+                    Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
+                )));
             } else {
-                lines.push(Line::from(text));
+                if spans.len() > 0 {
+                    lines.push(Line::from(spans));
+                } else {
+                    lines.push(Line::from(*text));
+                }
+            }
+        } else {
+            if i == cur_line {
+                lines.push(Line::from(Span::styled(
+                    *text,
+                    Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
+                )));
+            } else {
+                if spans.len() > 0 {
+                    lines.push(Line::from(spans));
+                } else {
+                    lines.push(Line::from(*text));
+                }
             }
         }
     }
@@ -773,6 +976,7 @@ fn get_content<'a>(
             })
             .collect::<Vec<Line>>(),
     );
+
     let text = Text::from(lines);
     (nav_text, text)
 }

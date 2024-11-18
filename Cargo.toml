@@ -16,3 +16,5 @@ reqwest = { version = "0.12.5", features = ["blocking", "json", "multipart"] }
 groq-api-rs = "0.2.0"
 tokio = {version ="1.40.0",features = ["full"]}
 once_cell = "1.20.1"
+vectorbase = {path = "./vectorbase", version = "0.0.1"}
+fastembed = {path = "./rust-lib/fastembed-rs", version = "4.1.0", features = ["default"]}

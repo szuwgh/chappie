@@ -21,7 +21,7 @@ impl ApiGroq {
             name: None,
             tool_call_id: None,
         };
-        let request = builder::RequestBuilder::new("mixtral-8x7b-32768".to_string());
+        let request = builder::RequestBuilder::new("llama3-8b-8192".to_string());
         self.groq.add_message(message);
         let res = self.groq.create(request).await;
         match res {
