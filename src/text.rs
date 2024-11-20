@@ -5,8 +5,8 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::fuzzy::{FuzzySearch, Match};
 
-//每十页建立一个索引
-const PAGE_GROUP: usize = 10;
+//每5页建立一个索引
+const PAGE_GROUP: usize = 5;
 
 pub(crate) struct LineMeta {
     line_num: usize,
@@ -110,6 +110,45 @@ impl<T: SimpleText> SimpleTextEngine<T> {
         }
     }
 
+    pub(crate) fn warp_str(text: &str, with: usize) -> Vec<&str> {
+        Self::warp(text.as_bytes(), with)
+    }
+
+    pub(crate) fn warp(text: &[u8], with: usize) -> Vec<&str> {
+        let max_bytes = text.len();
+        let mut split_lines = Vec::new();
+        let mut start = 0;
+        for (i, byte) in text.iter().enumerate() {
+            if *byte == b'\n' || i == max_bytes.saturating_sub(1) {
+                let line = &text[start..=i];
+                let line_txt = std::str::from_utf8(line).unwrap();
+                let mut current_width = 0; //最近
+                let mut line_offset = 0; //
+                let mut current_bytes = 0;
+                for ch in line_txt.chars() {
+                    let ch_width = ch.width().unwrap_or(0);
+                    //检查是否超过屏幕宽度
+                    if current_width + ch_width > with {
+                        let end = (line_offset + current_bytes).min(line_txt.len());
+                        let txt = &line_txt[line_offset..end];
+                        split_lines.push(txt);
+                        line_offset += current_bytes;
+                        current_width = 0;
+                        current_bytes = 0;
+                    }
+                    current_width += ch_width;
+                    current_bytes += ch.len_utf8();
+                }
+                if current_bytes > 0 {
+                    let txt = &line_txt[line_offset..];
+                    split_lines.push(txt);
+                    start = i + 1;
+                }
+            }
+        }
+        split_lines
+    }
+
     pub(crate) fn push_str(&mut self, msg: &str) {
         self.text.push_str(msg);
         self.max_line_num = 0;
@@ -129,7 +168,7 @@ impl<T: SimpleText> SimpleTextEngine<T> {
         None
     }
 
-    pub(crate) fn get_last_line(&mut self) -> usize {
+    pub(crate) fn get_line_count(&mut self) -> usize {
         let page_offset = if let Some(offset) = self.page_offset_list.last() {
             *offset
         } else {
@@ -191,7 +230,7 @@ impl<T: SimpleText> SimpleTextEngine<T> {
         self.max_line_num = start_line_num + line_num + 1;
         self.max_page_num = page_num;
         self.eof = true;
-        return start_line_num + line_num + 1;
+        return self.max_line_num;
     }
 
     pub(crate) fn get_start_end<'a>(
@@ -404,7 +443,7 @@ mod tests {
 
         let mut eg = SimpleTextEngine::new(mmap, 37, 75);
         eg.get_line(100, "", true);
-        println!("last_line:{}", eg.get_last_line());
+        println!("last_line:{}", eg.get_line_count());
         if let (Some(a1), _) = eg.get_line(1594 + 1, "", true) {
             for v in a1.into_iter() {
                 println!("{:?}", v);

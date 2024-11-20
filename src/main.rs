@@ -26,7 +26,6 @@ use crate::chatapi::grop::ApiGroq;
 use crate::util::map_file;
 use std::sync::Arc;
 use tokio::runtime::Builder;
-use tokio::signal::ctrl_c;
 use tokio::sync::mpsc;
 use vectorbase::ann::AnnType;
 use vectorbase::schema::Schema;
@@ -53,8 +52,7 @@ pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
         .expect("Failed to create runtime")
 });
 
-#[tokio::main]
-async fn main() -> ChapResult<()> {
+fn main() -> ChapResult<()> {
     //show_file();
     let file_path = "/root/pod.error.log";
     let mmap = map_file(file_path)?;
@@ -84,12 +82,11 @@ async fn main() -> ChapResult<()> {
     let vb = Collection::new(schema.clone(), config).unwrap();
     let mut chap_ui = ChapUI::new(prompt_tx, vb.clone(), embed.clone())?;
     RUNTIME.spawn(async move {
-        chap_ui.render(mmap, llm_res_rx).await.unwrap();
-    });
-    RUNTIME.spawn(async move {
         request_llm(prompt_rx, llm_res_tx, vb, embed.clone(), schema).await;
     });
-    ctrl_c().await.expect("Failed to listen for Ctrl+C");
+    RUNTIME.block_on(async move {
+        chap_ui.render(mmap, llm_res_rx).await.unwrap();
+    });
     Ok(())
 }
 
@@ -113,7 +110,7 @@ async fn request_llm(
             d.add_text(field_id_answer, &res);
             let v6 = Vector::from_slice(&embeddings[0], d);
             // 插入向量数据库
-            vb.add(v6).unwrap();
+            vb.add(v6).await.unwrap();
               //通知ui线程更新
             llm_res_tx.send(res).await.unwrap();
             }

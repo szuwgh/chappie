@@ -333,6 +333,7 @@ dependencies = [
  "clap",
  "crossterm",
  "fastembed",
+ "galois",
  "groq-api-rs",
  "memmap2",
  "once_cell",
