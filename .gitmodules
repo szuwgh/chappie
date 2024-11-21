@@ -1,0 +1,6 @@
+[submodule "crates/vectorbase"]
+	path = crates/vectorbase
+	url = https://github.com/szuwgh/vectorbase.git
+[submodule "crates/galois"]
+	path = crates/galois
+	url = https://github.com/szuwgh/galois.git
