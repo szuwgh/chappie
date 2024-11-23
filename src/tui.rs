@@ -1,4 +1,3 @@
-use crate::chatapi::grop::ApiGroq;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
 use crate::text::LineMeta;
@@ -19,9 +18,8 @@ use crossterm::{
 };
 use fastembed::TextEmbedding;
 use galois::Tensor;
-use groq_api_rs::completion::client::Groq;
 use memmap2::Mmap;
-use once_cell::sync::Lazy;
+use ratatui::prelude::Backend;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::prelude::Direction;
@@ -29,22 +27,15 @@ use ratatui::prelude::Layout;
 use ratatui::prelude::Position;
 use ratatui::prelude::Rect;
 use ratatui::style::Color;
-use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::symbols::line;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
-use ratatui::widgets::List;
-use ratatui::widgets::ListItem;
-use ratatui::widgets::ListState;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
-use std::default;
 use std::io;
-use std::io::Write;
 use std::mem;
 use std::process::exit;
 use std::sync::Arc;
@@ -53,7 +44,7 @@ use tokio::time::Duration;
 use unicode_width::UnicodeWidthStr;
 use vectorbase::collection::Collection;
 
-pub(crate) struct ChapUI {
+pub(crate) struct ChapTui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     navi: Navigation,
     tv: TextView,
@@ -64,6 +55,7 @@ pub(crate) struct ChapUI {
     prompt_tx: mpsc::Sender<String>,
     vb: Collection,
     embed_model: Arc<TextEmbedding>,
+    start_row: u16,
 }
 
 enum FocusType {
@@ -143,39 +135,49 @@ enum ChatType {
     Pattern,
 }
 
-impl ChapUI {
+impl ChapTui {
     pub(crate) fn new(
         prompt_tx: mpsc::Sender<String>,
         vb: Collection,
         embed_model: Arc<TextEmbedding>,
-    ) -> ChapResult<ChapUI> {
-        let mut stdout = std::io::stdout();
-        execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    ) -> ChapResult<ChapTui> {
         enable_raw_mode()?;
+        let mut stdout = std::io::stdout();
+        let (column, row) = cursor::position()?; // (x, y) 返回的是光标的 (列号, 行号)
+                                                 // println!("row:{}", row);
+                                                 // exit(0);
+                                                 //execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
+        let terminal: Terminal<CrosstermBackend<io::Stdout>> = Terminal::new(backend)?;
         // 显示光标
         io::stdout().execute(cursor::Show)?;
-        // 清空终端屏幕
-        terminal.clear()?;
         // 获取终端尺寸
         let size = terminal.size()?;
 
         // 终端高度
-        let terminal_height = size.height as usize;
+        let terminal_height = (size.height as f32 * 0.4) as u16;
+        // println!("terminal_height:{}", size.height);
+        // println!("row:{}", row);
+        // println!("column:{}", column);
+        let mut start_row = row;
         // 终端宽度
-        let terminal_width = size.width as usize;
-
+        let terminal_width = size.width;
+        if size.height - row < terminal_height {
+            for _ in 0..terminal_height.saturating_sub(size.height - row) {
+                println!(); // 打印 10 行空白
+                start_row -= 1;
+            }
+        }
         // 文本框显示内容的高度
-        let tv_heigth = terminal_height - 2;
+        let tv_heigth = (terminal_height - 2) as usize;
         // 文本框显示内容的宽度
         let tv_width = (terminal_width as f32 * 0.6) as usize - 3;
 
         let chat_tv_width = (terminal_width as f32 * 0.4) as usize - 3;
 
-        let max_line = terminal_height - 3;
+        let max_line = (terminal_height - 3) as usize;
 
-        let rect = Rect::new(0, 0, size.width, size.height);
+        let rect = Rect::new(0, start_row, terminal_width, terminal_height);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
@@ -236,7 +238,7 @@ impl ChapUI {
             rect: right_chunks[1],
         };
 
-        Ok(ChapUI {
+        Ok(ChapTui {
             terminal: terminal,
             navi: navi,
             tv: tv,
@@ -247,6 +249,7 @@ impl ChapUI {
             prompt_tx: prompt_tx,
             vb: vb,
             embed_model: embed_model,
+            start_row: start_row,
         })
     }
 
@@ -477,24 +480,28 @@ impl ChapUI {
                                         println!("{}", msg.join(""));
                                     }
                                 }
-                                self.terminal.backend_mut().flush()?;
+                                // self.terminal.backend_mut().flush()?;
                                 exit(0);
                                 //break;
                             }
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                                 crossterm::terminal::disable_raw_mode()?;
-                                execute!(
-                                    self.terminal.backend_mut(),
-                                    LeaveAlternateScreen // 离开备用屏幕
-                                )?;
+                                // execute!(
+                                //     self.terminal.backend_mut(),
+                                //     LeaveAlternateScreen // 离开备用屏幕
+                                // )?;
                                 self.terminal.show_cursor()?; // 确保光标可见
+                                self.terminal
+                                    .backend_mut()
+                                    .execute(MoveTo(0, self.start_row))?; // 假设从当前光标位置下移2行开始清除
+                                self.terminal
+                                    .backend_mut()
+                                    .clear_region(ratatui::backend::ClearType::AfterCursor)?; // 清除光标下方的区域
                                 exit(0);
                             }
                             (KeyCode::Enter, _) => match self.focus.current() {
                                 FocusType::TxtFuzzy => {
                                     if let Some((_, _)) = self.navi.select_line {
-                                        self.focus.next();
-                                        self.focus.next();
                                         self.focus.next();
                                     } else {
                                         self.fuzzy_inp.clear();
@@ -563,6 +570,9 @@ impl ChapUI {
                                                         if sel_line == max_num {
                                                             self.navi.select_line =
                                                                 Some((st, sel_line));
+                                                        } else {
+                                                            self.navi.select_line =
+                                                                Some((sel_line, sel_line));
                                                         }
                                                     } else {
                                                         self.navi.select_line =

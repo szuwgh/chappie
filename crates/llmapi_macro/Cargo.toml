@@ -1,0 +1,11 @@
+[package]
+name = "llmapi_macro"
+version = "0.0.1"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2.0"       # For parsing and working with Rust syntax trees
+quote = "1.0.37"      # For generating Rust code

@@ -8,7 +8,8 @@ edition = "2021"
 [workspace]
 members = [
   "crates/vectorbase",
-  "crates/galois",
+  "crates/galois", 
+  "crates/llmapi_macro", "crates/llmapi",
 ]
 
 [dependencies]
@@ -25,3 +26,6 @@ once_cell = "1.20.1"
 vectorbase = {path = "crates/vectorbase", version = "0.0.1"}
 fastembed = {path = "./rust-lib/fastembed-rs", version = "4.1.0", features = ["default"]}
 galois = {path = "crates/galois", version = "0.1.0"}
+llmapi = {path = "crates/llmapi", version = "0.0.1"}
+
+

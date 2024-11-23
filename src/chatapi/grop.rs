@@ -1,15 +1,17 @@
+use crate::ChapResult;
 use groq_api_rs::completion::client::CompletionOption;
 use groq_api_rs::completion::{client::Groq, message::Message, request::builder};
-unsafe impl Send for ApiGroq {}
-unsafe impl Sync for ApiGroq {}
-use std::future::Future;
-pub(crate) struct ApiGroq {
+
+unsafe impl Send for GroqApi {}
+unsafe impl Sync for GroqApi {}
+
+pub(crate) struct GroqApi {
     groq: Groq,
 }
 
-impl ApiGroq {
-    pub(crate) fn new(api_key: &str) -> ApiGroq {
-        ApiGroq {
+impl GroqApi {
+    pub(crate) fn new(api_key: &str) -> GroqApi {
+        GroqApi {
             groq: Groq::new(api_key),
         }
     }
@@ -27,7 +29,7 @@ impl ApiGroq {
         match res {
             Ok(v) => match v {
                 CompletionOption::NonStream(v) => return v.choices[0].message.content.to_string(),
-                CompletionOption::Stream(v) => return "".to_string(),
+                CompletionOption::Stream(v) => todo!(),
             },
             Err(e) => return "grop api connection error".to_string(),
         }

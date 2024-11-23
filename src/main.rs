@@ -2,19 +2,23 @@
 #![feature(async_closure)]
 use clap::Parser;
 use error::ChapResult;
-use tui::ChapUI;
+use tui::ChapTui;
 mod chatapi;
 use once_cell::sync::Lazy;
 use vectorbase::schema::Document;
 mod error;
 mod fuzzy;
+mod vb;
 use fastembed::InitOptions;
+use llmapi::get_llmapi;
 use vectorbase::schema::Vector;
+mod chap;
 mod text;
 mod tui;
 use fastembed::EmbeddingModel;
 use fastembed::TextEmbedding;
 use std::path::PathBuf;
+use std::process::exit;
 use vectorbase::collection::Collection;
 use vectorbase::config::ConfigBuilder;
 use vectorbase::schema::FieldEntry;
@@ -22,13 +26,14 @@ use vectorbase::schema::TensorEntry;
 use vectorbase::schema::VectorEntry;
 use vectorbase::schema::VectorType;
 mod util;
-use crate::chatapi::grop::ApiGroq;
+use crate::chatapi::grop::GroqApi;
 use crate::util::map_file;
 use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use vectorbase::ann::AnnType;
 use vectorbase::schema::Schema;
+
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -53,7 +58,9 @@ pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 });
 
 fn main() -> ChapResult<()> {
-    //show_file();
+    let mut a = get_llmapi("Init1", "", "");
+    println!("{}", a.req("".to_string()));
+    exit(1);
     let file_path = "/root/pod.error.log";
     let mmap = map_file(file_path)?;
     let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
@@ -80,7 +87,7 @@ fn main() -> ChapResult<()> {
         .collect_name("chap")
         .build();
     let vb = Collection::new(schema.clone(), config).unwrap();
-    let mut chap_ui = ChapUI::new(prompt_tx, vb.clone(), embed.clone())?;
+    let mut chap_ui = ChapTui::new(prompt_tx, vb.clone(), embed.clone())?;
     RUNTIME.spawn(async move {
         request_llm(prompt_rx, llm_res_tx, vb, embed.clone(), schema).await;
     });
@@ -97,7 +104,7 @@ async fn request_llm(
     embed_model: Arc<TextEmbedding>,
     schema: Schema,
 ) {
-    let mut groq = ApiGroq::new("");
+    let mut groq = GroqApi::new("");
     let field_id_prompt = schema.get_field("prompt").unwrap();
     let field_id_answer = schema.get_field("answer").unwrap();
     loop {
