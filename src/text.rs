@@ -6,7 +6,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::fuzzy::{FuzzySearch, Match};
 
 //每5页建立一个索引
-const PAGE_GROUP: usize = 5;
+const PAGE_GROUP: usize = 2;
 
 pub(crate) struct LineMeta {
     line_num: usize,
@@ -77,6 +77,21 @@ impl SimpleText for SimpleString {
 
     fn push_str(&mut self, msg: &str) {
         self.0.push_str(msg);
+    }
+}
+
+impl SimpleText for String {
+    fn cursor(&self, offset: usize) -> &[u8] {
+        assert!(self.size() == 0 || offset < self.size());
+        &self.as_bytes()[offset..]
+    }
+
+    fn size(&self) -> usize {
+        self.len()
+    }
+
+    fn push_str(&mut self, msg: &str) {
+        self.push_str(msg);
     }
 }
 
@@ -169,6 +184,10 @@ impl<T: SimpleText> SimpleTextEngine<T> {
     }
 
     pub(crate) fn get_line_count(&mut self) -> usize {
+        if self.eof {
+            return self.max_line_num;
+        }
+
         let page_offset = if let Some(offset) = self.page_offset_list.last() {
             *offset
         } else {
@@ -177,13 +196,16 @@ impl<T: SimpleText> SimpleTextEngine<T> {
         let start_page_num = (self.page_offset_list.len() - 1) * PAGE_GROUP;
         //开始的行数
         //开始滑动到最后一行
-        let mmap = &self.text.cursor(page_offset);
+        let mmap = self.text.cursor(page_offset);
+        let max_bytes = mmap.len();
         let mut start = 0;
         let start_line_num = start_page_num * self.height;
         let mut line_num = 0;
         let mut page_num = start_page_num;
+        let mut last_u8 = 0u8;
         for (i, byte) in mmap.iter().enumerate() {
-            if *byte == b'\n' || i == self.max_bytes - 1 {
+            last_u8 = *byte;
+            if *byte == b'\n' || i == max_bytes - 1 {
                 let line = &mmap[start..=i];
                 let line_txt = std::str::from_utf8(line).unwrap();
                 let mut current_width = 0; //最近的矿都
@@ -202,7 +224,7 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                             let n = page_num % PAGE_GROUP;
                             if n == 0 && m > self.page_offset_list.len() - 1 {
                                 //保存页数的偏移量 下一页开始位置
-                                self.page_offset_list.push(page_offset + end + 1);
+                                self.page_offset_list.push(page_offset + start + end);
                             }
                         }
                         line_offset += current_bytes;
@@ -223,11 +245,24 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                             self.page_offset_list.push(page_offset + i + 1);
                         }
                     }
-                    start = i + 1;
+                }
+                start = i + 1;
+            }
+        }
+        if last_u8 == b'\n' {
+            line_num += 1;
+            if line_num % self.height == 0 {
+                page_num += 1; //页数加1
+                let m = page_num / PAGE_GROUP;
+                let n = page_num % PAGE_GROUP;
+                if n == 0 && m > self.page_offset_list.len() - 1 {
+                    //保存页数的偏移量 下一页开始位置
+                    self.page_offset_list.push(page_offset + start);
                 }
             }
         }
-        self.max_line_num = start_line_num + line_num + 1;
+
+        self.max_line_num = start_line_num + line_num;
         self.max_page_num = page_num;
         self.eof = true;
         return self.max_line_num;
@@ -251,6 +286,7 @@ impl<T: SimpleText> SimpleTextEngine<T> {
         assert!(line_num >= 1);
         //获取页数
         let page_num = self.get_page_num(line_num);
+        // println!("page_num:{}", page_num);
         let index = (page_num - 1) / PAGE_GROUP;
         let page_offset = if index >= self.page_offset_list.len() {
             *self.page_offset_list.last().unwrap()
@@ -296,17 +332,20 @@ impl<T: SimpleText> SimpleTextEngine<T> {
     ) -> (Option<Vec<&'a str>>, Vec<LineMeta>) {
         //获取这行所在的页数
         let mmap = self.text.cursor(page_offset);
+        let max_bytes = mmap.len();
         let mut split_lines = Vec::new();
         let mut line_meta_list = Vec::new();
         let mut start = 0;
         let start_line_num = start_page_num * self.height;
         let mut line_num = 0;
         let mut page_num = start_page_num;
+        let mut last_u8 = 0u8;
         for (i, byte) in mmap.iter().enumerate() {
-            if *byte == b'\n' || i == self.max_bytes.saturating_sub(1) {
+            last_u8 = *byte;
+            if *byte == b'\n' || i == max_bytes - 1 {
                 let line = &mmap[start..=i];
                 let line_txt = std::str::from_utf8(line).unwrap();
-                let mut current_width = 0; //最近的矿都
+                let mut current_width = 0; //
                 let mut line_offset = 0; //
                 let mut current_bytes = 0;
                 for ch in line_txt.chars() {
@@ -322,11 +361,10 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                             let n = page_num % PAGE_GROUP;
                             if n == 0 && m > self.page_offset_list.len() - 1 {
                                 //保存页数的偏移量
-                                self.page_offset_list.push(page_offset + end + 1);
+                                self.page_offset_list.push(page_offset + start + end);
                             }
                         }
-                        if line_num < skip_line {
-                        } else {
+                        if line_num >= skip_line {
                             let txt = &line_txt[line_offset..end];
                             if pattern.len() > 0 {
                                 let m = self.fuzzy.find(pattern, txt, is_exact);
@@ -362,8 +400,7 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                             self.page_offset_list.push(page_offset + i + 1);
                         }
                     }
-                    if line_num < skip_line {
-                    } else {
+                    if line_num >= skip_line {
                         let txt = &line_txt[line_offset..];
                         if pattern.len() > 0 {
                             let m = self.fuzzy.find(pattern, txt, is_exact);
@@ -380,13 +417,26 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                             return (Some(split_lines), line_meta_list);
                         }
                     }
-                    start = i + 1;
+                }
+                start = i + 1;
+            }
+        }
+
+        if last_u8 == b'\n' {
+            line_num += 1;
+            if line_num % self.height == 0 {
+                page_num += 1; //页数加1
+                let m = page_num / PAGE_GROUP;
+                let n = page_num % PAGE_GROUP;
+                if n == 0 && m > self.page_offset_list.len() - 1 {
+                    //保存页数的偏移量
+                    self.page_offset_list.push(page_offset + start);
                 }
             }
         }
         //没有剩余
         if split_lines.len() < line_count {
-            self.max_line_num = start_line_num + line_num + 1;
+            self.max_line_num = start_line_num + line_num;
             self.max_page_num = page_num;
             self.eof = true;
         }
@@ -435,13 +485,13 @@ mod tests {
 
     #[test]
     fn test_get_last() -> io::Result<()> {
-        let file_path = "/opt/rsproject/chappie/vectorbase/src/disk.rs";
+        let file_path = "/opt/rsproject/chappie/crates/vectorbase/src/disk.rs";
         let mmap = map_file(file_path)?;
         // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
         // println!("{},{}", visible_content, length);
         // Ok(())
 
-        let mut eg = SimpleTextEngine::new(mmap, 37, 75);
+        let mut eg = SimpleTextEngine::new(mmap, 37, 10000);
         eg.get_line(100, "", true);
         println!("last_line:{}", eg.get_line_count());
         if let (Some(a1), _) = eg.get_line(1594 + 1, "", true) {
@@ -467,6 +517,37 @@ mod tests {
                 println!("{:?}", v);
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_string() -> io::Result<()> {
+        let mut eg = SimpleTextEngine::new(String::with_capacity(10), 3, 3);
+
+        let a = "12345\n22345\n32345\n";
+        eg.push_str(a);
+        let num = eg.get_line_count();
+        println!("{}", num);
+
+        let num = eg.get_line_count();
+        println!("{}", num);
+        let b = "42345\n52345\n62399\n";
+        eg.push_str(b);
+        let num = eg.get_line_count();
+        println!("{}", num);
+
+        let a = "12345\n22345\n32345\n";
+        eg.push_str(a);
+        let num = eg.get_line_count();
+        println!("{}", num);
+
+        let (line, _) = eg.get_line(8, "", false);
+        println!("{:?}", line.unwrap());
+
+        let (line, _) = eg.get_line(11, "", false);
+        println!("{:?}", line.unwrap());
+        println!("page_offset:{:?}", eg.page_offset_list);
+
         Ok(())
     }
 }

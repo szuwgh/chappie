@@ -71,21 +71,6 @@ impl<'a> SmithWaterman<'a> {
         if m > MAXDIMS {
             panic!("Cannot be larger than the maximum dimension 9182");
         }
-        // let l = self.cache.len();
-        // if m > l {
-        //     //扩容
-        //     self.cache.resize(min(MAXDIMS, max(l * 2, m)), 0);
-        // } else {
-        //     //缩容
-        //     if l > MINDIMS {
-        //         self.n += 1;
-        //         if self.n > 10 {
-        //             self.cache.truncate(max(MINDIMS, max(l / 5, m))); // 将 Vec 的长度缩小到 3
-        //             self.cache.shrink_to_fit(); // 将容量缩小到当前元素数
-        //             self.n = 0;
-        //         }
-        //     }
-        // }
         let alloc = &mut self.cache[..m];
         alloc.fill(0);
         let mut score_matrix = Matrix::new(alloc, len1 + 1, len2 + 1);

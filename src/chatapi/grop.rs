@@ -1,37 +1,47 @@
 use crate::ChapResult;
+use async_trait::async_trait;
 use groq_api_rs::completion::client::CompletionOption;
 use groq_api_rs::completion::{client::Groq, message::Message, request::builder};
+use llmapi::*;
 
 unsafe impl Send for GroqApi {}
 unsafe impl Sync for GroqApi {}
 
+#[register_llmapi]
 pub(crate) struct GroqApi {
     groq: Groq,
+    model: String,
 }
 
-impl GroqApi {
-    pub(crate) fn new(api_key: &str) -> GroqApi {
+#[async_trait]
+impl LlmApi for GroqApi {
+    fn new(api_key: &str, model: &str) -> Self
+    where
+        Self: Sized,
+    {
         GroqApi {
             groq: Groq::new(api_key),
+            model: model.to_string(),
         }
     }
 
-    pub(crate) async fn request(&mut self, message: String) -> String {
+    fn name() -> &'static str {
+        "groq"
+    }
+
+    async fn request(&mut self, message: &str) -> ChapResult<String> {
         let message = Message::UserMessage {
             role: Some("user".to_string()),
-            content: Some(message),
+            content: Some(message.to_string()),
             name: None,
             tool_call_id: None,
         };
-        let request = builder::RequestBuilder::new("llama3-8b-8192".to_string());
+        let request = builder::RequestBuilder::new(self.model.clone());
         self.groq.add_message(message);
-        let res = self.groq.create(request).await;
+        let res = self.groq.create(request).await?;
         match res {
-            Ok(v) => match v {
-                CompletionOption::NonStream(v) => return v.choices[0].message.content.to_string(),
-                CompletionOption::Stream(v) => todo!(),
-            },
-            Err(e) => return "grop api connection error".to_string(),
+            CompletionOption::NonStream(v) => return Ok(v.choices[0].message.content.to_string()),
+            CompletionOption::Stream(v) => todo!(),
         }
     }
 }

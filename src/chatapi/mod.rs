@@ -1,65 +1,43 @@
+use anyhow::Ok;
+use async_trait::async_trait;
 use llmapi::*;
+
+use crate::error::{ChapError, ChapResult};
 pub(crate) mod grop;
 pub(crate) struct LlmClient {
-    //llm_api: Box<dyn LlmApi>,
+    llm_api: Box<dyn LlmApi>,
 }
 
-#[register_llmapi]
-pub(crate) struct Example {}
-
-impl LlmApi for Example {
-    fn new(api_key: &str, model: &str) -> Self
-    where
-        Self: Sized,
-    {
-        Example {}
+impl LlmClient {
+    pub(crate) fn new(_t: &str, api_key: &str, model: &str) -> ChapResult<LlmClient> {
+        let llm_api = llmapi::get_llmapi(_t, api_key, model)
+            .ok_or(ChapError::LLMNotRegistered(_t.to_string()))?;
+        Ok(LlmClient { llm_api: llm_api })
     }
 
-    fn name() -> &'static str {
-        "example"
-    }
-
-    fn req(&mut self, message: String) -> String {
-        return "example".to_string();
+    pub async fn request(&mut self, message: &str) -> ChapResult<String> {
+        self.llm_api.request(message).await
     }
 }
 
 #[register_llmapi]
-pub(crate) struct Example2 {}
+pub(crate) struct EmptyLLM {}
 
-impl LlmApi for Example2 {
+#[async_trait]
+impl LlmApi for EmptyLLM {
     fn new(api_key: &str, model: &str) -> Self
     where
         Self: Sized,
     {
-        Example2 {}
+        EmptyLLM {}
     }
 
     fn name() -> &'static str {
-        "example2"
+        "empty"
     }
 
-    fn req(&mut self, message: String) -> String {
-        return "Example2".to_string();
-    }
-}
-
-#[register_llmapi]
-pub(crate) struct Init1 {}
-
-impl LlmApi for Init1 {
-    fn new(api_key: &str, model: &str) -> Self
-    where
-        Self: Sized,
-    {
-        Init1 {}
-    }
-
-    fn name() -> &'static str {
-        "Init1"
-    }
-    fn req(&mut self, message: String) -> String {
-        return "req Init1".to_string();
+    async fn request(&mut self, message: &str) -> ChapResult<String> {
+        return Ok("empty llm no answer".to_string());
     }
 }
 
@@ -70,25 +48,14 @@ mod tests {
     use llmapi::get_llmapi;
     #[test]
     fn test_llm() {
-        // let file_path = "/root/start_vpn.sh";
-        // let mmap = map_file(file_path)?;
-        // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
-        // println!("{},{}", visible_content, length);
-        // Ok(())
-        register("example", |apikey, model| Box::new(Example {}));
+        // // let file_path = "/root/start_vpn.sh";
+        // // let mmap = map_file(file_path)?;
+        // // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
+        // // println!("{},{}", visible_content, length);
+        // // Ok(())
+        // register("example", |apikey, model| Box::new(Example {}));
 
-        let mut r = get_llmapi("example", "", "");
-        println!("{}", r.req("".to_string()))
-    }
-
-    #[test]
-    fn test_reg_llm() {
-        // let file_path = "/root/start_vpn.sh";
-        // let mmap = map_file(file_path)?;
-        // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
-        // println!("{},{}", visible_content, length);
-        // Ok(())
-        println!("xx");
-        let r = Init1 {};
+        // let mut r = get_llmapi("example", "", "");
+        // // println!("{}", r.req("".to_string()))
     }
 }

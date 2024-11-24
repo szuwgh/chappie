@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 pub use ctor::ctor;
 pub use llmapi_macro::register_llmapi;
 use once_cell::sync::Lazy;
@@ -16,13 +17,15 @@ where
     }
 }
 
-pub fn get_llmapi(_t: &str, api_key: &str, model: &str) -> Box<dyn LlmApi> {
+pub fn get_llmapi(_t: &str, api_key: &str, model: &str) -> Option<Box<dyn LlmApi>> {
     unsafe {
-        let r = LLM_REGISTRY.get(_t).unwrap();
-        r(api_key, model)
+        let r = LLM_REGISTRY.get(_t)?;
+        Some(r(api_key, model))
     }
 }
-pub trait LlmApi {
+
+#[async_trait]
+pub trait LlmApi: Send {
     fn new(api_key: &str, model: &str) -> Self
     where
         Self: Sized;
@@ -30,5 +33,6 @@ pub trait LlmApi {
     fn name() -> &'static str
     where
         Self: Sized;
-    fn req(&mut self, message: String) -> String;
+
+    async fn request(&mut self, message: &str) -> anyhow::Result<String>;
 }
