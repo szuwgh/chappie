@@ -1,9 +1,12 @@
+pub(crate) mod gemini;
+pub(crate) mod grop;
+
 use anyhow::Ok;
 use async_trait::async_trait;
 use llmapi::*;
 
 use crate::error::{ChapError, ChapResult};
-pub(crate) mod grop;
+
 pub(crate) struct LlmClient {
     llm_api: Box<dyn LlmApi>,
 }

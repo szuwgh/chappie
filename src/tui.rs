@@ -388,7 +388,7 @@ impl ChapTui {
                         chat_eg.push_str(&msg);
                         chat_eg.push_str("\n");
                         let chat_item_end = chat_eg.get_line_count().max(1);
-                        debug!("chat_item:{:?}",(chat_item_start, chat_item_end-1));
+                        //debug!("chat_item:{:?}",(chat_item_start, chat_item_end-1));
                         chat_item
                             .push(ChatItemIndex(chat_item_start, chat_item_end-1));
                         break;
@@ -1071,10 +1071,10 @@ fn get_chat_content<'a>(
 ) -> Text<'a> {
     assert!(content.len() == line_meta.len());
     let mut lines = Vec::with_capacity(content.len());
-    debug!("{:?},{:?}", line_meta, chat_item);
+    //  debug!("{:?},{:?}", line_meta, chat_item);
     for (i, text) in content.into_iter().enumerate() {
         let line_num = line_meta[i].get_line_num();
-        debug!("text: {:?}", *text);
+        // debug!("text: {:?}", *text);
         if line_num >= chat_item.start() && line_num <= chat_item.end() {
             lines.push(Line::from(Span::styled(
                 *text,

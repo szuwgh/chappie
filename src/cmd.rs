@@ -7,16 +7,16 @@ pub(crate) struct Cli {
     #[arg(value_name = "FILE")]
     filepath: Option<String>,
 
-    #[arg(short = 'l', long, default_value = "groq", env = "LLM_NAME")]
+    #[arg(short = 'l', long, default_value = "groq", env = "CHAP_LLM_NAME")]
     llm: String,
 
-    #[arg(short = 'm', long, default_value = "llama3-8b-8192", env = "LLM_MODEL")]
-    model: String,
+    #[arg(short = 'm', long, env = "CHAP_LLM_MODEL")]
+    model: Option<String>,
 
-    #[arg(short = 'k', long, env = "LLM_API_KEY")]
+    #[arg(short = 'k', long, env = "CHAP_LLM_API_KEY")]
     api_key: String,
 
-    #[arg(value_enum, long, default_value = "full")]
+    #[arg(value_enum, long, default_value = "full", env = "CHAP_UI")]
     ui: UIType,
 
     #[arg(long = "vb", default_value_t = false)]
@@ -43,7 +43,11 @@ impl Cli {
     }
 
     pub(crate) fn get_model(&self) -> &str {
-        &self.model
+        if let Some(p) = &self.model {
+            return p;
+        } else {
+            return "";
+        }
     }
 
     pub(crate) fn get_api_key(&self) -> &str {

@@ -13,7 +13,7 @@ pub fn register_llmapi(attr: TokenStream, item: TokenStream) -> TokenStream {
     // 获取结构体的名字
     let struct_name = &input.ident;
 
-    let function_name_str = format!("{}_reg", struct_name);
+    let function_name_str = format!("{}_reg", struct_name.to_string().to_lowercase());
     let function_name = syn::Ident::new(&function_name_str, struct_name.span());
 
     // 生成额外的注册代码

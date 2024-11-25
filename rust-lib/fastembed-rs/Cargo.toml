@@ -1,0 +1,44 @@
+[package]
+name = "fastembed"
+version = "4.2.0"
+edition = "2021"
+description = "Rust implementation of https://github.com/qdrant/fastembed"
+license = "Apache-2.0"
+authors = [
+  "Anush008 <anushshetty90@gmail.com>",
+  "Josh Niemelä <josh@jniemela.dk>",
+  "GrisiaEvy <a115020115@gmail.com>",
+  "George MacKerron <georgemackerron@neon.tech>",
+  "Timon Vonk <mail@timonv.nl>",
+  "Luya Wang <luya.wang@qq.com>",
+  "Tri <tri@triandco.com>",
+  "Denny Wong <denwong47@hotmail.com>",
+  "Alex Rozgo <alex.rozgo@gmail.com>",
+]
+documentation = "https://docs.rs/fastembed"
+repository = "https://github.com/Anush008/fastembed-rs"
+homepage = "https://crates.io/crates/fastembed"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = { version = "1" }
+#hf-hub = { version = "0.3", default-features = false }
+hf-hub = {path = "../hf-hub", version = "0.3", default-features = false }
+image = "0.25.2"
+ndarray = { version = "0.16", default-features = false }
+ort = { version = "=2.0.0-rc.9", default-features = false, features = [
+  "ndarray",
+] }
+rayon = { version = "1.10", default-features = false }
+serde_json = { version = "1" }
+tokenizers = { version = "0.19", default-features = false, features = ["onig"] }
+
+[features]
+default = ["ort-download-binaries", "online"]
+online = ["hf-hub/online"]
+ort-download-binaries = ["ort/download-binaries"]
+ort-load-dynamic = ["ort/load-dynamic"]
+# This feature does not change any code, but is used to limit tests if
+# the user does not have `optimum-cli` or even python installed.
+optimum-cli = []
