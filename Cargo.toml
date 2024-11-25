@@ -51,5 +51,6 @@ anyhow = "1.0"
 simplelog = "0.12.2"
 log = "0.4"
 atty = "0.2.14"
+ask_gemini = {path = "rust-lib/ask_gemini", version = "0.1.4"}  
 
 

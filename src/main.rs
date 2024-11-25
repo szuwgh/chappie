@@ -5,6 +5,7 @@ mod error;
 mod fuzzy;
 mod vb;
 use std::io::{self, Read};
+use std::process::exit;
 mod chap;
 mod cmd;
 mod text;
