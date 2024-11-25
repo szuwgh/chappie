@@ -1,12 +1,11 @@
-use std::fmt::{Debug, Write};
+use std::fmt::Debug;
 
 use memmap2::Mmap;
 use unicode_width::UnicodeWidthChar;
 
 use crate::fuzzy::{FuzzySearch, Match};
 
-//每5页建立一个索引
-const PAGE_GROUP: usize = 2;
+const PAGE_GROUP: usize = 5;
 
 pub(crate) struct LineMeta {
     line_num: usize,
@@ -57,28 +56,28 @@ impl SimpleText for Mmap {
     }
 }
 
-pub(crate) struct SimpleString(String);
+// pub(crate) struct SimpleString(String);
 
-impl SimpleString {
-    pub(crate) fn new(s: String) -> SimpleString {
-        SimpleString(s)
-    }
-}
+// impl SimpleString {
+//     pub(crate) fn new(s: String) -> SimpleString {
+//         SimpleString(s)
+//     }
+// }
 
-impl SimpleText for SimpleString {
-    fn cursor(&self, offset: usize) -> &[u8] {
-        assert!(self.size() == 0 || offset < self.size());
-        &self.0.as_bytes()[offset..]
-    }
+// impl SimpleText for SimpleString {
+//     fn cursor(&self, offset: usize) -> &[u8] {
+//         assert!(self.size() == 0 || offset < self.size());
+//         &self.0.as_bytes()[offset..]
+//     }
 
-    fn size(&self) -> usize {
-        self.0.len()
-    }
+//     fn size(&self) -> usize {
+//         self.0.len()
+//     }
 
-    fn push_str(&mut self, msg: &str) {
-        self.0.push_str(msg);
-    }
-}
+//     fn push_str(&mut self, msg: &str) {
+//         self.0.push_str(msg);
+//     }
+// }
 
 impl SimpleText for String {
     fn cursor(&self, offset: usize) -> &[u8] {

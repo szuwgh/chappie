@@ -1,26 +1,24 @@
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
 use crate::text::LineMeta;
-use crate::text::SimpleString;
 use crate::text::SimpleText;
 use crate::text::SimpleTextEngine;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use crossterm::execute;
-use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::enable_raw_mode;
 use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::{
     cursor::{self, MoveTo},
-    event::{self, Event, KeyCode},
-    style::{self, Print},
-    terminal::{self, Clear, ClearType},
+    event::{self, KeyCode},
     ExecutableCommand,
 };
 use fastembed::TextEmbedding;
 use galois::Tensor;
 use log::debug;
-use memmap2::Mmap;
+
+use crate::cmd::UIType;
+use clap::ValueEnum;
 use ratatui::prelude::Backend;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
@@ -45,12 +43,6 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 use unicode_width::UnicodeWidthStr;
 use vectorbase::collection::Collection;
-
-pub(crate) enum UIType {
-    Full,
-    Lite,
-}
-
 pub(crate) struct ChapTui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     navi: Navigation,
@@ -60,7 +52,7 @@ pub(crate) struct ChapTui {
     chat_inp: ChatInput,
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
-    vb: Collection,
+    vdb: Option<Collection>,
     embed_model: Arc<TextEmbedding>,
     start_row: u16,
     llm_res_rx: mpsc::Receiver<String>,
@@ -148,7 +140,7 @@ enum ChatType {
 impl ChapTui {
     pub(crate) fn new(
         prompt_tx: mpsc::Sender<String>,
-        vb: Collection,
+        vdb: Option<Collection>,
         embed_model: Arc<TextEmbedding>,
         llm_res_rx: mpsc::Receiver<String>,
         ui_type: UIType,
@@ -196,34 +188,43 @@ impl ChapTui {
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
             .split(rect);
 
-        //文本框和输入框
-        let left_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(100), Constraint::Length(2)].as_ref())
-            .split(chunks[0]); // chunks[1] 是左侧区域
+        let (nav_chk, tv_chk, seach_chk, chat_tv_chk, chat_inp_chk) = {
+            //文本框和输入框
+            let left_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(100), Constraint::Length(2)].as_ref())
+                .split(chunks[0]); // chunks[1] 是左侧区域
 
-        //LLM聊天和输入框
-        let right_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(2)].as_ref())
-            .split(chunks[1]); // chunks[1] 是左侧区域
+            //LLM聊天和输入框
+            let right_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(2)].as_ref())
+                .split(chunks[1]); // chunks[1] 是左侧区域
 
-        //导航栏和文本框
-        let nav_text_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
-            .split(left_chunks[0]); // chunks[1] 是左侧区域
+            //导航栏和文本框
+            let nav_text_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
+                .split(left_chunks[0]); // chunks[1] 是左侧区域
 
-        let search_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
-            .split(left_chunks[1]); // chunks[1] 是左侧区域
+            let search_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
+                .split(left_chunks[1]); // chunks[1] 是左侧区域
+            (
+                nav_text_chunks[0],
+                nav_text_chunks[1],
+                search_chunks[1],
+                right_chunks[0],
+                right_chunks[1],
+            )
+        };
 
         let navi = Navigation {
             max_line: max_line,
             min_line: 0,
             cur_line: 0,
-            rect: nav_text_chunks[0],
+            rect: nav_chk,
             select_line: None,
         };
 
@@ -231,24 +232,24 @@ impl ChapTui {
             height: tv_heigth,
             width: tv_width,
             scroll: 1,
-            rect: nav_text_chunks[1],
+            rect: tv_chk,
         };
 
         let fuzzy_inp = FuzzyInput {
             input: String::new(),
-            rect: search_chunks[1],
+            rect: seach_chk,
         };
 
         let chat_tv = TextView {
             height: tv_heigth,
             width: chat_tv_width,
             scroll: 1,
-            rect: right_chunks[0],
+            rect: chat_tv_chk,
         };
 
         let chat_inp = ChatInput {
             input: String::new(),
-            rect: right_chunks[1],
+            rect: chat_inp_chk,
         };
 
         Ok(ChapTui {
@@ -260,7 +261,7 @@ impl ChapTui {
             chat_inp: chat_inp,
             focus: Focus::new(),
             prompt_tx: prompt_tx,
-            vb: vb,
+            vdb: vdb,
             embed_model: embed_model,
             start_row: start_row,
             llm_res_rx: llm_res_rx,
@@ -272,12 +273,11 @@ impl ChapTui {
         let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
 
         let mut chat_eg = SimpleTextEngine::new(
-            SimpleString::new(String::with_capacity(1024)),
+            String::with_capacity(1024),
             self.chat_tv.get_height(),
             self.chat_tv.get_width(),
         );
         let mut chat_index: usize = 0;
-        //let mut chat_scorll: usize = 1;
         let mut chat_item: Vec<ChatItemIndex> = Vec::new();
         let chat_type = ChatType::default();
         loop {
@@ -296,7 +296,6 @@ impl ChapTui {
                         .style(Style::default().fg(inp_clr)); // 设置输入框样式
                     f.render_widget(input_box, self.fuzzy_inp.get_rect());
                     let block = Block::default().borders(Borders::LEFT);
-
                     if let Some(c) = &tv_content {
                         let (navi, visible_content) = get_content(
                             c,
@@ -431,41 +430,44 @@ impl ChapTui {
                                     message.push_str("\n");
                                 }
                                 message.push_str(chat_inp);
-                                if let Ok(searcher) = self.vb.searcher().await {
-                                    let prompt_field_id =
-                                        self.vb.get_schema().get_field("prompt").unwrap();
-                                    let _id_field_id =
-                                        self.vb.get_schema().get_field("_id").unwrap();
-                                    let answer_field_id =
-                                        self.vb.get_schema().get_field("answer").unwrap();
-                                    let embeddings =
-                                        self.embed_model.embed(vec![&message], None).unwrap();
-                                    for (_, v) in embeddings.iter().enumerate() {
-                                        let tensor = Tensor::arr_slice(v);
-                                        for ns in searcher.query(&tensor, 1, None)? {
-                                            let v = searcher.vector(&ns)?;
-                                            let prompt = v
-                                                .doc()
-                                                .get_field_value(prompt_field_id)
-                                                .value()
-                                                .str();
-                                            let answer = v
-                                                .doc()
-                                                .get_field_value(answer_field_id)
-                                                .value()
-                                                .str();
-                                            let chat_item_start = chat_eg.get_line_count().max(1);
-                                            self.chat_tv.set_scroll(chat_item_start);
-                                            chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
-                                            chat_eg.push_str(answer);
-                                            chat_eg.push_str("\n");
-                                            let chat_item_end = chat_eg.get_line_count().max(1);
-                                            chat_item.push(ChatItemIndex(
-                                                chat_item_start,
-                                                chat_item_end - 1,
-                                            ));
-                                            self.chat_inp.clear();
-                                            chat_index = chat_item.len() - 1;
+                                if let Some(vb) = &self.vdb {
+                                    if let Ok(searcher) = vb.searcher().await {
+                                        let prompt_field_id =
+                                            vb.get_schema().get_field("prompt").unwrap();
+                                        let _id_field_id =
+                                            vb.get_schema().get_field("_id").unwrap();
+                                        let answer_field_id =
+                                            vb.get_schema().get_field("answer").unwrap();
+                                        let embeddings =
+                                            self.embed_model.embed(vec![&message], None).unwrap();
+                                        for (_, v) in embeddings.iter().enumerate() {
+                                            let tensor = Tensor::arr_slice(v);
+                                            for ns in searcher.query(&tensor, 1, None)? {
+                                                let v = searcher.vector(&ns)?;
+                                                let prompt = v
+                                                    .doc()
+                                                    .get_field_value(prompt_field_id)
+                                                    .value()
+                                                    .str();
+                                                let answer = v
+                                                    .doc()
+                                                    .get_field_value(answer_field_id)
+                                                    .value()
+                                                    .str();
+                                                let chat_item_start =
+                                                    chat_eg.get_line_count().max(1);
+                                                self.chat_tv.set_scroll(chat_item_start);
+                                                chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
+                                                chat_eg.push_str(answer);
+                                                chat_eg.push_str("\n");
+                                                let chat_item_end = chat_eg.get_line_count().max(1);
+                                                chat_item.push(ChatItemIndex(
+                                                    chat_item_start,
+                                                    chat_item_end - 1,
+                                                ));
+                                                self.chat_inp.clear();
+                                                chat_index = chat_item.len() - 1;
+                                            }
                                         }
                                     }
                                 }
@@ -501,7 +503,6 @@ impl ChapTui {
                                     if let (Some(msg), _) =
                                         chat_eg.get_start_end(item.start(), item.end())
                                     {
-                                        println!("get item{:?}", (item.start(), item.end()));
                                         println!("{}", msg.join(""));
                                     }
                                 }

@@ -1,9 +1,27 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "chappie"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+opt-level = 3
+debug = "none"
+strip = "symbols"
+debug-assertions = false
+overflow-checks = false
+lto = "fat"
+panic = "abort"
+incremental = false
+codegen-units = 1
+
+rustflags = [
+    "-C", "target-feature=+avx,+avx2,+fma,+f16c",
+    "-C", "target-cpu=native"
+]
 
 [workspace]
 members = [
@@ -13,7 +31,7 @@ members = [
 ]
 
 [dependencies]
-clap = { version ="4.4.6",features = ["derive"]}
+clap = { version ="4.4.6",features = ["derive", "env"]}
 crossterm = "0.28.1"
 memmap2 = "0.9.0"
 ratatui = "0.29.0"
@@ -24,12 +42,14 @@ groq-api-rs = "0.2.0"
 tokio = {version ="1.40.0",features = ["full"]}
 once_cell = "1.20.1"
 vectorbase = {path = "crates/vectorbase", version = "0.0.1"}
-fastembed = "4.1.0"
+#fastembed = "4.1.0"
+fastembed = {path = "rust-lib/fastembed-rs", version = "4.2.0"}
 galois = {path = "crates/galois", version = "0.1.0"}
 llmapi = {path = "crates/llmapi", version = "0.0.1"}
 async-trait = "0.1"
 anyhow = "1.0"
 simplelog = "0.12.2"
 log = "0.4"
+atty = "0.2.14"
 
 
