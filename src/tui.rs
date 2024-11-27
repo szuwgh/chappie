@@ -716,6 +716,9 @@ impl ChapTui {
                                     }
                                     FocusType::Chat => {
                                         // self.chat_tv.up_line();
+                                        if chat_index >= chat_item.len() {
+                                            break;
+                                        }
                                         let chat_item_index = &chat_item[chat_index];
                                         let start = chat_item_index.start();
                                         let pre_scorll = (self
@@ -754,6 +757,9 @@ impl ChapTui {
                                         match chat_type {
                                             ChatType::ChatTv => {
                                                 // 下一个item
+                                                if chat_index >= chat_item.len() {
+                                                    break;
+                                                }
                                                 let chat_item_index = &chat_item[chat_index];
                                                 let start = chat_item_index.start();
                                                 let end = chat_item_index.end();

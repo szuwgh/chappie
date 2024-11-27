@@ -19,7 +19,7 @@ pub(crate) struct Cli {
     #[arg(value_enum, long, default_value = "full", env = "CHAP_UI")]
     ui: UIType,
 
-    #[arg(long = "vb", default_value_t = false)]
+    #[arg(long = "vb", default_value_t = false, env = "CHAP_VB")]
     vb: bool,
 }
 
