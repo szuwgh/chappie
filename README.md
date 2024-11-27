@@ -2,7 +2,14 @@
 A simple command line tool that takes a text or file, performs a fuzzy search, and then asks the questions you care about in the large language model.
 store the results in vectorbase, generate embeddings 
 
+<img src="./docs/img1.png" style="zoom:60%;" />
+
 # Get start
+```
+$ chap filename
+```
+
+
 
 # Commands
 * `llm`: Choose a large language model API currently only supports `groq` and `gemini`,env is CHAP_LLM_NAME
