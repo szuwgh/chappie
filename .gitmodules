@@ -4,3 +4,6 @@
 [submodule "crates/galois"]
 	path = crates/galois
 	url = https://github.com/szuwgh/galois.git
+[submodule "crates/llm-rs"]
+        path = crates/llm-rs
+        url = https://github.com/szuwgh/llm-rs.git
