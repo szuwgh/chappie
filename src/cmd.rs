@@ -21,6 +21,9 @@ pub(crate) struct Cli {
 
     #[arg(long = "vb", default_value_t = false, env = "CHAP_VB")]
     vb: bool,
+
+    #[arg(short = 'q', long = "que", default_value_t = false)]
+    question: bool,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, ValueEnum)]
@@ -60,5 +63,9 @@ impl Cli {
 
     pub(crate) fn get_vb(&self) -> bool {
         self.vb
+    }
+
+    pub(crate) fn get_que(&self) -> bool {
+        self.question
     }
 }

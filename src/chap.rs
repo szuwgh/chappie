@@ -86,6 +86,7 @@ impl Chappie {
             embed.clone(),
             llm_res_rx,
             cli.get_ui_type(),
+            cli.get_que(),
         )?;
         let vb_c = vdb.clone();
         Self::req_llm(prompt_rx, llm_res_tx, vb_c, embed, schema, llm_client);

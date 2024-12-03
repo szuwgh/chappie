@@ -31,7 +31,9 @@ rustflags = [
 members = [
   "crates/vectorbase",
   "crates/galois", 
-  "crates/llmapi_macro", "crates/llmapi",
+  "crates/llmapi_macro", 
+  "crates/llmapi",
+  "crates/llm-rs",
 ]
 
 [dependencies]

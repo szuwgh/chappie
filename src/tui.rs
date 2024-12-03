@@ -57,6 +57,7 @@ pub(crate) struct ChapTui {
     start_row: u16,
     llm_res_rx: mpsc::Receiver<String>,
     ui_type: UIType,
+    que: bool,
 }
 
 enum FocusType {
@@ -144,6 +145,7 @@ impl ChapTui {
         embed_model: Arc<TextEmbedding>,
         llm_res_rx: mpsc::Receiver<String>,
         ui_type: UIType,
+        que: bool,
     ) -> ChapResult<ChapTui> {
         enable_raw_mode()?;
         io::stdout().execute(cursor::Show)?;
@@ -173,6 +175,9 @@ impl ChapTui {
                 (tui_height, tui_width, start_row)
             }
         };
+
+        if que {}
+
         // 文本框显示内容的高度
         let tv_heigth = (tui_height - 2) as usize;
         // 文本框显示内容的宽度
@@ -266,12 +271,12 @@ impl ChapTui {
             start_row: start_row,
             llm_res_rx: llm_res_rx,
             ui_type: ui_type,
+            que: que,
         })
     }
 
     pub(crate) async fn render<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
         let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
-
         let mut chat_eg = SimpleTextEngine::new(
             String::with_capacity(1024),
             self.chat_tv.get_height(),
@@ -799,6 +804,9 @@ impl ChapTui {
                             (KeyCode::Char(c), _) => {
                                 match self.focus.current() {
                                     FocusType::TxtFuzzy => {
+                                        if self.fuzzy_inp.get_inp().len() >= 10 {
+                                            break;
+                                        }
                                         self.fuzzy_inp.push(c); // 添加字符到输入缓冲区
                                         self.tv.set_scroll(1);
                                         break;
