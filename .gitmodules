@@ -7,3 +7,6 @@
 [submodule "crates/llm-rs"]
         path = crates/llm-rs
         url = https://github.com/szuwgh/llm-rs.git
+[submodule "crates/aerogel"]
+	path = crates/aerogel
+	url = https://github.com/szuwgh/aerogel.git

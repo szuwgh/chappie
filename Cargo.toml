@@ -34,6 +34,7 @@ members = [
   "crates/llmapi_macro", 
   "crates/llmapi",
   "crates/llm-rs",
+  "crates/aerogel",
 ]
 
 [dependencies]
@@ -52,6 +53,7 @@ vectorbase = {path = "crates/vectorbase", version = "0.0.1"}
 fastembed = {path = "rust-lib/fastembed-rs", version = "4.2.0"}
 galois = {path = "crates/galois", version = "0.1.0"}
 llmapi = {path = "crates/llmapi", version = "0.0.1"}
+aerogel = {path = "crates/aerogel", version = "0.1.0"}
 async-trait = "0.1"
 anyhow = "1.0"
 simplelog = "0.12.2"
