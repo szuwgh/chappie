@@ -30,7 +30,8 @@ rustflags = [
 [workspace]
 members = [
   "crates/vectorbase",
-  "crates/galois", 
+  "crates/wwml", 
+  "crates/wwml/galois-kernels", 
   "crates/llmapi_macro", 
   "crates/llmapi",
   "crates/llm-rs",
@@ -38,7 +39,7 @@ members = [
 ]
 
 [dependencies]
-clap = { version ="4.4.6",features = ["derive", "env"]}
+clap = { version ="4.4.6",features = ["derive", "env"]}  
 crossterm = "0.28.1"
 memmap2 = "0.9.0"
 ratatui = "0.29.0"
@@ -50,8 +51,8 @@ tokio = {version ="1.40.0",features = ["full"]}
 once_cell = "1.20.1"
 vectorbase = {path = "crates/vectorbase", version = "0.0.1"}
 #fastembed = "4.1.0"
-fastembed = {path = "rust-lib/fastembed-rs", version = "4.2.0"}
-galois = {path = "crates/galois", version = "0.1.0"}
+#fastembed = {path = "rust-lib/fastembed-rs", version = "4.2.0"}
+wwml =  "0.1.0"
 llmapi = {path = "crates/llmapi", version = "0.0.1"}
 aerogel = {path = "crates/aerogel", version = "0.1.0"}
 async-trait = "0.1"

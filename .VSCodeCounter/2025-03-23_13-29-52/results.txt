@@ -1,0 +1,53 @@
+Date : 2025-03-23 13:29:52
+Directory : /opt/rsproject/chappie/crates/vectorbase/src
+Total : 26 files,  7144 codes, 574 comments, 1086 blanks, all 8804 lines
+
+Languages
++----------+------------+------------+------------+------------+------------+
+| language | files      | code       | comment    | blank      | total      |
++----------+------------+------------+------------+------------+------------+
+| Rust     |         26 |      7,144 |        574 |      1,086 |      8,804 |
++----------+------------+------------+------------+------------+------------+
+
+Directories
++--------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                         | files      | code       | comment    | blank      | total      |
++--------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                            |         26 |      7,144 |        574 |      1,086 |      8,804 |
+| . (Files)                                                    |         14 |      5,488 |        231 |        808 |      6,527 |
+| ann                                                          |          3 |        595 |        251 |         92 |        938 |
+| util                                                         |          9 |      1,061 |         92 |        186 |      1,339 |
++--------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++--------------------------------------------------------------+----------+------------+------------+------------+------------+
+| filename                                                     | language | code       | comment    | blank      | total      |
++--------------------------------------------------------------+----------+------------+------------+------------+------------+
+| /opt/rsproject/chappie/crates/vectorbase/src/ann/annoy.rs    | Rust     |          6 |         34 |          6 |         46 |
+| /opt/rsproject/chappie/crates/vectorbase/src/ann/hnsw.rs     | Rust     |        458 |        196 |         64 |        718 |
+| /opt/rsproject/chappie/crates/vectorbase/src/ann/mod.rs      | Rust     |        131 |         21 |         22 |        174 |
+| /opt/rsproject/chappie/crates/vectorbase/src/buffer.rs       | Rust     |        521 |          0 |         64 |        585 |
+| /opt/rsproject/chappie/crates/vectorbase/src/collection.rs   | Rust     |        423 |         21 |         46 |        490 |
+| /opt/rsproject/chappie/crates/vectorbase/src/compaction.rs   | Rust     |         60 |          0 |          5 |         65 |
+| /opt/rsproject/chappie/crates/vectorbase/src/config.rs       | Rust     |        176 |          0 |         34 |        210 |
+| /opt/rsproject/chappie/crates/vectorbase/src/disk.rs         | Rust     |      1,183 |         79 |        165 |      1,427 |
+| /opt/rsproject/chappie/crates/vectorbase/src/lib.rs          | Rust     |      1,463 |        102 |        237 |      1,802 |
+| /opt/rsproject/chappie/crates/vectorbase/src/macros.rs       | Rust     |         17 |          0 |          2 |         19 |
+| /opt/rsproject/chappie/crates/vectorbase/src/query.rs        | Rust     |         72 |          0 |         16 |         88 |
+| /opt/rsproject/chappie/crates/vectorbase/src/schema.rs       | Rust     |      1,145 |         17 |        161 |      1,323 |
+| /opt/rsproject/chappie/crates/vectorbase/src/searcher.rs     | Rust     |        130 |          0 |         24 |        154 |
+| /opt/rsproject/chappie/crates/vectorbase/src/sql.rs          | Rust     |          1 |          0 |          1 |          2 |
+| /opt/rsproject/chappie/crates/vectorbase/src/task.rs         | Rust     |          2 |          0 |          2 |          4 |
+| /opt/rsproject/chappie/crates/vectorbase/src/tokenize.rs     | Rust     |          8 |          0 |          4 |         12 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/asyncio.rs | Rust     |        198 |          8 |         37 |        243 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/bloom.rs   | Rust     |        105 |          1 |         21 |        127 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/common.rs  | Rust     |        100 |          9 |         15 |        124 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/error.rs   | Rust     |        118 |          0 |         13 |        131 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/fs.rs      | Rust     |        406 |         20 |         65 |        491 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/fst.rs     | Rust     |         94 |         34 |         25 |        153 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/index.rs   | Rust     |         25 |         20 |          6 |         51 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/mod.rs     | Rust     |          8 |          0 |          1 |          9 |
+| /opt/rsproject/chappie/crates/vectorbase/src/util/time.rs    | Rust     |          7 |          0 |          3 |         10 |
+| /opt/rsproject/chappie/crates/vectorbase/src/wal.rs          | Rust     |        287 |         12 |         47 |        346 |
+| Total                                                        |          |      7,144 |        574 |      1,086 |      8,804 |
++--------------------------------------------------------------+----------+------------+------------+------------+------------+

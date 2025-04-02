@@ -1,13 +1,15 @@
 #![feature(variant_count)]
 #![feature(async_closure)]
+#![feature(let_chains)]
 mod chatapi;
 mod error;
 mod fuzzy;
 mod vb;
 use std::io::{self, Read};
-use std::process::exit;
 mod chap;
 mod cmd;
+mod edit;
+mod gap_buffer;
 mod text;
 mod tui;
 mod util;
@@ -21,9 +23,9 @@ use tui::ChapTui;
 fn main() -> ChapResult<()> {
     let cli = Cli::parse();
     if atty::is(atty::Stream::Stdin) {
-        let mmap = map_file(cli.get_filepath()?)?;
+        // let mmap = map_file(cli.get_filepath()?)?;
         let mut chap = Chappie::new(&cli)?;
-        chap.run(mmap)?;
+        chap.run2(cli.get_filepath()?)?;
     } else {
         let mut buffer = String::new();
         io::stdin().read_to_string(&mut buffer)?;

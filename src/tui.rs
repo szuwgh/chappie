@@ -1,3 +1,4 @@
+use crate::edit::EditTextBuffer;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
 use crate::text::LineMeta;
@@ -13,9 +14,9 @@ use crossterm::{
     event::{self, KeyCode},
     ExecutableCommand,
 };
-use fastembed::TextEmbedding;
-use galois::Tensor;
-use log::debug;
+use std::path::Path;
+//use fastembed::TextEmbedding;
+use wwml::Tensor;
 
 use crate::cmd::UIType;
 use clap::ValueEnum;
@@ -53,7 +54,7 @@ pub(crate) struct ChapTui {
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
     vdb: Option<Collection>,
-    embed_model: Arc<TextEmbedding>,
+    //embed_model: Arc<TextEmbedding>,
     start_row: u16,
     llm_res_rx: mpsc::Receiver<String>,
     ui_type: UIType,
@@ -142,7 +143,7 @@ impl ChapTui {
     pub(crate) fn new(
         prompt_tx: mpsc::Sender<String>,
         vdb: Option<Collection>,
-        embed_model: Arc<TextEmbedding>,
+        // embed_model: Arc<TextEmbedding>,
         llm_res_rx: mpsc::Receiver<String>,
         ui_type: UIType,
         que: bool,
@@ -267,12 +268,135 @@ impl ChapTui {
             focus: Focus::new(),
             prompt_tx: prompt_tx,
             vdb: vdb,
-            embed_model: embed_model,
+            //  embed_model: embed_model,
             start_row: start_row,
             llm_res_rx: llm_res_rx,
             ui_type: ui_type,
             que: que,
         })
+    }
+
+    pub(crate) async fn render2<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        let mut edit =
+            EditTextBuffer::from_file_path(p, self.tv.get_height(), self.tv.get_width()).unwrap();
+        let mut cursor_x: usize = 0;
+        let mut cursor_y: usize = 0;
+        let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
+        let mut is_head: bool = false; //是否在行的末尾删除 否则在所在行的头删除
+        loop {
+            let line_meta = {
+                let (content, meta) =
+                    edit.get_line_content(self.tv.get_scroll(), self.tv.get_height());
+                self.terminal.draw(|f| {
+                    let (navi, visible_content) = get_content2(
+                        content,
+                        &meta,
+                        self.navi.get_cur_line(),
+                        &self.navi.select_line,
+                        self.tv.get_height(),
+                        cursor_y,
+                        cursor_x,
+                    );
+                    let text_para = Paragraph::new(visible_content)
+                        .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                        .style(Style::default().fg(Color::White));
+                    f.render_widget(text_para, self.tv.get_rect());
+                })?;
+                meta
+            };
+
+            loop {
+                if let event::Event::Key(KeyEvent {
+                    code, modifiers, ..
+                }) = event::read()?
+                {
+                    match (code, modifiers) {
+                        (KeyCode::Up, _) => {
+                            cursor_y = cursor_y.saturating_sub(1);
+                            is_last = false;
+                            is_head = false;
+                        }
+                        (KeyCode::Down, _) => {
+                            if cursor_y < self.tv.get_height() - 1 {
+                                cursor_y += 1;
+                            }
+                            is_last = false;
+                            is_head = false;
+                        }
+                        (KeyCode::Left, _) => {
+                            if cursor_x == 0 {
+                                cursor_y = cursor_y.saturating_sub(1);
+                                cursor_x = self.tv.get_width() - 1;
+                            } else {
+                                cursor_x = cursor_x.saturating_sub(1);
+                            }
+                            is_last = false;
+                            is_head = false;
+                        }
+                        (KeyCode::Right, _) => {
+                            if cursor_x < self.tv.get_width() {
+                                cursor_x += 1;
+                                if cursor_x >= self.tv.get_width()
+                                    && cursor_y < self.tv.get_height()
+                                {
+                                    cursor_x = 0;
+                                    cursor_y += 1;
+                                }
+                            }
+                            is_last = false;
+                            is_head = false;
+                        }
+                        (KeyCode::Enter, _) => {
+                            edit.insert_newline(cursor_y, cursor_x);
+                            if cursor_y < self.tv.get_height() - 1 {
+                                cursor_y += 1;
+                            }
+                            cursor_x = 0;
+                        }
+                        (KeyCode::Backspace, _) => {
+                            if cursor_y == 0 && cursor_x == 0 {
+                                break;
+                            }
+                            edit.backspace(cursor_y, cursor_x);
+                            if cursor_x == 0 {
+                                // let with = //content[cursor_y - 1].get_txt().len();
+                                cursor_x = line_meta[cursor_y - 1].get_txt_len();
+                                cursor_y = cursor_y.saturating_sub(1);
+                            } else {
+                                cursor_x = cursor_x.saturating_sub(1);
+                            }
+                        }
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            crossterm::terminal::disable_raw_mode()?;
+                            exit(0);
+                        }
+                        (KeyCode::Char(c), _) => {
+                            if cursor_x == 0 && is_last {
+                                edit.insert(cursor_y - 1, self.tv.get_width(), c);
+                                is_last = false;
+                            } else {
+                                edit.insert(cursor_y, cursor_x, c);
+                            }
+                            if cursor_x < self.tv.get_width() {
+                                cursor_x += 1;
+                                if cursor_x >= self.tv.get_width()
+                                    && cursor_y < self.tv.get_height()
+                                {
+                                    //不断添加字符 还是续接上一行
+                                    is_last = true;
+                                    cursor_x = 0;
+                                    cursor_y += 1;
+                                }
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                break;
+            }
+        }
+        todo!()
     }
 
     pub(crate) async fn render<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
@@ -288,7 +412,7 @@ impl ChapTui {
         loop {
             let line_meta = {
                 let (inp, is_exact) = self.fuzzy_inp.get_inp_exact();
-                let (tv_content, line_meta) = eg.get_line(self.tv.get_scroll(), inp, is_exact);
+                let (txt, line_meta) = eg.get_line(self.tv.get_scroll(), inp, is_exact);
                 self.terminal.draw(|f| {
                     let (txt_clr, inp_clr, chat_clr_, chat_inp_clr) = self.focus.get_colors();
                     // 左下输入框区
@@ -301,7 +425,7 @@ impl ChapTui {
                         .style(Style::default().fg(inp_clr)); // 设置输入框样式
                     f.render_widget(input_box, self.fuzzy_inp.get_rect());
                     let block = Block::default().borders(Borders::LEFT);
-                    if let Some(c) = &tv_content {
+                    if let Some(c) = &txt {
                         let (navi, visible_content) = get_content(
                             c,
                             &line_meta,
@@ -326,11 +450,11 @@ impl ChapTui {
 
                     match chat_type {
                         ChatType::ChatTv => {
-                            let (chat_content, chat_line_meta) =
+                            let (chat_line_meta, meta) =
                                 chat_eg.get_line(self.chat_tv.get_scroll(), "", is_exact);
-                            if let Some(c) = &chat_content {
+                            if let Some(c) = &chat_line_meta {
                                 let chat_content =
-                                    get_chat_content(&c, &chat_line_meta, &chat_item[chat_index]);
+                                    get_chat_content(c, &meta, &chat_item[chat_index]);
                                 let chat_tv = Paragraph::new(chat_content)
                                     .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
                                     .style(Style::default().fg(chat_clr_));
@@ -443,37 +567,37 @@ impl ChapTui {
                                             vb.get_schema().get_field("_id").unwrap();
                                         let answer_field_id =
                                             vb.get_schema().get_field("answer").unwrap();
-                                        let embeddings =
-                                            self.embed_model.embed(vec![&message], None).unwrap();
-                                        for (_, v) in embeddings.iter().enumerate() {
-                                            let tensor = Tensor::arr_slice(v);
-                                            for ns in searcher.query(&tensor, 1, None)? {
-                                                let v = searcher.vector(&ns)?;
-                                                let prompt = v
-                                                    .doc()
-                                                    .get_field_value(prompt_field_id)
-                                                    .value()
-                                                    .str();
-                                                let answer = v
-                                                    .doc()
-                                                    .get_field_value(answer_field_id)
-                                                    .value()
-                                                    .str();
-                                                let chat_item_start =
-                                                    chat_eg.get_line_count().max(1);
-                                                self.chat_tv.set_scroll(chat_item_start);
-                                                chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
-                                                chat_eg.push_str(answer);
-                                                chat_eg.push_str("\n");
-                                                let chat_item_end = chat_eg.get_line_count().max(1);
-                                                chat_item.push(ChatItemIndex(
-                                                    chat_item_start,
-                                                    chat_item_end - 1,
-                                                ));
-                                                self.chat_inp.clear();
-                                                chat_index = chat_item.len() - 1;
-                                            }
-                                        }
+                                        // let embeddings =
+                                        //     self.embed_model.embed(vec![&message], None).unwrap();
+                                        // for (_, v) in embeddings.iter().enumerate() {
+                                        //     let tensor = Tensor::arr_slice(v, &wwml::Device::Cpu)?;
+                                        //     for ns in searcher.query(&tensor, 1, None)? {
+                                        //         let v = searcher.vector(&ns)?;
+                                        //         let prompt = v
+                                        //             .doc()
+                                        //             .get_field_value(prompt_field_id)
+                                        //             .value()
+                                        //             .str();
+                                        //         let answer = v
+                                        //             .doc()
+                                        //             .get_field_value(answer_field_id)
+                                        //             .value()
+                                        //             .str();
+                                        //         let chat_item_start =
+                                        //             chat_eg.get_line_count().max(1);
+                                        //         self.chat_tv.set_scroll(chat_item_start);
+                                        //         chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
+                                        //         chat_eg.push_str(answer);
+                                        //         chat_eg.push_str("\n");
+                                        //         let chat_item_end = chat_eg.get_line_count().max(1);
+                                        //         chat_item.push(ChatItemIndex(
+                                        //             chat_item_start,
+                                        //             chat_item_end - 1,
+                                        //         ));
+                                        //         self.chat_inp.clear();
+                                        //         chat_index = chat_item.len() - 1;
+                                        //     }
+                                        // }
                                     }
                                 }
                                 break;
@@ -508,7 +632,7 @@ impl ChapTui {
                                     if let (Some(msg), _) =
                                         chat_eg.get_start_end(item.start(), item.end())
                                     {
-                                        println!("{}", msg.join(""));
+                                        //println!("{}", msg.join(""));
                                     }
                                 }
                                 // self.terminal.backend_mut().flush()?;
@@ -557,13 +681,11 @@ impl ChapTui {
                                     }
                                     let mut message = String::new();
                                     if let Some((start_line, end_line)) = self.navi.select_line {
-                                        if let (Some(line), _) =
-                                            eg.get_start_end(start_line, end_line)
-                                        {
-                                            for l in line.iter() {
-                                                message.push_str(l);
-                                            }
-                                        }
+                                        // if let Some(line) = eg.get_start_end(start_line, end_line) {
+                                        //     for l in line.iter() {
+                                        //         message.push_str(l.get_txt());
+                                        //     }
+                                        // }
                                         message.push_str("\n");
                                     }
                                     message.push_str(chat_inp);
@@ -1079,39 +1201,110 @@ impl ChatInput {
 }
 
 fn get_chat_content<'a>(
-    content: &'a Vec<&'a str>,
+    txts: &Vec<&'a str>,
     line_meta: &Vec<LineMeta>,
     chat_item: &ChatItemIndex,
 ) -> Text<'a> {
-    assert!(content.len() == line_meta.len());
-    let mut lines = Vec::with_capacity(content.len());
+    let mut lines = Vec::with_capacity(line_meta.len());
     //  debug!("{:?},{:?}", line_meta, chat_item);
-    for (i, text) in content.into_iter().enumerate() {
+    for (i, txt) in txts.into_iter().enumerate() {
         let line_num = line_meta[i].get_line_num();
         // debug!("text: {:?}", *text);
         if line_num >= chat_item.start() && line_num <= chat_item.end() {
             lines.push(Line::from(Span::styled(
-                *text,
+                *txt,
                 Style::default().fg(Color::Green),
             )));
         } else {
-            lines.push(Line::from(*text));
+            lines.push(Line::from(*txt));
         }
     }
     let text = Text::from(lines);
     text
 }
 
+fn n_chars(s: &str, n: usize) -> (&str, &str, &str) {
+    // 使用 char_indices 获取每个字符的起始字节位置
+    let mut iter = s.char_indices();
+    // 获取第 n 个字符的起始字节位置；如果不存在则取整个字符串长度
+    let start = iter.nth(n).map(|(idx, _)| idx).unwrap_or(s.len());
+    let end = iter.next().map(|(i, _)| i).unwrap_or(s.len());
+    (&s[..start], &s[start..end], &s[end..])
+}
+
+fn get_content2<'a>(
+    txts: Vec<&'a str>,
+    line_meta: &'a Vec<LineMeta>,
+    cur_line: usize,
+    select_line: &Option<(usize, usize)>,
+    height: usize,
+    cursor_y: usize,
+    cursor_x: usize,
+) -> (Text<'a>, Text<'a>) {
+    // assert!(content.len() == line_meta.len());
+    let mut lines = Vec::with_capacity(line_meta.len());
+    for (i, txt) in txts.into_iter().enumerate() {
+        if cursor_y == i {
+            let mut spans = Vec::new();
+            let (a, b, c) = n_chars(txt, cursor_x);
+            if b.len() > 0 {
+                spans.push(Span::raw(a));
+                spans.push(Span::styled(b, Style::default().bg(Color::LightRed)));
+                spans.push(Span::raw(c));
+            } else {
+                spans.push(Span::raw(txt));
+                let diff = cursor_x - txt.len();
+                let padding = " ".repeat(diff);
+                spans.push(Span::raw(padding));
+                // 在填充后显示高亮的光标
+                spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+            }
+            lines.push(Line::from(spans));
+        } else {
+            lines.push(Line::from(txt));
+        }
+    }
+    if cursor_y >= line_meta.len() {
+        let diff = cursor_y - line_meta.len();
+        for _ in 0..diff {
+            lines.push(Line::raw(""));
+        }
+        let mut spans = Vec::new();
+        let padding = " ".repeat(cursor_x);
+        spans.push(Span::raw(padding));
+        // 在填充后显示高亮的光标
+        spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+        lines.push(Line::from(spans));
+    }
+
+    let nav_text = Text::from(
+        (0..height)
+            .enumerate()
+            .map(|(i, _)| {
+                if i == cur_line {
+                    Line::from(Span::styled(">", Style::default().fg(Color::LightRed)))
+                // 高亮当前行
+                } else {
+                    Line::from(" ") // 非当前行为空白
+                }
+            })
+            .collect::<Vec<Line>>(),
+    );
+
+    let text = Text::from(lines);
+    (nav_text, text)
+}
+
 fn get_content<'a>(
-    content: &'a Vec<&str>,
-    line_meta: &Vec<LineMeta>,
+    txts: &'a Vec<&str>,
+    line_meta: &'a Vec<LineMeta>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
     height: usize,
 ) -> (Text<'a>, Text<'a>) {
-    assert!(content.len() == line_meta.len());
-    let mut lines = Vec::with_capacity(content.len());
-    for (i, text) in content.into_iter().enumerate() {
+    // assert!(content.len() == line_meta.len());
+    let mut lines = Vec::with_capacity(line_meta.len());
+    for (i, txt) in txts.into_iter().enumerate() {
         let mut spans = Vec::new();
         let mf = line_meta[i].get_match(); //fuzzy_search(input, text, false);
         if let Some(m) = mf {
@@ -1122,13 +1315,13 @@ fn get_content<'a>(
                 Match::Byte(v) => {
                     let mut current_idx = 0;
                     for bm in v.into_iter() {
-                        if current_idx < bm.start && bm.start <= text.len() {
-                            spans.push(Span::raw(&text[current_idx..bm.start]));
+                        if current_idx < bm.start && bm.start <= txt.len() {
+                            spans.push(Span::raw(&txt[current_idx..bm.start]));
                         }
                         // 添加高亮文本
-                        if bm.start < text.len() && bm.end <= text.len() {
+                        if bm.start < txt.len() && bm.end <= txt.len() {
                             spans.push(Span::styled(
-                                &text[bm.start..bm.end],
+                                &txt[bm.start..bm.end],
                                 Style::default().bg(Color::Green),
                             ));
                         }
@@ -1136,8 +1329,8 @@ fn get_content<'a>(
                         current_idx = bm.end;
                     }
                     // 添加剩余的文本（如果有）
-                    if current_idx < text.len() {
-                        spans.push(Span::raw(&text[current_idx..]));
+                    if current_idx < txt.len() {
+                        spans.push(Span::raw(&txt[current_idx..]));
                     }
                 }
             }
@@ -1147,27 +1340,27 @@ fn get_content<'a>(
                 || i == cur_line
             {
                 lines.push(Line::from(Span::styled(
-                    *text,
+                    *txt,
                     Style::default().bg(Color::LightRed), // 设置背景颜色为红色
                 )));
             } else {
                 if spans.len() > 0 {
                     lines.push(Line::from(spans));
                 } else {
-                    lines.push(Line::from(*text));
+                    lines.push(Line::from(*txt));
                 }
             }
         } else {
             if i == cur_line {
                 lines.push(Line::from(Span::styled(
-                    *text,
+                    *txt,
                     Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
                 )));
             } else {
                 if spans.len() > 0 {
                     lines.push(Line::from(spans));
                 } else {
-                    lines.push(Line::from(*text));
+                    lines.push(Line::from(*txt));
                 }
             }
         }
@@ -1199,12 +1392,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mmap() -> io::Result<()> {
-        // let file_path = "/root/start_vpn.sh";
-        // let mmap = map_file(file_path)?;
-        // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
-        // println!("{},{}", visible_content, length);
-        // Ok(())
+    fn test_n_chars() -> io::Result<()> {
+        let s = "Helloworld!";
+        let (a, b, c) = n_chars(s, 5);
+        println!("a:{},b:{},c:{}", a, b, c);
         Ok(())
     }
 }

@@ -1,0 +1,13 @@
+"filename", "language", "Rust", "comment", "blank", "total"
+"/opt/rsproject/chappie/crates/galois/src/cuda.rs", "Rust", 1649, 14, 137, 1800
+"/opt/rsproject/chappie/crates/galois/src/error.rs", "Rust", 82, 12, 11, 105
+"/opt/rsproject/chappie/crates/galois/src/ggml_quants.rs", "Rust", 694, 10, 94, 798
+"/opt/rsproject/chappie/crates/galois/src/kernels.rs", "Rust", 21, 0, 2, 23
+"/opt/rsproject/chappie/crates/galois/src/lib.rs", "Rust", 2277, 589, 396, 3262
+"/opt/rsproject/chappie/crates/galois/src/macros.rs", "Rust", 10, 0, 1, 11
+"/opt/rsproject/chappie/crates/galois/src/op.rs", "Rust", 1663, 1513, 487, 3663
+"/opt/rsproject/chappie/crates/galois/src/shape.rs", "Rust", 464, 61, 91, 616
+"/opt/rsproject/chappie/crates/galois/src/simd.rs", "Rust", 0, 0, 2, 2
+"/opt/rsproject/chappie/crates/galois/src/similarity.rs", "Rust", 164, 8, 26, 198
+"/opt/rsproject/chappie/crates/galois/src/zip.rs", "Rust", 89, 12, 17, 118
+"Total", "-", 7113, 2219, 1264, 10596
