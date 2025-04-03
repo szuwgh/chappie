@@ -278,11 +278,10 @@ impl ChapTui {
 
     pub(crate) async fn render2<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
         let mut edit =
-            EditTextBuffer::from_file_path(p, self.tv.get_height(), self.tv.get_width()).unwrap();
+            EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
         let mut cursor_x: usize = 0;
         let mut cursor_y: usize = 0;
         let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
-        let mut is_head: bool = false; //是否在行的末尾删除 否则在所在行的头删除
         loop {
             let line_meta = {
                 let (content, meta) =
@@ -301,6 +300,15 @@ impl ChapTui {
                         .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
                         .style(Style::default().fg(Color::White));
                     f.render_widget(text_para, self.tv.get_rect());
+
+                    let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                        .block(
+                            Block::default()
+                                .title("cmd")
+                                .borders(Borders::TOP | Borders::LEFT),
+                        )
+                        .style(Style::default().fg(Color::White)); // 设置输入框样式
+                    f.render_widget(input_box, self.fuzzy_inp.get_rect());
                 })?;
                 meta
             };
@@ -314,14 +322,12 @@ impl ChapTui {
                         (KeyCode::Up, _) => {
                             cursor_y = cursor_y.saturating_sub(1);
                             is_last = false;
-                            is_head = false;
                         }
                         (KeyCode::Down, _) => {
                             if cursor_y < self.tv.get_height() - 1 {
                                 cursor_y += 1;
                             }
                             is_last = false;
-                            is_head = false;
                         }
                         (KeyCode::Left, _) => {
                             if cursor_x == 0 {
@@ -331,7 +337,6 @@ impl ChapTui {
                                 cursor_x = cursor_x.saturating_sub(1);
                             }
                             is_last = false;
-                            is_head = false;
                         }
                         (KeyCode::Right, _) => {
                             if cursor_x < self.tv.get_width() {
@@ -344,9 +349,9 @@ impl ChapTui {
                                 }
                             }
                             is_last = false;
-                            is_head = false;
                         }
                         (KeyCode::Enter, _) => {
+                            self.fuzzy_inp.clear();
                             edit.insert_newline(cursor_y, cursor_x);
                             if cursor_y < self.tv.get_height() - 1 {
                                 cursor_y += 1;
@@ -354,12 +359,12 @@ impl ChapTui {
                             cursor_x = 0;
                         }
                         (KeyCode::Backspace, _) => {
+                            self.fuzzy_inp.clear();
                             if cursor_y == 0 && cursor_x == 0 {
                                 break;
                             }
                             edit.backspace(cursor_y, cursor_x);
                             if cursor_x == 0 {
-                                // let with = //content[cursor_y - 1].get_txt().len();
                                 cursor_x = line_meta[cursor_y - 1].get_txt_len();
                                 cursor_y = cursor_y.saturating_sub(1);
                             } else {
@@ -367,10 +372,26 @@ impl ChapTui {
                             }
                         }
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            //退出
                             crossterm::terminal::disable_raw_mode()?;
+                            execute!(
+                                self.terminal.backend_mut(),
+                                LeaveAlternateScreen // 离开备用屏幕
+                            )?;
                             exit(0);
                         }
+                        (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                            self.fuzzy_inp.clear();
+                            //保存
+                            if let Ok(_) = edit.save(&p) {
+                                self.fuzzy_inp.push_str("saved");
+                            } else {
+                                self.fuzzy_inp.push_str("save fail");
+                            }
+                            break;
+                        }
                         (KeyCode::Char(c), _) => {
+                            self.fuzzy_inp.clear();
                             if cursor_x == 0 && is_last {
                                 edit.insert(cursor_y - 1, self.tv.get_width(), c);
                                 is_last = false;
@@ -1093,6 +1114,10 @@ impl FuzzyInput {
 
     fn push(&mut self, c: char) {
         self.input.push(c);
+    }
+
+    fn push_str(&mut self, c: &str) {
+        self.input.push_str(c);
     }
 
     fn pop(&mut self) {

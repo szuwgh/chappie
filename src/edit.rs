@@ -1,7 +1,8 @@
 use crate::util::read_lines;
 use crate::{error::ChapResult, gap_buffer::GapBuffer};
-use ratatui::symbols::line;
-use std::path::Path;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthChar;
 const PAGE_GROUP: usize = 1;
 use crate::text::LineMeta;
@@ -19,12 +20,6 @@ struct PageOffset {
     line_index: usize,
     line_start: usize,
 }
-
-// struct LineMeta {
-//     line_num: usize,   // 行号
-//     line_start: usize, // 行的起始位置
-//     line_end: usize,   // 行的结束位置
-// }
 
 impl EditTextBuffer {
     pub(crate) fn from_file_path<P: AsRef<Path>>(
@@ -93,6 +88,42 @@ impl EditTextBuffer {
         }
         let line_offset = shirt * self.with + cursor_x;
         (line_index, line_offset)
+    }
+
+    pub(crate) fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
+        let backup_name = Self::get_backup_name(&filepath)?;
+        self.make_backup(&backup_name)?;
+        Self::rename_backup(&filepath, &backup_name)?;
+        Ok(())
+    }
+
+    fn get_backup_name<P: AsRef<Path>>(filepath: P) -> ChapResult<PathBuf> {
+        let mut path = filepath.as_ref().to_path_buf();
+        if let Some(file_name) = path.file_name() {
+            path.set_file_name(format!(".{}.{}", file_name.to_string_lossy(), "chap"));
+        }
+        Ok(path)
+    }
+
+    fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
+        // 备份文件
+        let file = std::fs::File::create(backup_name).unwrap();
+        let mut w = std::io::BufWriter::new(&file);
+        for line in &mut self.lines {
+            let txt = line.text();
+            w.write(txt.as_bytes()).unwrap();
+            w.write(b"\n").unwrap();
+        }
+        w.flush()?;
+        Ok(())
+    }
+
+    fn rename_backup<P1: AsRef<Path>, P2: AsRef<Path>>(
+        filepath: P1,
+        backup_name: P2,
+    ) -> ChapResult<()> {
+        fs::rename(backup_name, filepath)?;
+        Ok(())
     }
 
     // 插入字符
@@ -169,6 +200,15 @@ impl EditTextBuffer {
         self.lines[line_index].backspace(line_offset);
     }
 
+    //从line_offset开始获取n行
+    pub(crate) fn get_line_content_with_offset<'a>(
+        &'a mut self,
+        line_offset: usize,
+        line_count: usize,
+    ) {
+    }
+
+    // 从第n行开始获取内容
     pub(crate) fn get_line_content<'a>(
         &'a mut self,
         line_num: usize,
@@ -463,5 +503,12 @@ mod tests {
         let txt = "12345678910";
         let line_count = EditTextBuffer::calculate_lines(txt.len(), 5);
         println!("line_count: {}", line_count);
+    }
+
+    #[test]
+    fn test_get_backup_name() {
+        let filepath = "/root/aa/12345678910";
+        let name = EditTextBuffer::get_backup_name(filepath).unwrap();
+        println!("name: {:?}", name);
     }
 }
