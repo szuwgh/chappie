@@ -1,3 +1,4 @@
+use crate::edit::EditLineMeta;
 use crate::edit::EditTextBuffer;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
@@ -1259,7 +1260,7 @@ fn n_chars(s: &str, n: usize) -> (&str, &str, &str) {
 
 fn get_content2<'a>(
     txts: Vec<&'a str>,
-    line_meta: &'a Vec<LineMeta>,
+    line_meta: &'a Vec<EditLineMeta>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
     height: usize,
