@@ -1,5 +1,7 @@
+use crate::edit::CacheStr;
 use crate::edit::EditLineMeta;
 use crate::edit::EditTextBuffer;
+use crate::edit::RingVec;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
 use crate::text::LineMeta;
@@ -283,10 +285,10 @@ impl ChapTui {
         let mut cursor_x: usize = 0;
         let mut cursor_y: usize = 0;
         let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
+        edit.get_one_page(1);
         loop {
             let line_meta = {
-                let (content, meta) =
-                    edit.get_line_content(self.tv.get_scroll(), self.tv.get_height());
+                let (content, meta) = edit.get_current_page();
                 self.terminal.draw(|f| {
                     let (navi, visible_content) = get_content2(
                         content,
@@ -321,12 +323,20 @@ impl ChapTui {
                 {
                     match (code, modifiers) {
                         (KeyCode::Up, _) => {
+                            if cursor_y == 0 {
+                                //滚动上一行
+                                edit.scroll_pre_one_line(line_meta.get(0).unwrap());
+                            }
                             cursor_y = cursor_y.saturating_sub(1);
+
                             is_last = false;
                         }
                         (KeyCode::Down, _) => {
                             if cursor_y < self.tv.get_height() - 1 {
                                 cursor_y += 1;
+                            } else {
+                                //滚动下一行
+                                edit.scroll_next_one_line(line_meta.last().unwrap());
                             }
                             is_last = false;
                         }
@@ -366,7 +376,7 @@ impl ChapTui {
                             }
                             edit.backspace(cursor_y, cursor_x);
                             if cursor_x == 0 {
-                                cursor_x = line_meta[cursor_y - 1].get_txt_len();
+                                cursor_x = line_meta.get(cursor_y - 1).unwrap().get_txt_len();
                                 cursor_y = cursor_y.saturating_sub(1);
                             } else {
                                 cursor_x = cursor_x.saturating_sub(1);
@@ -1259,8 +1269,8 @@ fn n_chars(s: &str, n: usize) -> (&str, &str, &str) {
 }
 
 fn get_content2<'a>(
-    txts: Vec<&'a str>,
-    line_meta: &'a Vec<EditLineMeta>,
+    txts: &'a RingVec<CacheStr>,
+    line_meta: &'a RingVec<EditLineMeta>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
     height: usize,
@@ -1269,16 +1279,16 @@ fn get_content2<'a>(
 ) -> (Text<'a>, Text<'a>) {
     // assert!(content.len() == line_meta.len());
     let mut lines = Vec::with_capacity(line_meta.len());
-    for (i, txt) in txts.into_iter().enumerate() {
+    for (i, txt) in txts.iter().enumerate() {
         if cursor_y == i {
             let mut spans = Vec::new();
-            let (a, b, c) = n_chars(txt, cursor_x);
+            let (a, b, c) = n_chars(txt.as_str(), cursor_x);
             if b.len() > 0 {
                 spans.push(Span::raw(a));
                 spans.push(Span::styled(b, Style::default().bg(Color::LightRed)));
                 spans.push(Span::raw(c));
             } else {
-                spans.push(Span::raw(txt));
+                spans.push(Span::raw(txt.as_str()));
                 let diff = cursor_x - txt.len();
                 let padding = " ".repeat(diff);
                 spans.push(Span::raw(padding));
@@ -1287,7 +1297,7 @@ fn get_content2<'a>(
             }
             lines.push(Line::from(spans));
         } else {
-            lines.push(Line::from(txt));
+            lines.push(Line::from(txt.as_str()));
         }
     }
     if cursor_y >= line_meta.len() {
