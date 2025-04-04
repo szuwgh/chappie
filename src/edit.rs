@@ -3,11 +3,88 @@ use crate::{error::ChapResult, gap_buffer::GapBuffer};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use unicode_width::UnicodeWidthChar;
 const PAGE_GROUP: usize = 1;
 use crate::text::LineMeta;
+
+#[derive(Debug, Default)]
+pub(crate) struct EditLineMeta {
+    //  txt: &'a str,
+    txt_len: usize,
+    page_num: usize,
+    line_num: usize,
+    line_index: usize,
+    line_offset: usize,
+}
+
+impl EditLineMeta {
+    pub(crate) fn new(
+        txt_len: usize,
+        page_num: usize,
+        line_num: usize,
+        line_index: usize,
+        line_offset: usize,
+    ) -> EditLineMeta {
+        EditLineMeta {
+            txt_len,
+            page_num,
+            line_num,
+            line_index,
+            line_offset,
+        }
+    }
+
+    pub(crate) fn get_line_num(&self) -> usize {
+        self.line_num
+    }
+
+    pub(crate) fn get_page_num(&self) -> usize {
+        self.page_num
+    }
+
+    pub(crate) fn get_line_offset(&self) -> usize {
+        self.line_offset
+    }
+
+    pub(crate) fn get_line_end(&self) -> usize {
+        self.line_offset + self.txt_len
+    }
+
+    pub(crate) fn get_line_index(&self) -> usize {
+        self.line_index
+    }
+
+    pub(crate) fn get_txt_len(&self) -> usize {
+        self.txt_len
+    }
+}
+
+struct CacheStr {
+    data: NonNull<str>,
+    len: usize,
+}
+
+impl CacheStr {
+    fn from_str(s: &str) -> Self {
+        let ptr = s as *const str as *mut str; // 获取 &str 的指针
+        let len = s.len(); // 获取 &str 的长度
+        let non_null_ptr = unsafe { NonNull::new_unchecked(ptr) }; // 创建 NonNull<str>
+        CacheStr {
+            data: non_null_ptr,
+            len,
+        }
+    }
+
+    // 从 CacheStr 获取 &str
+    fn as_str(&self) -> &str {
+        unsafe { self.data.as_ref() }
+    }
+}
+
 pub(crate) struct EditTextBuffer {
-    lines: Vec<GapBuffer>, // 每行使用 GapBuffer 存储
+    lines: Vec<GapBuffer>,      // 每行使用 GapBuffer 存储
+    cache_lines: Vec<CacheStr>, // 缓存行
     cursor_x: usize,
     cursor_y: usize, // 光标位置，cursorY 表示行号，cursorX 表示行内位置
     page_offset_list: Vec<PageOffset>, // 每页的偏移量
@@ -39,6 +116,7 @@ impl EditTextBuffer {
 
         Ok(EditTextBuffer {
             lines: gap_buffers,
+            cache_lines: Vec::new(),
             cursor_x: 0,
             cursor_y: 0,
             page_offset_list: vec![PageOffset {
@@ -199,13 +277,53 @@ impl EditTextBuffer {
         }
         self.lines[line_index].backspace(line_offset);
     }
-
-    //从line_offset开始获取n行
-    pub(crate) fn get_line_content_with_offset<'a>(
+    //从当前行开始获取后面n行
+    pub(crate) fn get_next_line<'a>(
         &'a mut self,
-        line_offset: usize,
+        meta: &EditLineMeta,
         line_count: usize,
-    ) {
+    ) -> (Option<&'a str>, EditLineMeta) {
+        let mut line_index = meta.get_line_index();
+        let mut line_end = meta.get_line_end();
+
+        // if line_index >= ring.lines.len() {
+        //     return (None, meta.clone());
+        // }
+        let line = &self.lines[line_index];
+        if line_end == line.text_len() {
+            line_end = 0;
+            line_index += 1;
+        }
+
+        // let total_txt_len = self.rows.borrow_lines()[line_index].text_len();
+        // //当前行没有读完 继续读
+        // if total_txt_len == meta.get_line_end() {
+        //     line_index += 1;
+        //     line_end = 0;
+        // }
+        // println!(
+        //     "total_txt_len:{},line_index:{},line_start:{}",
+        //     total_txt_len, line_index, line_end
+        // );
+        let p = PageOffset {
+            line_index: line_index,
+            line_start: line_end,
+        };
+        let mut s = "";
+        let mut m = EditLineMeta::default();
+        let start_page_num = meta.get_line_num() / self.height;
+        self.get_text_fn(
+            &p,
+            line_count,
+            meta.get_line_num(),
+            start_page_num,
+            0,
+            &mut |x, m1| {
+                s = x;
+                m = m1;
+            },
+        );
+        (Some(s), m)
     }
 
     // 从第n行开始获取内容
@@ -213,9 +331,9 @@ impl EditTextBuffer {
         &'a mut self,
         line_num: usize,
         line_count: usize,
-    ) -> (Vec<&'a str>, Vec<LineMeta>) {
+    ) -> (Vec<&'a str>, Vec<EditLineMeta>) {
         let mut split_lines = Vec::new();
-        let mut line_meta_list = Vec::new();
+        let mut line_meta_list: Vec<EditLineMeta> = Vec::new();
         self.get_text(line_num, line_count, |txt, meta| {
             split_lines.push(txt);
             line_meta_list.push(meta);
@@ -225,7 +343,7 @@ impl EditTextBuffer {
 
     fn get_text<'a, F>(&'a mut self, line_num: usize, line_count: usize, mut f: F)
     where
-        F: FnMut(&'a str, LineMeta),
+        F: FnMut(&'a str, EditLineMeta),
     {
         let page_num = self.get_page_num(line_num);
         // 计算页码
@@ -240,26 +358,34 @@ impl EditTextBuffer {
         //跳过的行数
         let skip_line = line_num - start_page_num * self.height;
 
-        self.get_text_fn(&page_offset, line_count, start_page_num, skip_line, &mut f);
+        self.get_text_fn(
+            &page_offset,
+            line_count,
+            start_page_num * self.height,
+            start_page_num,
+            skip_line,
+            &mut f,
+        );
     }
 
     fn get_text_fn<'a, F>(
         &'a mut self,
         page_offset: &PageOffset,
         line_count: usize,
+        start_line_num: usize,
         start_page_num: usize,
         skip_line: usize,
         f: &mut F,
     ) where
         // 使用高阶 trait bound，允许闭包接受任意较短生命周期的 &str
-        F: FnMut(&'a str, LineMeta),
+        F: FnMut(&'a str, EditLineMeta),
     {
         if page_offset.line_index >= self.lines.len() {
             return;
         }
         let (a, b) = self.lines.split_at_mut(page_offset.line_index + 1);
-        let mut line_num = 0;
         let mut cur_line_count = 0;
+        let mut line_num = start_line_num;
         let mut page_num = start_page_num;
 
         let line_txt = &a[page_offset.line_index].text()[page_offset.line_start..];
@@ -277,6 +403,9 @@ impl EditTextBuffer {
             skip_line,
             f,
         );
+        if cur_line_count >= line_count {
+            return;
+        }
         // 使用 split_at_mut 获取后续行的可变子切片
         for (i, line) in b.iter_mut().enumerate() {
             let line_txt = line.text();
@@ -298,6 +427,11 @@ impl EditTextBuffer {
                 return;
             }
         }
+
+        // if page_offset.line_index >= self.lines.len() {
+        //     return;
+        // }
+
         //   for i in self.lines[page_offset.line_index..].iter() {}
     }
 
@@ -316,11 +450,18 @@ impl EditTextBuffer {
         f: &mut F,
     ) where
         // 使用高阶 trait bound，允许闭包接受任意较短生命周期的 &str
-        F: FnMut(&'a str, LineMeta),
+        F: FnMut(&'a str, EditLineMeta),
     {
         //空行
         if line_txt.len() == 0 {
             *line_num += 1; //行数加1
+            if *line_num >= skip_line {
+                *cur_line_count += 1;
+                f(
+                    "",
+                    EditLineMeta::new(0, *page_num + 1, *line_num, line_index, 0),
+                );
+            }
             if *line_num % height == 0 {
                 //到达一页
                 *page_num += 1; //页数加1
@@ -334,11 +475,9 @@ impl EditTextBuffer {
                     });
                 }
             }
-            if *line_num >= skip_line {
-                f("", LineMeta::new(0, *line_num, 0, None));
-                if *cur_line_count >= line_count {
-                    return;
-                }
+
+            if *cur_line_count >= line_count {
+                return;
             }
             return;
         }
@@ -353,6 +492,20 @@ impl EditTextBuffer {
             if current_width + ch_width > with {
                 let end = (line_offset + current_bytes).min(line_txt.len());
                 *line_num += 1; //行数加1
+                if *line_num >= skip_line {
+                    *cur_line_count += 1;
+                    let txt = &line_txt[line_offset..end];
+                    f(
+                        txt,
+                        EditLineMeta::new(
+                            txt.len(),
+                            *page_num + 1,
+                            *line_num,
+                            line_index,
+                            line_start + line_offset,
+                        ),
+                    );
+                }
                 if *line_num % height == 0 {
                     //到达一页
                     *page_num += 1; //页数加1
@@ -362,19 +515,12 @@ impl EditTextBuffer {
                         //保存页数的偏移量
                         page_offset_list.push(PageOffset {
                             line_index,
-                            line_start: byte_index,
+                            line_start: line_start + byte_index,
                         });
                     }
                 }
-                if *line_num >= skip_line {
-                    let txt = &line_txt[line_offset..end];
-                    f(
-                        txt,
-                        LineMeta::new(txt.len(), *line_num, line_start + line_offset, None),
-                    );
-                    if *cur_line_count >= line_count {
-                        return;
-                    }
+                if *cur_line_count >= line_count {
+                    return;
                 }
 
                 line_offset += current_bytes;
@@ -387,6 +533,21 @@ impl EditTextBuffer {
         //当前行没有到达屏幕宽度 但还是一行
         if current_bytes > 0 {
             *line_num += 1;
+
+            if *line_num >= skip_line {
+                let txt = &line_txt[line_offset..];
+                *cur_line_count += 1;
+                f(
+                    txt,
+                    EditLineMeta::new(
+                        txt.len(),
+                        *page_num + 1,
+                        *line_num,
+                        line_index,
+                        line_start + line_offset,
+                    ),
+                );
+            }
             if *line_num % height == 0 {
                 *page_num += 1; //页数加1
                 let m = *page_num / PAGE_GROUP;
@@ -399,16 +560,8 @@ impl EditTextBuffer {
                     });
                 }
             }
-            if *line_num >= skip_line {
-                let txt = &line_txt[line_offset..];
-                *cur_line_count += 1;
-                f(
-                    txt,
-                    LineMeta::new(txt.len(), *line_num, line_start + line_offset, None),
-                );
-                if *cur_line_count >= line_count {
-                    return;
-                }
+            if *cur_line_count >= line_count {
+                return;
             }
         }
     }
@@ -423,11 +576,50 @@ mod tests {
     fn test_print() {
         let mut b = EditTextBuffer::from_file_path("/root/aa.txt", 2, 5).unwrap();
 
-        {
-            let (s, c) = b.get_line_content(1, 10);
-            for l in s {
-                println!("l: {:?}", l);
+        let c = {
+            let (s, c) = b.get_line_content(1, 1);
+            for (i, l) in s.iter().enumerate() {
+                println!("l: {:?},{:?}", l, c[i]);
             }
+
+            // for p in b.page_offset_list.iter() {
+            //     println!("p:{:?}", p)
+            // }
+            c
+        };
+        let (s, m) = b.get_next_line(&c[0], 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+        let (s, m) = b.get_next_line(&m, 1);
+        println!("{:?},{:?}", s, m);
+
+        for p in b.page_offset_list.iter() {
+            println!("p:{:?}", p)
         }
     }
 
