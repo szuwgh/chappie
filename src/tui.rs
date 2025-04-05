@@ -286,6 +286,7 @@ impl ChapTui {
         let mut cursor_y: usize = 0;
         let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
         edit.get_one_page(1);
+        let mut start_line_num = 1;
         loop {
             let line_meta = {
                 let (content, meta) = edit.get_current_page();
@@ -313,6 +314,10 @@ impl ChapTui {
                         .style(Style::default().fg(Color::White)); // 设置输入框样式
                     f.render_widget(input_box, self.fuzzy_inp.get_rect());
                 })?;
+                if let Some(start_line_meta) = meta.get(0) {
+                    start_line_num = start_line_meta.get_line_num();
+                }
+
                 meta
             };
 
@@ -337,6 +342,7 @@ impl ChapTui {
                             } else {
                                 //滚动下一行
                                 edit.scroll_next_one_line(line_meta.last().unwrap());
+                                // self.tv.down_line(None);
                             }
                             is_last = false;
                         }
@@ -363,24 +369,30 @@ impl ChapTui {
                         }
                         (KeyCode::Enter, _) => {
                             self.fuzzy_inp.clear();
-                            edit.insert_newline(cursor_y, cursor_x);
+                            edit.insert_newline(
+                                cursor_y,
+                                cursor_x,
+                                line_meta.get(cursor_y).unwrap(),
+                            );
                             if cursor_y < self.tv.get_height() - 1 {
                                 cursor_y += 1;
                             }
                             cursor_x = 0;
+                            edit.get_one_page(start_line_num);
                         }
                         (KeyCode::Backspace, _) => {
                             self.fuzzy_inp.clear();
                             if cursor_y == 0 && cursor_x == 0 {
                                 break;
                             }
-                            edit.backspace(cursor_y, cursor_x);
+                            edit.backspace(cursor_y, cursor_x, line_meta.get(cursor_y).unwrap());
                             if cursor_x == 0 {
                                 cursor_x = line_meta.get(cursor_y - 1).unwrap().get_txt_len();
                                 cursor_y = cursor_y.saturating_sub(1);
                             } else {
                                 cursor_x = cursor_x.saturating_sub(1);
                             }
+                            edit.get_one_page(start_line_num);
                         }
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             //退出
@@ -404,10 +416,20 @@ impl ChapTui {
                         (KeyCode::Char(c), _) => {
                             self.fuzzy_inp.clear();
                             if cursor_x == 0 && is_last {
-                                edit.insert(cursor_y - 1, self.tv.get_width(), c);
+                                edit.insert(
+                                    cursor_y - 1,
+                                    self.tv.get_width(),
+                                    line_meta.get(cursor_y - 1).unwrap(),
+                                    c,
+                                );
                                 is_last = false;
                             } else {
-                                edit.insert(cursor_y, cursor_x, c);
+                                edit.insert(
+                                    cursor_y,
+                                    cursor_x,
+                                    line_meta.get(cursor_y).unwrap(),
+                                    c,
+                                );
                             }
                             if cursor_x < self.tv.get_width() {
                                 cursor_x += 1;
@@ -420,6 +442,7 @@ impl ChapTui {
                                     cursor_y += 1;
                                 }
                             }
+                            edit.get_one_page(start_line_num);
                             break;
                         }
                         _ => {}
@@ -1289,7 +1312,7 @@ fn get_content2<'a>(
                 spans.push(Span::raw(c));
             } else {
                 spans.push(Span::raw(txt.as_str()));
-                let diff = cursor_x - txt.len();
+                let diff = cursor_x.saturating_sub(txt.len());
                 let padding = " ".repeat(diff);
                 spans.push(Span::raw(padding));
                 // 在填充后显示高亮的光标

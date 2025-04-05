@@ -45,7 +45,7 @@ pub(crate) struct Chappie {
     tui: ChapTui,
     vdb: Option<Collection>,
 }
-
+/// //// 
 impl Chappie {
     pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
         fs::create_dir_all(LLM_MODEL_DIR)?;
