@@ -288,7 +288,7 @@ impl ChapTui {
         edit.get_one_page(1);
         let mut start_line_num = 1;
         loop {
-            let line_meta = {
+            let mut line_meta = {
                 let (content, meta) = edit.get_current_page();
                 self.terminal.draw(|f| {
                     let (navi, visible_content) = get_content2(
@@ -330,9 +330,14 @@ impl ChapTui {
                         (KeyCode::Up, _) => {
                             if cursor_y == 0 {
                                 //滚动上一行
-                                edit.scroll_pre_one_line(line_meta.get(0).unwrap());
+                                let (_, _line_meta) =
+                                    edit.scroll_pre_one_line(line_meta.get(0).unwrap());
+                                line_meta = _line_meta;
                             }
                             cursor_y = cursor_y.saturating_sub(1);
+                            if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
+                                cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
+                            }
 
                             is_last = false;
                         }
@@ -341,28 +346,46 @@ impl ChapTui {
                                 cursor_y += 1;
                             } else {
                                 //滚动下一行
-                                edit.scroll_next_one_line(line_meta.last().unwrap());
-                                // self.tv.down_line(None);
+                                let (_, _line_meta) =
+                                    edit.scroll_next_one_line(line_meta.last().unwrap());
+                                line_meta = _line_meta;
+                            }
+                            if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
+                                cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
                             }
                             is_last = false;
                         }
                         (KeyCode::Left, _) => {
                             if cursor_x == 0 {
-                                cursor_y = cursor_y.saturating_sub(1);
-                                cursor_x = self.tv.get_width() - 1;
+                                // 这个判断说明当前行已经读完了
+                                if line_meta.get(cursor_y).unwrap().get_line_offset() == 0 {
+                                    //无需操作
+                                } else {
+                                    cursor_x =
+                                        line_meta.get(cursor_y - 1).unwrap().get_char_len() - 1;
+                                    cursor_y = cursor_y.saturating_sub(1);
+                                }
                             } else {
                                 cursor_x = cursor_x.saturating_sub(1);
                             }
                             is_last = false;
                         }
                         (KeyCode::Right, _) => {
-                            if cursor_x < self.tv.get_width() {
+                            if cursor_x < line_meta.get(cursor_y).unwrap().get_char_len() {
                                 cursor_x += 1;
-                                if cursor_x >= self.tv.get_width()
+
+                                if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len()
                                     && cursor_y < self.tv.get_height()
                                 {
-                                    cursor_x = 0;
-                                    cursor_y += 1;
+                                    //判断当前行是否读完
+                                    if line_meta.get(cursor_y).unwrap().get_line_end()
+                                        < edit.get_text_len(
+                                            line_meta.get(cursor_y).unwrap().get_line_index(),
+                                        )
+                                    {
+                                        cursor_x = 0;
+                                        cursor_y += 1;
+                                    }
                                 }
                             }
                             is_last = false;
