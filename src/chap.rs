@@ -1,16 +1,13 @@
 use crate::chatapi::LlmClient;
 use crate::cmd::Cli;
-use crate::text::SimpleText;
+use crate::textwarp::SimpleText;
 use crate::ChapResult;
 use crate::ChapTui;
-use std::path::Path;
-////use fastembed::EmbeddingModel;
-//use fastembed::InitOptions;
-//use fastembed::TextEmbedding;
 use once_cell::sync::Lazy;
 use simplelog::*;
 use std::fs;
 use std::fs::File;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::runtime::Builder;
@@ -45,7 +42,7 @@ pub(crate) struct Chappie {
     tui: ChapTui,
     vdb: Option<Collection>,
 }
-/// //// 
+/// ////
 impl Chappie {
     pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
         fs::create_dir_all(LLM_MODEL_DIR)?;
@@ -110,12 +107,12 @@ impl Chappie {
         });
     }
 
-    pub(crate) fn run2<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render2(p).await })
+    pub(crate) fn run_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        RUNTIME.block_on(async move { self.tui.render_edit(p).await })
     }
 
-    pub(crate) fn run<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render(bytes).await })
+    pub(crate) fn run_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
+        RUNTIME.block_on(async move { self.tui.render_text(bytes).await })
     }
 }
 

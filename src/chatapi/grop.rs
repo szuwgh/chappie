@@ -52,7 +52,7 @@ mod tests {
     use groq_api_rs::completion::client::CompletionOption;
 
     use super::*;
-    use crate::util::map_file;
+    use crate::util::mmap_file;
     use std::io;
 
     #[tokio::test]
