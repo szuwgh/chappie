@@ -1,12 +1,13 @@
-use crate::edit::CacheStr;
-use crate::edit::EditLineMeta;
-use crate::edit::EditTextBuffer;
-use crate::edit::RingVec;
+use crate::editor::CacheStr;
+use crate::editor::EditLineMeta;
+use crate::editor::MmapText;
+use crate::editor::RingVec;
+use crate::editor::TextWarp;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
-use crate::text::LineMeta;
-use crate::text::SimpleText;
-use crate::text::SimpleTextEngine;
+use crate::textwarp::LineMeta;
+use crate::textwarp::SimpleText;
+use crate::textwarp::SimpleTextEngine;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use crossterm::execute;
@@ -279,9 +280,18 @@ impl ChapTui {
         })
     }
 
-    pub(crate) async fn render2<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        let mut edit =
-            EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
+    pub(crate) async fn render_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        // let mut edit = EditTextWarp::new(
+        //     GapText::from_file_path(&p)?,
+        //     self.tv.get_height(),
+        //     self.tv.get_width(),
+        // );
+        let mut edit = TextWarp::new(
+            MmapText::from_file_path(&p)?,
+            self.tv.get_height(),
+            self.tv.get_width(),
+        );
+        // EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
         let mut cursor_x: usize = 0;
         let mut cursor_y: usize = 0;
         let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
@@ -391,31 +401,31 @@ impl ChapTui {
                             is_last = false;
                         }
                         (KeyCode::Enter, _) => {
-                            self.fuzzy_inp.clear();
-                            edit.insert_newline(
-                                cursor_y,
-                                cursor_x,
-                                line_meta.get(cursor_y).unwrap(),
-                            );
-                            if cursor_y < self.tv.get_height() - 1 {
-                                cursor_y += 1;
-                            }
-                            cursor_x = 0;
-                            edit.get_one_page(start_line_num);
+                            // self.fuzzy_inp.clear();
+                            // edit.insert_newline(
+                            //     cursor_y,
+                            //     cursor_x,
+                            //     line_meta.get(cursor_y).unwrap(),
+                            // );
+                            // if cursor_y < self.tv.get_height() - 1 {
+                            //     cursor_y += 1;
+                            // }
+                            // cursor_x = 0;
+                            // edit.get_one_page(start_line_num);
                         }
                         (KeyCode::Backspace, _) => {
-                            self.fuzzy_inp.clear();
-                            if cursor_y == 0 && cursor_x == 0 {
-                                break;
-                            }
-                            edit.backspace(cursor_y, cursor_x, line_meta.get(cursor_y).unwrap());
-                            if cursor_x == 0 {
-                                cursor_x = line_meta.get(cursor_y - 1).unwrap().get_txt_len();
-                                cursor_y = cursor_y.saturating_sub(1);
-                            } else {
-                                cursor_x = cursor_x.saturating_sub(1);
-                            }
-                            edit.get_one_page(start_line_num);
+                            // self.fuzzy_inp.clear();
+                            // if cursor_y == 0 && cursor_x == 0 {
+                            //     break;
+                            // }
+                            // edit.backspace(cursor_y, cursor_x, line_meta.get(cursor_y).unwrap());
+                            // if cursor_x == 0 {
+                            //     cursor_x = line_meta.get(cursor_y - 1).unwrap().get_txt_len();
+                            //     cursor_y = cursor_y.saturating_sub(1);
+                            // } else {
+                            //     cursor_x = cursor_x.saturating_sub(1);
+                            // }
+                            // edit.get_one_page(start_line_num);
                         }
                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                             //退出
@@ -427,46 +437,46 @@ impl ChapTui {
                             exit(0);
                         }
                         (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                            self.fuzzy_inp.clear();
-                            //保存
-                            if let Ok(_) = edit.save(&p) {
-                                self.fuzzy_inp.push_str("saved");
-                            } else {
-                                self.fuzzy_inp.push_str("save fail");
-                            }
-                            break;
+                            // self.fuzzy_inp.clear();
+                            // //保存
+                            // if let Ok(_) = edit.save(&p) {
+                            //     self.fuzzy_inp.push_str("saved");
+                            // } else {
+                            //     self.fuzzy_inp.push_str("save fail");
+                            // }
+                            // break;
                         }
                         (KeyCode::Char(c), _) => {
-                            self.fuzzy_inp.clear();
-                            if cursor_x == 0 && is_last {
-                                edit.insert(
-                                    cursor_y - 1,
-                                    self.tv.get_width(),
-                                    line_meta.get(cursor_y - 1).unwrap(),
-                                    c,
-                                );
-                                is_last = false;
-                            } else {
-                                edit.insert(
-                                    cursor_y,
-                                    cursor_x,
-                                    line_meta.get(cursor_y).unwrap(),
-                                    c,
-                                );
-                            }
-                            if cursor_x < self.tv.get_width() {
-                                cursor_x += 1;
-                                if cursor_x >= self.tv.get_width()
-                                    && cursor_y < self.tv.get_height()
-                                {
-                                    //不断添加字符 还是续接上一行
-                                    is_last = true;
-                                    cursor_x = 0;
-                                    cursor_y += 1;
-                                }
-                            }
-                            edit.get_one_page(start_line_num);
-                            break;
+                            // self.fuzzy_inp.clear();
+                            // if cursor_x == 0 && is_last {
+                            //     edit.insert(
+                            //         cursor_y - 1,
+                            //         self.tv.get_width(),
+                            //         line_meta.get(cursor_y - 1).unwrap(),
+                            //         c,
+                            //     );
+                            //     is_last = false;
+                            // } else {
+                            //     edit.insert(
+                            //         cursor_y,
+                            //         cursor_x,
+                            //         line_meta.get(cursor_y).unwrap(),
+                            //         c,
+                            //     );
+                            // }
+                            // if cursor_x < self.tv.get_width() {
+                            //     cursor_x += 1;
+                            //     if cursor_x >= self.tv.get_width()
+                            //         && cursor_y < self.tv.get_height()
+                            //     {
+                            //         //不断添加字符 还是续接上一行
+                            //         is_last = true;
+                            //         cursor_x = 0;
+                            //         cursor_y += 1;
+                            //     }
+                            // }
+                            // edit.get_one_page(start_line_num);
+                            // break;
                         }
                         _ => {}
                     }
@@ -474,10 +484,9 @@ impl ChapTui {
                 break;
             }
         }
-        todo!()
     }
 
-    pub(crate) async fn render<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
+    pub(crate) async fn render_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
         let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
         let mut chat_eg = SimpleTextEngine::new(
             String::with_capacity(1024),
@@ -900,9 +909,7 @@ impl ChapTui {
                                     FocusType::TxtFuzzy => {
                                         self.tv.up_page();
                                     }
-                                    FocusType::Chat => {
-                                        //  self.chat_tv.up_page();
-                                    }
+                                    FocusType::Chat => {}
                                     _ => {}
                                 }
 

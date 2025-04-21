@@ -4,7 +4,7 @@ use std::io;
 use std::io::BufRead;
 use std::path::Path;
 // 使用 mmap 映射文件到内存
-pub(crate) fn map_file(path: &str) -> io::Result<Mmap> {
+pub(crate) fn mmap_file<P: AsRef<Path>>(path: P) -> io::Result<Mmap> {
     let file = File::open(path)?;
     let mmap = unsafe { Mmap::map(&file)? };
     Ok(mmap)

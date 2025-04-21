@@ -1,7 +1,29 @@
+use crate::editor::{Line, LineStr};
 pub(crate) struct GapBuffer {
     buffer: Vec<u8>,
     gap_start: usize,
     gap_end: usize,
+}
+
+impl Line for GapBuffer {
+    fn text_len(&self) -> usize {
+        self.buffer.len() - (self.gap_end - self.gap_start)
+    }
+
+    fn text(&mut self, range: impl std::ops::RangeBounds<usize>) -> &str {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&start) => start,
+            std::ops::Bound::Excluded(&start) => start + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&end) => end + 1,
+            std::ops::Bound::Excluded(&end) => end,
+            std::ops::Bound::Unbounded => self.text_len(),
+        };
+        self.move_gap_to(end);
+        std::str::from_utf8(&self.buffer[start..end]).unwrap()
+    }
 }
 
 impl GapBuffer {
@@ -13,9 +35,21 @@ impl GapBuffer {
         }
     }
 
-    pub(crate) fn text_len(&self) -> usize {
-        self.buffer.len() - (self.gap_end - self.gap_start)
+    pub(crate) fn get_buffer(&self) -> &[u8] {
+        &self.buffer
     }
+
+    pub(crate) fn get_line_str<'a>(&'a mut self) -> LineStr<'a> {
+        LineStr {
+            line: self.text(..),
+            line_file_start: 0,
+            line_file_end: 0,
+        }
+    }
+
+    // pub(crate) fn text_len(&self) -> usize {
+    //     self.buffer.len() - (self.gap_end - self.gap_start)
+    // }
 
     /// Move the gap to the specified index
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
@@ -69,6 +103,8 @@ impl GapBuffer {
         self.gap_end = new_gap_end;
     }
 
+    /// 插入文本到指定位置
+    /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
     pub(crate) fn insert(&mut self, index: usize, text: &str) {
         if text.len() == 0 {
             return;
@@ -87,6 +123,7 @@ impl GapBuffer {
     }
 
     // Backspace 删除光标前一个字符
+    /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
     pub(crate) fn backspace(&mut self, index: usize) {
         self.delete(index, 1);
     }
@@ -103,11 +140,11 @@ impl GapBuffer {
         self.gap_start = self.gap_start.saturating_sub(len)
     }
 
-    /// Move the gap to the end of the buffer
-    pub(crate) fn text(&mut self) -> &str {
-        self.move_gap_to_last();
-        std::str::from_utf8(&self.buffer[..self.gap_start]).unwrap()
-    }
+    // Move the gap to the end of the buffer
+    // pub(crate) fn text(&mut self) -> &str {
+    //     self.move_gap_to_last();
+    //     std::str::from_utf8(&self.buffer[..self.gap_start]).unwrap()
+    // }
 }
 
 #[cfg(test)]
@@ -117,18 +154,17 @@ mod tests {
     #[test]
     fn test_insert() {
         let mut gb = GapBuffer::new(10);
-        gb.insert(0, "Hello");
-        println!("{}", gb.text());
-        gb.insert(2, "World");
-        println!("{}", gb.text());
+        gb.insert(0, "1234我是");
+
+        println!("{}", gb.text(4..));
     }
 
     #[test]
     fn test_delete() {
         let mut gb = GapBuffer::new(10);
         gb.insert(0, "Hello");
-        println!("{}", gb.text());
+        println!("{}", gb.text(..));
         gb.delete(1, 1);
-        println!("{}", gb.text());
+        println!("{}", gb.text(..));
     }
 }

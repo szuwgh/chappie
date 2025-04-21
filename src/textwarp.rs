@@ -815,13 +815,13 @@ impl<T: SimpleText> SimpleTextEngine<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::map_file;
+    use crate::util::mmap_file;
     use std::io;
 
     #[test]
     fn test_next_line1() -> io::Result<()> {
         let file_path = "/opt/rsproject/chappie/vectorbase/src/disk.rs";
-        let mmap = map_file(file_path)?;
+        let mmap = mmap_file(file_path)?;
         // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
         // println!("{},{}", visible_content, length);
         // Ok(())
@@ -850,7 +850,7 @@ mod tests {
     #[test]
     fn test_get_last() -> io::Result<()> {
         let file_path = "/opt/rsproject/chappie/crates/vectorbase/src/disk.rs";
-        let mmap = map_file(file_path)?;
+        let mmap = mmap_file(file_path)?;
         // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
         // println!("{},{}", visible_content, length);
         // Ok(())
@@ -869,7 +869,7 @@ mod tests {
     #[test]
     fn test_get_start_end() -> io::Result<()> {
         let file_path = "/opt/rsproject/chappie/vectorbase/src/disk.rs";
-        let mmap = map_file(file_path)?;
+        let mmap = mmap_file(file_path)?;
         // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
         // println!("{},{}", visible_content, length);
         // Ok(())
@@ -887,7 +887,7 @@ mod tests {
     #[test]
     fn test_get_line_count2() -> io::Result<()> {
         let file_path = "/root/aa.txt";
-        let mmap = map_file(file_path)?;
+        let mmap = mmap_file(file_path)?;
         // let (navi, visible_content, length) = get_visible_content(&mmap, 0, 30, 5, "");
         // println!("{},{}", visible_content, length);
         // Ok(())
