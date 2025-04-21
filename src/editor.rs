@@ -5,7 +5,8 @@ use inherit_methods_macro::inherit_methods;
 use memmap2::Mmap;
 use std::cell::{RefCell, UnsafeCell};
 use std::fs;
-use std::io::Write;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Seek, Write};
 use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -262,6 +263,48 @@ impl<'a> LineStr<'a> {
     }
 }
 
+pub(crate) struct FileIoText {
+    file: BufReader<File>,
+}
+
+impl FileIoText {
+    pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<FileIoText> {
+        let file = File::open(filename)?;
+        Ok(FileIoText {
+            file: BufReader::new(file),
+        })
+    }
+}
+
+pub struct FileIoTextIter<'a> {
+    file: &'a BufReader<File>,
+    line_index: usize,
+    line_file_start: usize,
+    line_file_end: usize,
+}
+
+// impl<'a> Iterator for FileIoTextIter<'a> {
+//     type Item = LineStr<'a>;
+//     fn next(&mut self) -> Option<LineStr<'a>> {
+//         if self.line_file_start >= self.line_file_end {
+//             return None;
+//         }
+//         self.file
+//             .seek(std::io::SeekFrom::Current(self.line_file_start as i64))
+//             .unwrap();
+//         // let start = 0;
+//         self.file.read_line(buf)
+//         let line = &mmap[..end];
+//         let line_start = self.line_file_start;
+//         self.line_file_start += end + 1;
+//         Some(LineStr {
+//             line: std::str::from_utf8(line).unwrap(),
+//             line_file_start: line_start,
+//             line_file_end: line_start + end,
+//         })
+//     }
+// }
+
 pub(crate) struct MmapText {
     mmap: Mmap,
 }
@@ -350,7 +393,9 @@ impl Text for MmapText {
 
     fn has_next_line(&self, meta: &EditLineMeta) -> bool {
         //todo!()
-        if meta.get_line_offset() + meta.get_txt_len() >= self.mmap.len() {
+        if meta.get_line_file_start() + meta.get_line_offset() + meta.get_txt_len()
+            >= self.mmap.len() - 1
+        {
             return false;
         }
         true
@@ -715,6 +760,7 @@ impl<T: Text> TextWarp<T> {
         let line =
             self.borrow_lines_mut()
                 .get_line(line_index, meta.line_file_start, meta.line_file_end); //&self.borrow_lines()[line_index];
+
         if line_end == line.text_len() {
             line_file_start = meta.get_line_file_end() + 1;
             line_end = 0;
@@ -2283,6 +2329,7 @@ mod tests {
     fn test_print() {
         let file = File::open("/root/aa.txt").unwrap();
         let mmap = unsafe { Mmap::map(&file).unwrap() };
+        println!(" mmap len: {:?}", mmap.len());
         let mmap_text = MmapText::new(mmap);
 
         let text = TextWarp::new(mmap_text, 2, 5);
@@ -2298,6 +2345,28 @@ mod tests {
         let (s, c) = text.get_next_line(c.last().unwrap(), 1);
         println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
 
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        let (s, c) = text.get_next_line(&c, 1);
+        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
         let (s, c) = text.get_next_line(&c, 1);
         println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
         // for p in text.borrow_page_offset_list().iter() {
