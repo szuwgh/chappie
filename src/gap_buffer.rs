@@ -1,5 +1,8 @@
 use std::fmt::{Debug, Write};
 
+use utf8_iter::Utf8CharIndices;
+use utf8_iter::Utf8CharsEx;
+
 use crate::editor::{Line, LineStr};
 
 pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
@@ -15,6 +18,58 @@ impl<'a> GapBytes<'a> {
 
     pub(crate) fn right(&self) -> &[u8] {
         self.1
+    }
+
+    pub(crate) fn iter(&self) -> GapBytesIter<'_> {
+        GapBytesIter {
+            left: self.left().iter(),
+            right: self.right().iter(),
+        }
+    }
+
+    pub(crate) fn char_indices(&self) -> GapBytesCharIter<'_> {
+        GapBytesCharIter {
+            left: self.left().char_indices(),
+            right: self.right().char_indices(),
+            left_bytes: self.left().len(),
+        }
+    }
+}
+
+pub(crate) struct GapBytesCharIter<'a> {
+    left: Utf8CharIndices<'a>,
+    right: Utf8CharIndices<'a>,
+    left_bytes: usize,
+}
+
+impl<'a> Iterator for GapBytesCharIter<'a> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((index, byte)) = self.left.next() {
+            Some((index, byte))
+        } else {
+            self.right
+                .next()
+                .map(|(index, byte)| (index + self.left_bytes, byte))
+        }
+    }
+}
+
+pub(crate) struct GapBytesIter<'a> {
+    left: std::slice::Iter<'a, u8>,
+    right: std::slice::Iter<'a, u8>,
+}
+
+impl Iterator for GapBytesIter<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(&byte) = self.left.next() {
+            Some(byte)
+        } else {
+            self.right.next().copied()
+        }
     }
 }
 
@@ -237,6 +292,19 @@ mod tests {
         println!("{:?}", gb.text2(4..=9));
         println!("{:?}", gb.text2(3..=7));
         println!("{:?}", gb.text2(9..11));
+    }
+    use super::*;
+    use utf8_iter::Utf8CharsEx;
+    #[test]
+    fn test_iter() {
+        let mut gb = GapBuffer::new(15);
+        gb.insert(0, "helloworld".as_bytes());
+        gb.insert(2, "我们".as_bytes());
+        println!("{:?}", gb.text2(..));
+        let s = gb.text2(..);
+        for (i, byte) in s.char_indices().enumerate() {
+            println!("{}: {:?}", i, byte);
+        }
     }
 
     #[test]
