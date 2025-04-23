@@ -1,4 +1,33 @@
+use std::fmt::{Debug, Write};
+
 use crate::editor::{Line, LineStr};
+
+pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
+
+impl<'a> GapBytes<'a> {
+    pub(crate) fn new(left: &'a [u8], right: &'a [u8]) -> GapBytes<'a> {
+        GapBytes(left, right)
+    }
+
+    pub(crate) fn left(&self) -> &[u8] {
+        self.0
+    }
+
+    pub(crate) fn right(&self) -> &[u8] {
+        self.1
+    }
+}
+
+impl<'a> Debug for GapBytes<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}{}",
+            std::str::from_utf8(self.left()).unwrap(),
+            std::str::from_utf8(self.right()).unwrap()
+        ))
+    }
+}
+
 pub(crate) struct GapBuffer {
     buffer: Vec<u8>,
     gap_start: usize,
@@ -10,7 +39,7 @@ impl Line for GapBuffer {
         self.buffer.len() - (self.gap_end - self.gap_start)
     }
 
-    fn text(&mut self, range: impl std::ops::RangeBounds<usize>) -> &str {
+    fn text(&mut self, range: impl std::ops::RangeBounds<usize>) -> &[u8] {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
             std::ops::Bound::Excluded(&start) => start + 1,
@@ -22,16 +51,61 @@ impl Line for GapBuffer {
             std::ops::Bound::Unbounded => self.text_len(),
         };
         self.move_gap_to(end);
-        std::str::from_utf8(&self.buffer[start..end]).unwrap()
+        &self.buffer[start..end]
+    }
+
+    fn text_str(&mut self, range: impl std::ops::RangeBounds<usize>) -> &str {
+        std::str::from_utf8(self.text(range)).unwrap()
     }
 }
 
 impl GapBuffer {
     pub(crate) fn new(size: usize) -> GapBuffer {
         GapBuffer {
-            buffer: vec![0; size],
+            buffer: vec![0u8; size],
             gap_start: 0,
             gap_end: size,
+        }
+    }
+
+    fn gap_size(&self) -> usize {
+        self.gap_end - self.gap_start
+    }
+
+    fn text2(&mut self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'_> {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&start) => start,
+            std::ops::Bound::Excluded(&start) => start + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&end) => end + 1,
+            std::ops::Bound::Excluded(&end) => end,
+            std::ops::Bound::Unbounded => self.text_len(),
+        };
+        assert!(start <= end && end <= self.text_len());
+        if start < self.gap_start {
+            if end <= self.gap_start {
+                GapBytes(&self.buffer[start..end], &[])
+            } else {
+                GapBytes(
+                    &self.buffer[start..self.gap_start],
+                    &self.buffer[self.gap_end..self.gap_end + (end - self.gap_start)],
+                )
+            }
+            // } else {
+            //     GapBytes(
+            //         &self.buffer[start..self.gap_start],
+            //         &self.buffer[self.gap_end..end + self.gap_size()],
+            //     )
+            // }
+        } else if start >= self.gap_start {
+            GapBytes(
+                &[],
+                &self.buffer[start + self.gap_size()..end + self.gap_size()],
+            )
+        } else {
+            todo!()
         }
     }
 
@@ -105,12 +179,12 @@ impl GapBuffer {
 
     /// 插入文本到指定位置
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
-    pub(crate) fn insert(&mut self, index: usize, text: &str) {
+    pub(crate) fn insert(&mut self, index: usize, text: &[u8]) {
         if text.len() == 0 {
             return;
         }
         self.move_gap_to(index);
-        let text_bytes = text.as_bytes();
+        let text_bytes = text;
         let text_len = text_bytes.len();
         if self.gap_end - self.gap_start < text_len {
             self.expandGap(text_len);
@@ -153,18 +227,24 @@ mod tests {
     use super::*;
     #[test]
     fn test_insert() {
-        let mut gb = GapBuffer::new(10);
-        gb.insert(0, "1234我是");
-
-        println!("{}", gb.text(4..));
+        let mut gb = GapBuffer::new(15);
+        gb.insert(0, "helloworld".as_bytes());
+        gb.insert(2, "w".as_bytes());
+        println!("{:?},{},{}", gb.get_buffer(), gb.gap_start, gb.gap_end);
+        println!("{:?}", gb.text2(..));
+        println!("{:?}", gb.text2(0..2));
+        println!("{:?}", gb.text2(4..=6));
+        println!("{:?}", gb.text2(4..=9));
+        println!("{:?}", gb.text2(3..=7));
+        println!("{:?}", gb.text2(9..11));
     }
 
     #[test]
     fn test_delete() {
         let mut gb = GapBuffer::new(10);
-        gb.insert(0, "Hello");
-        println!("{}", gb.text(..));
+        gb.insert(0, "Hello".as_bytes());
+        println!("{}", gb.text_str(..));
         gb.delete(1, 1);
-        println!("{}", gb.text(..));
+        println!("{}", gb.text_str(..));
     }
 }

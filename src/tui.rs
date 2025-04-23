@@ -1,7 +1,9 @@
 use crate::editor::CacheStr;
 use crate::editor::EditLineMeta;
+use crate::editor::HexText;
 use crate::editor::MmapText;
 use crate::editor::RingVec;
+use crate::editor::TextType;
 use crate::editor::TextWarp;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
@@ -280,6 +282,60 @@ impl ChapTui {
         })
     }
 
+    pub(crate) async fn render_hex<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        // let mut edit = EditTextWarp::new(
+        //     GapText::from_file_path(&p)?,
+        //     self.tv.get_height(),
+        //     self.tv.get_width(),
+        // );
+        let mut edit = TextWarp::new(
+            HexText::from_file_path(&p)?,
+            self.tv.get_height(),
+            self.tv.get_width(),
+            TextType::Char,
+        );
+        // EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
+        let mut cursor_x: usize = 0;
+        let mut cursor_y: usize = 0;
+        let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
+        edit.get_one_page(1);
+        let mut start_line_num = 1;
+        loop {
+            let mut line_meta = {
+                let (content, meta) = edit.get_current_page();
+                self.terminal.draw(|f| {
+                    let (navi, visible_content) = get_content2(
+                        content,
+                        &meta,
+                        self.navi.get_cur_line(),
+                        &self.navi.select_line,
+                        self.tv.get_height(),
+                        cursor_y,
+                        cursor_x,
+                    );
+                    let text_para = Paragraph::new(visible_content)
+                        .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                        .style(Style::default().fg(Color::White));
+                    f.render_widget(text_para, self.tv.get_rect());
+
+                    let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                        .block(
+                            Block::default()
+                                .title("cmd")
+                                .borders(Borders::TOP | Borders::LEFT),
+                        )
+                        .style(Style::default().fg(Color::White)); // 设置输入框样式
+                    f.render_widget(input_box, self.fuzzy_inp.get_rect());
+                })?;
+                if let Some(start_line_meta) = meta.get(0) {
+                    start_line_num = start_line_meta.get_line_num();
+                }
+
+                meta
+            };
+        }
+    }
+
     pub(crate) async fn render_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
         // let mut edit = EditTextWarp::new(
         //     GapText::from_file_path(&p)?,
@@ -290,6 +346,7 @@ impl ChapTui {
             MmapText::from_file_path(&p)?,
             self.tv.get_height(),
             self.tv.get_width(),
+            TextType::Char,
         );
         // EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
         let mut cursor_x: usize = 0;
@@ -434,6 +491,7 @@ impl ChapTui {
                                 self.terminal.backend_mut(),
                                 LeaveAlternateScreen // 离开备用屏幕
                             )?;
+                            io::stdout().execute(cursor::Show)?;
                             exit(0);
                         }
                         (KeyCode::Char('s'), KeyModifiers::CONTROL) => {

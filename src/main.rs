@@ -10,6 +10,7 @@ mod chap;
 mod cmd;
 mod editor;
 mod gap_buffer;
+mod hex;
 mod textwarp;
 mod tui;
 mod util;
