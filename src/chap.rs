@@ -111,6 +111,10 @@ impl Chappie {
         RUNTIME.block_on(async move { self.tui.render_edit(p).await })
     }
 
+    pub(crate) fn run_hex<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        RUNTIME.block_on(async move { self.tui.render_hex(p).await })
+    }
+
     pub(crate) fn run_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
         RUNTIME.block_on(async move { self.tui.render_text(bytes).await })
     }
