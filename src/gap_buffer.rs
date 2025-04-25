@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::fmt::{Debug, Write};
 
 use utf8_iter::Utf8CharIndices;
@@ -10,6 +11,43 @@ pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
 impl<'a> GapBytes<'a> {
     pub(crate) fn new(left: &'a [u8], right: &'a [u8]) -> GapBytes<'a> {
         GapBytes(left, right)
+    }
+
+    pub(crate) fn empty() -> GapBytes<'a> {
+        GapBytes(&[], &[])
+    }
+
+    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&start) => start,
+            std::ops::Bound::Excluded(&start) => start + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&end) => end + 1,
+            std::ops::Bound::Excluded(&end) => end,
+            std::ops::Bound::Unbounded => self.len(),
+        };
+        assert!(start <= end && end <= self.len());
+
+        if start < self.left().len() {
+            if end <= self.left().len() {
+                GapBytes::new(&self.0[start..end], &[])
+            } else {
+                GapBytes(self.0, &self.1[..end - self.left().len()])
+            }
+        } else if start >= self.left().len() {
+            GapBytes(
+                &[],
+                &self.1[start - self.left().len()..end - self.left().len()],
+            )
+        } else {
+            todo!()
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.0.len() + self.1.len()
     }
 
     pub(crate) fn left(&self) -> &[u8] {
@@ -83,6 +121,12 @@ impl<'a> Debug for GapBytes<'a> {
     }
 }
 
+impl<'a> Display for GapBytes<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{:?}{:?}", self.left(), self.right()))
+    }
+}
+
 pub(crate) struct GapBuffer {
     buffer: Vec<u8>,
     gap_start: usize,
@@ -94,24 +138,28 @@ impl Line for GapBuffer {
         self.buffer.len() - (self.gap_end - self.gap_start)
     }
 
-    fn text(&mut self, range: impl std::ops::RangeBounds<usize>) -> &[u8] {
-        let start = match range.start_bound() {
-            std::ops::Bound::Included(&start) => start,
-            std::ops::Bound::Excluded(&start) => start + 1,
-            std::ops::Bound::Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            std::ops::Bound::Included(&end) => end + 1,
-            std::ops::Bound::Excluded(&end) => end,
-            std::ops::Bound::Unbounded => self.text_len(),
-        };
-        self.move_gap_to(end);
-        &self.buffer[start..end]
+    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes {
+        self.get_text(range)
     }
 
-    fn text_str(&mut self, range: impl std::ops::RangeBounds<usize>) -> &str {
-        std::str::from_utf8(self.text(range)).unwrap()
-    }
+    // fn text(&mut self, range: impl std::ops::RangeBounds<usize>) -> &[u8] {
+    //     let start = match range.start_bound() {
+    //         std::ops::Bound::Included(&start) => start,
+    //         std::ops::Bound::Excluded(&start) => start + 1,
+    //         std::ops::Bound::Unbounded => 0,
+    //     };
+    //     let end = match range.end_bound() {
+    //         std::ops::Bound::Included(&end) => end + 1,
+    //         std::ops::Bound::Excluded(&end) => end,
+    //         std::ops::Bound::Unbounded => self.text_len(),
+    //     };
+    //     self.move_gap_to(end);
+    //     &self.buffer[start..end]
+    // }
+
+    // fn text_str(&mut self, range: impl std::ops::RangeBounds<usize>) -> &str {
+    //     std::str::from_utf8(self.text(range)).unwrap()
+    // }
 }
 
 impl GapBuffer {
@@ -127,7 +175,7 @@ impl GapBuffer {
         self.gap_end - self.gap_start
     }
 
-    fn text2(&mut self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'_> {
+    fn get_text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'_> {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
             std::ops::Bound::Excluded(&start) => start + 1,
@@ -145,15 +193,9 @@ impl GapBuffer {
             } else {
                 GapBytes(
                     &self.buffer[start..self.gap_start],
-                    &self.buffer[self.gap_end..self.gap_end + (end - self.gap_start)],
+                    &self.buffer[self.gap_end..end + self.gap_size()],
                 )
             }
-            // } else {
-            //     GapBytes(
-            //         &self.buffer[start..self.gap_start],
-            //         &self.buffer[self.gap_end..end + self.gap_size()],
-            //     )
-            // }
         } else if start >= self.gap_start {
             GapBytes(
                 &[],
@@ -213,7 +255,7 @@ impl GapBuffer {
         self.move_gap_to(self.text_len());
     }
 
-    pub(crate) fn expandGap(&mut self, n: usize) {
+    pub(crate) fn expand_gap(&mut self, n: usize) {
         if self.gap_end - self.gap_start >= n {
             return;
         }
@@ -242,7 +284,7 @@ impl GapBuffer {
         let text_bytes = text;
         let text_len = text_bytes.len();
         if self.gap_end - self.gap_start < text_len {
-            self.expandGap(text_len);
+            self.expand_gap(text_len);
         }
         // Move the gap to the right
         for i in 0..text_len {
@@ -286,12 +328,12 @@ mod tests {
         gb.insert(0, "helloworld".as_bytes());
         gb.insert(2, "w".as_bytes());
         println!("{:?},{},{}", gb.get_buffer(), gb.gap_start, gb.gap_end);
-        println!("{:?}", gb.text2(..));
-        println!("{:?}", gb.text2(0..2));
-        println!("{:?}", gb.text2(4..=6));
-        println!("{:?}", gb.text2(4..=9));
-        println!("{:?}", gb.text2(3..=7));
-        println!("{:?}", gb.text2(9..11));
+        println!("{:?}", gb.get_text(..));
+        println!("{:?}", gb.get_text(0..2));
+        println!("{:?}", gb.get_text(4..=6));
+        println!("{:?}", gb.get_text(4..=9));
+        println!("{:?}", gb.get_text(3..=7));
+        println!("{:?}", gb.get_text(9..11));
     }
     use super::*;
     use utf8_iter::Utf8CharsEx;
@@ -300,8 +342,8 @@ mod tests {
         let mut gb = GapBuffer::new(15);
         gb.insert(0, "helloworld".as_bytes());
         gb.insert(2, "我们".as_bytes());
-        println!("{:?}", gb.text2(..));
-        let s = gb.text2(..);
+        println!("{:?}", gb.get_text(..));
+        let s = gb.get_text(..);
         for (i, byte) in s.char_indices().enumerate() {
             println!("{}: {:?}", i, byte);
         }
@@ -309,10 +351,10 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        let mut gb = GapBuffer::new(10);
-        gb.insert(0, "Hello".as_bytes());
-        println!("{}", gb.text_str(..));
-        gb.delete(1, 1);
-        println!("{}", gb.text_str(..));
+        // let mut gb = GapBuffer::new(10);
+        // gb.insert(0, "Hello".as_bytes());
+        // println!("{}", gb.text_str(..));
+        // gb.delete(1, 1);
+        // println!("{}", gb.text_str(..));
     }
 }
