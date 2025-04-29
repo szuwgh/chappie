@@ -1,11 +1,12 @@
 use crate::gap_buffer::GapBytes;
+use crate::gap_buffer::GapBytesCharIter;
 use crate::mmap_file;
 use crate::util::read_lines;
 use crate::{error::ChapResult, gap_buffer::GapBuffer};
 use inherit_methods_macro::inherit_methods;
 use memmap2::Mmap;
-use ratatui::symbols::line;
 use std::cell::{RefCell, UnsafeCell};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
@@ -13,12 +14,14 @@ use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use unicode_width::UnicodeWidthChar;
+use utf8_iter::Utf8CharIndices;
 use utf8_iter::Utf8CharsEx;
 
 const PAGE_GROUP: usize = 1;
-
+const CHUNK_SIZE: usize = 2 * 1024;
 const CHAR_GAP_SIZE: usize = 128;
-const HEX_GAP_SIZE: usize = 4 * 1024;
+const HEX_GAP_SIZE: usize = 5;
+const HEX_WITH: usize = 19;
 
 pub(crate) enum TextType {
     Char, //字符
@@ -62,7 +65,7 @@ impl EditLineMeta {
     }
 
     pub(crate) fn get_hex_len(&self) -> usize {
-        self.txt_len * 3 + self.txt_len / 8 - 1
+        (self.txt_len * 3 + self.txt_len / 8).saturating_sub(1)
     }
 
     pub(crate) fn get_line_num(&self) -> usize {
@@ -117,8 +120,25 @@ impl<T> RingVec<T> {
         }
     }
 
+    //删除第n个元素 并返回这个元素
+    pub(crate) fn remove(&mut self, index: usize) -> Option<T> {
+        if index >= self.cache.len() {
+            return None;
+        }
+        let idx = (self.start + index) % self.cache.len();
+        let item = self.cache.remove(idx);
+        if self.start > idx {
+            self.start -= 1;
+        }
+
+        Some(item)
+    }
+
     pub(crate) fn push_front(&mut self, item: T) {
         if self.cache.len() < self.size {
+            // self.cache.push(item);
+            // self.start = self.cache.len() - 1;
+            self.cache.insert(self.start, item);
         } else {
             if self.start == 0 {
                 self.start = self.size - 1;
@@ -131,7 +151,13 @@ impl<T> RingVec<T> {
 
     pub(crate) fn push(&mut self, item: T) {
         if self.cache.len() < self.size {
-            self.cache.push(item);
+            if self.start == 0 {
+                self.cache.push(item);
+            } else {
+                let end = (self.start + self.cache.len()) % self.cache.len();
+                self.cache.insert(end, item);
+                self.start = (self.start + 1) % self.cache.len();
+            }
         } else {
             self.cache[self.start] = item;
             self.start = (self.start + 1) % self.size;
@@ -172,13 +198,13 @@ impl<T> RingVec<T> {
     }
 }
 
-pub(crate) struct CacheStr {
+pub(crate) struct GapBytesCache {
     data: (NonNull<u8>, NonNull<u8>),
     len: (usize, usize),
 }
 
-impl CacheStr {
-    fn from_bytes(s: GapBytes) -> Self {
+impl GapBytesCache {
+    fn from_data(s: GapBytes) -> Self {
         let ptr1 = s.left().as_ptr() as *const u8 as *mut u8; // 获取 &str 的指针
         let len1 = s.left().len(); // 获取 &str 的长度
         let non_null_ptr1 = unsafe { NonNull::new_unchecked(ptr1) }; // 创建 NonNull<str>
@@ -187,7 +213,7 @@ impl CacheStr {
         let len2 = s.right().len(); // 获取 &str 的长度
         let non_null_ptr2 = unsafe { NonNull::new_unchecked(ptr2) }; // 创建 NonNull<str>
 
-        CacheStr {
+        GapBytesCache {
             data: (non_null_ptr1, non_null_ptr2),
             len: (len1, len2),
         }
@@ -217,10 +243,129 @@ impl CacheStr {
     }
 }
 
+pub(crate) struct BytesCache {
+    data: NonNull<u8>,
+    len: usize,
+}
+
+impl BytesCache {
+    fn from_slice(s: &[u8]) -> Self {
+        let ptr = s.as_ptr() as *const u8 as *mut u8; // 获取 &str 的指针
+        let len = s.len(); // 获取 &str 的长度
+        let non_null_ptr = unsafe { NonNull::new_unchecked(ptr) }; // 创建 NonNull<str>
+
+        BytesCache {
+            data: non_null_ptr,
+            len: len,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    // 从 CacheStr 获取 &str
+    pub(crate) fn as_str(&self) -> &str {
+        // 将指针转换为 &[u8]，然后转换为 &str
+        std::str::from_utf8(self.as_slice()).unwrap()
+    }
+
+    // 从 CacheStr 获取 &str
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        // 将指针转换为 &[u8]，然后转换为 &str
+        let slice = unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.len) };
+        slice
+    }
+}
+
+pub(crate) struct VecCache {
+    data: Vec<u8>,
+}
+
+impl VecCache {
+    fn from_vec(s: Vec<u8>) -> Self {
+        VecCache { data: s }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    // 从 CacheStr 获取 &str
+    pub(crate) fn as_str(&self) -> &str {
+        // 将指针转换为 &[u8]，然后转换为 &str
+        std::str::from_utf8(self.as_slice()).unwrap()
+    }
+
+    // 从 CacheStr 获取 &str
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        // 将指针转换为 &[u8]，然后转换为 &str
+        &self.data
+    }
+}
+
+pub(crate) enum CacheStr {
+    Gap(GapBytesCache),
+    Vec(VecCache),
+    Bytes(BytesCache),
+}
+
+impl CacheStr {
+    fn from_data(s: LineData) -> Self {
+        match s {
+            LineData::Bytes(v) => CacheStr::Bytes(BytesCache::from_slice(v)),
+            LineData::GapBytes(v) => CacheStr::Gap(GapBytesCache::from_data(v)),
+            LineData::Own(v) => CacheStr::Vec(VecCache::from_vec(v)),
+        }
+    }
+
+    pub(crate) fn as_str(&self) -> (&str, &str) {
+        match self {
+            CacheStr::Gap(v) => v.as_str(),
+            CacheStr::Vec(v) => (v.as_str(), ""),
+            CacheStr::Bytes(v) => (v.as_str(), ""),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            CacheStr::Gap(v) => v.len(),
+            CacheStr::Vec(v) => v.len(),
+            CacheStr::Bytes(v) => v.len(),
+        }
+    }
+
+    pub(crate) fn as_slice(&self) -> (&[u8], &[u8]) {
+        match self {
+            CacheStr::Gap(v) => v.as_slice(),
+            CacheStr::Vec(v) => (v.as_slice(), &[]),
+            CacheStr::Bytes(v) => (v.as_slice(), &[]),
+        }
+    }
+
+    // // 从 CacheStr 获取 &str
+    // pub(crate) fn as_str(&self) -> (&str, &str) {
+    //     // 将指针转换为 &[u8]，然后转换为 &str
+    //     let slice1 = unsafe { std::slice::from_raw_parts(self.data.0.as_ptr(), self.len.0) };
+    //     let slice2 = unsafe { std::slice::from_raw_parts(self.data.1.as_ptr(), self.len.1) };
+    //     (
+    //         std::str::from_utf8(slice1).unwrap(),
+    //         std::str::from_utf8(slice2).unwrap(),
+    //     )
+    // }
+
+    // // 从 CacheStr 获取 &str
+    // pub(crate) fn as_slice(&self) -> (&[u8], &[u8]) {
+    //     // 将指针转换为 &[u8]，然后转换为 &str
+    //     let slice1 = unsafe { std::slice::from_raw_parts(self.data.0.as_ptr(), self.len.0) };
+    //     let slice2 = unsafe { std::slice::from_raw_parts(self.data.1.as_ptr(), self.len.1) };
+    //     (slice1, slice2)
+    // }
+}
+
 pub(crate) trait Line {
     fn text_len(&self) -> usize;
     fn text(&self, range: impl RangeBounds<usize>) -> GapBytes;
-    //fn text_str(&mut self, range: impl RangeBounds<usize>) -> &str;
 }
 
 pub(crate) trait Text {
@@ -241,7 +386,7 @@ pub(crate) trait Text {
         &'a mut self,
         line_index: usize,
         line_offset: usize,
-        line_start: usize,
+        line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>>;
 }
 
@@ -271,19 +416,89 @@ impl<'a> Iterator for GapTextIter<'a> {
     }
 }
 
+enum LineDataCharIter<'a> {
+    CharIter(Utf8CharIndices<'a>),
+    GapCharIter(GapBytesCharIter<'a>),
+}
+
+impl<'a> Iterator for LineDataCharIter<'a> {
+    type Item = (usize, char);
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            LineDataCharIter::CharIter(iter) => iter.next(),
+            LineDataCharIter::GapCharIter(iter) => iter.next(),
+        }
+    }
+}
+
+pub enum LineData<'a> {
+    Own(Vec<u8>),
+    Bytes(&'a [u8]),
+    GapBytes(GapBytes<'a>),
+}
+
+impl<'a> LineData<'a> {
+    fn empty() -> LineData<'a> {
+        LineData::Bytes(&[])
+    }
+
+    fn as_str(&self) -> (&str, &str) {
+        match self {
+            LineData::Bytes(v) => (std::str::from_utf8(v).unwrap(), ""),
+            LineData::GapBytes(v) => v.as_str(),
+            LineData::Own(v) => (std::str::from_utf8(v).unwrap(), ""),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            LineData::Bytes(v) => v.len(),
+            LineData::GapBytes(v) => v.len(),
+            LineData::Own(v) => v.len(),
+        }
+    }
+
+    fn char_indices(&self) -> LineDataCharIter<'_> {
+        match self {
+            LineData::Bytes(v) => LineDataCharIter::CharIter(v.char_indices()),
+            LineData::GapBytes(v) => LineDataCharIter::GapCharIter(v.char_indices()),
+            LineData::Own(v) => LineDataCharIter::CharIter(v.char_indices()),
+        }
+    }
+
+    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> LineData<'a> {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&start) => start,
+            std::ops::Bound::Excluded(&start) => start + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&end) => end + 1,
+            std::ops::Bound::Excluded(&end) => end,
+            std::ops::Bound::Unbounded => self.len(),
+        };
+        match self {
+            LineData::Bytes(v) => LineData::Bytes(&v[start..end]),
+            LineData::GapBytes(v) => LineData::GapBytes(v.text(range)),
+            LineData::Own(v) => LineData::Own(v[start..end].to_vec()),
+        }
+    }
+}
+
 pub struct LineStr<'a> {
-    pub(crate) line: GapBytes<'a>,
+    // pub(crate) line: GapBytes<'a>,
+    pub(crate) line_data: LineData<'a>,
     pub(crate) line_file_start: usize,
     pub(crate) line_file_end: usize,
 }
 
 impl<'a> LineStr<'a> {
     fn text_len(&self) -> usize {
-        self.line.len()
+        self.line_data.len()
     }
 
-    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
-        self.line.text(range)
+    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> LineData<'a> {
+        self.line_data.text(range)
     }
 }
 
@@ -329,27 +544,182 @@ pub struct FileIoTextIter<'a> {
 //     }
 // }
 
-pub(crate) struct HexText {
+pub(crate) struct Chunk {
     buffer: GapBuffer,
+    file_start: usize,
+    file_end: usize,
+    is_modified: bool,
+}
+
+impl Chunk {
+    fn text(&self, range: impl RangeBounds<usize>) -> GapBytes<'_> {
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&start) => start,
+            std::ops::Bound::Excluded(&start) => start + 1,
+            std::ops::Bound::Unbounded => self.file_start,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&end) => end, //包含
+            std::ops::Bound::Excluded(&end) => end, //排除
+            std::ops::Bound::Unbounded => self.file_end,
+        };
+        assert!(start <= end && start >= self.file_start && end >= self.file_start);
+        self.buffer
+            .text((start - self.file_start)..(end - self.file_start))
+    }
+
+    fn text_len(&self) -> usize {
+        self.buffer.text_len()
+    }
+}
+
+pub(crate) struct HexText {
+    chunks: RingVec<Chunk>,
+    file: File,
+    cache: HashMap<usize, Chunk>,
+    file_size: usize,
 }
 
 impl HexText {
     pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<HexText> {
-        let file = File::open(filename)?;
-        //获取文件大小
+        let mut file = File::open(filename)?;
         let file_size = file.metadata()?.len() as usize;
+        let mut chunks = RingVec::new(3);
 
-        let mut buffer = GapBuffer::new(file_size + HEX_GAP_SIZE);
-        let mut reader = BufReader::new(file);
-        let mut line = [0u8; 1024];
-        while let Ok(n) = reader.read(&mut line) {
+        let mut buf = [0u8; 1024];
+        let mut bytes_start = 0;
+        for _ in 0..3 {
+            let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+            let mut bytes_read = 0;
+            while bytes_read < CHUNK_SIZE {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    //跳出 for 循环
+                    break;
+                }
+                bytes_read += n;
+                buffer.insert(buffer.text_len(), &buf[..n]);
+            }
+            if bytes_read == 0 {
+                break;
+            }
+            chunks.push(Chunk {
+                buffer: buffer,
+                file_start: bytes_start,
+                file_end: bytes_start + bytes_read,
+                is_modified: false,
+            });
+            bytes_start += bytes_read;
+        }
+
+        Ok(HexText {
+            chunks: chunks,
+            file,
+            cache: HashMap::new(),
+            file_size,
+        })
+    }
+
+    pub(crate) fn get_file_size(&self) -> usize {
+        self.file_size
+    }
+
+    pub(crate) fn read_chunks(&mut self, file_seek: usize) -> ChapResult<()> {
+        self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
+        let mut chunks = RingVec::new(3);
+
+        let mut buf = [0u8; 1024];
+        let mut bytes_start = file_seek;
+        for _ in 0..3 {
+            let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+            let mut bytes_read = 0;
+            while bytes_read < CHUNK_SIZE {
+                let n = self.file.read(&mut buf)?;
+                if n == 0 {
+                    //跳出 for 循环
+                    break;
+                }
+                bytes_read += n;
+                buffer.insert(buffer.text_len(), &buf[..n]);
+            }
+            if bytes_read == 0 {
+                break;
+            }
+            chunks.push(Chunk {
+                buffer: buffer,
+                file_start: bytes_start,
+                file_end: bytes_start + bytes_read,
+                is_modified: false,
+            });
+            bytes_start += bytes_read;
+        }
+        return Ok(());
+    }
+
+    pub(crate) fn read_last_chunk(&mut self, file_seek: usize) -> ChapResult<()> {
+        if file_seek >= self.file_size {
+            return Ok(());
+        }
+        self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
+        let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+        let mut bytes_read = 0;
+        let mut buf = [0u8; 1024];
+        while bytes_read < CHUNK_SIZE {
+            let n = self.file.read(&mut buf)?;
             if n == 0 {
                 break;
             }
-            //   println!("n:{}", n);
-            buffer.insert(buffer.text_len(), &line[..n]);
+            bytes_read += n;
+            buffer.insert(buffer.text_len(), &buf[..n]);
         }
-        Ok(HexText { buffer })
+
+        //弹出最后一个块
+        let chunk2 = self.chunks.remove(2);
+        if let Some(c) = chunk2 {
+            if c.is_modified {
+                self.cache.insert(c.file_start, c);
+            }
+        }
+        self.chunks.push_front(Chunk {
+            buffer: buffer,
+            file_start: file_seek,
+            file_end: file_seek + bytes_read,
+            is_modified: false,
+        });
+        Ok(())
+    }
+
+    pub(crate) fn read_next_chunk(&mut self, file_seek: usize) -> ChapResult<()> {
+        if file_seek >= self.file_size {
+            return Ok(());
+        }
+        self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
+        let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+        let mut bytes_read = 0;
+        let mut buf = [0u8; 1024];
+        while bytes_read < CHUNK_SIZE {
+            let n = self.file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            bytes_read += n;
+            buffer.insert(buffer.text_len(), &buf[..n]);
+        }
+
+        //弹出第一个块
+        let chunk0 = self.chunks.remove(0);
+        if let Some(c) = chunk0 {
+            if c.is_modified {
+                self.cache.insert(c.file_start, c);
+            }
+        }
+        self.chunks.push(Chunk {
+            buffer: buffer,
+            file_start: file_seek,
+            file_end: file_seek + bytes_read,
+            is_modified: false,
+        });
+        Ok(())
     }
 }
 
@@ -360,13 +730,88 @@ impl Text for HexText {
         line_file_start: usize,
         line_file_end: usize,
     ) -> LineStr<'a> {
-        let line = self.buffer.text(line_file_start..line_file_end);
-
-        LineStr {
-            line: line,
-            line_file_start: line_file_start,
-            line_file_end: line_file_end,
+        let with = line_file_end - line_file_start;
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            if line_file_start > chunk.file_end || line_file_start < chunk.file_start {
+                continue;
+            }
+            // log::debug!(
+            //     "line_file_start: {} line_file_end:{}, chunk.file_end: {} chunk.file_start: {}",
+            //     line_file_start,
+            //     line_file_end,
+            //     chunk.file_end,
+            //     chunk.file_start
+            // );
+            let buffer = chunk.text(line_file_start..);
+            let line_start = line_file_start;
+            if with > buffer.len() {
+                let len = buffer.len();
+                if i < self.chunks.len() - 1 {
+                    if let Some(c1) = self.chunks.get(i + 1) {
+                        let mut v: Vec<u8> = Vec::with_capacity(with);
+                        v.extend_from_slice(buffer.left());
+                        v.extend_from_slice(buffer.right());
+                        let remaining = with - buffer.len();
+                        let buf1 = c1.text(line_file_start + buffer.len()..);
+                        if remaining >= buf1.len() {
+                            // let buf2 = buf1.text(..need);
+                            v.extend_from_slice(buf1.left());
+                            v.extend_from_slice(buf1.right());
+                            return LineStr {
+                                // line: buffer,
+                                line_data: LineData::Own(v),
+                                line_file_start: line_start,
+                                line_file_end: line_start + len + buf1.len(),
+                            };
+                        } else {
+                            let buf2 = buf1.text(..remaining);
+                            v.extend_from_slice(buf2.left());
+                            v.extend_from_slice(buf2.right());
+                            return LineStr {
+                                // line: buffer,
+                                line_data: LineData::Own(v),
+                                line_file_start: line_start,
+                                line_file_end: line_start + with,
+                            };
+                        }
+                    } else {
+                        return LineStr {
+                            // line: buffer,
+                            line_data: LineData::GapBytes(buffer),
+                            line_file_start: line_start,
+                            line_file_end: line_file_end,
+                        };
+                    }
+                } else {
+                    return LineStr {
+                        // line: buffer,
+                        line_data: LineData::GapBytes(buffer),
+                        line_file_start: line_start,
+                        line_file_end: line_start + len,
+                    };
+                }
+            } else {
+                return LineStr {
+                    //line: buffer.text(..with),
+                    line_data: LineData::GapBytes(buffer.text(..with)),
+                    line_file_start: line_start,
+                    line_file_end: line_start + with,
+                };
+            }
         }
+        assert!(false, "not found line");
+        return LineStr {
+            // line: buffer,
+            line_data: LineData::Bytes(&[]),
+            line_file_start: 0,
+            line_file_end: 0,
+        };
+        // LineStr {
+        //     line: line,
+        //     line_data: LineData::Bytes(line1),
+        //     line_file_start: line_file_start,
+        //     line_file_end: line_file_end,
+        // }
     }
 
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize {
@@ -374,7 +819,7 @@ impl Text for HexText {
     }
 
     fn has_next_line(&self, meta: &EditLineMeta) -> bool {
-        if meta.line_file_end >= self.buffer.text_len() - 1 {
+        if meta.line_file_end >= self.file_size {
             return false;
         }
         return true;
@@ -384,22 +829,97 @@ impl Text for HexText {
         &'a mut self,
         line_index: usize,
         line_offset: usize,
-        line_start: usize,
+        line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
-        HexTextIter::new(self.buffer.text(..), 20, line_start)
+        let mut j = None;
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            if line_file_start >= chunk.file_start && line_file_start < chunk.file_end {
+                j = Some(i);
+                break;
+            }
+        }
+        if let Some(j) = j {
+            if j == 0 {
+                //读取上一个块 把最后一个块弹出
+                let mut last_chunk = self.chunks.get(0).unwrap().file_start;
+                if last_chunk == 0 {
+                    return HexTextIter::new(
+                        [self.chunks.get(0), self.chunks.get(1)],
+                        HEX_WITH,
+                        line_file_start,
+                    );
+                } else {
+                    last_chunk = last_chunk.saturating_sub(CHUNK_SIZE);
+                    log::debug!(
+                        "last_chunk: {},line_file_start:{}",
+                        last_chunk,
+                        line_file_start
+                    );
+                    self.read_last_chunk(last_chunk).unwrap();
+                    for c in self.chunks.iter() {
+                        log::debug!(
+                            "chunk.file_start: {} chunk.file_end: {}",
+                            c.file_start,
+                            c.file_end
+                        );
+                    }
+                    return HexTextIter::new(
+                        [self.chunks.get(1), self.chunks.get(2)],
+                        HEX_WITH,
+                        line_file_start,
+                    );
+                }
+            } else if j == self.chunks.len() - 1 {
+                //最后一个块
+                //读取下一个块 把第一个块弹出
+                let next_file_seek = self.chunks.get(j).unwrap().file_end;
+                if next_file_seek >= self.file_size {
+                    return HexTextIter::new([self.chunks.get(j), None], HEX_WITH, line_file_start);
+                } else {
+                    self.read_next_chunk(next_file_seek).unwrap();
+                    return HexTextIter::new(
+                        [self.chunks.get(j - 1), self.chunks.get(j)],
+                        HEX_WITH,
+                        line_file_start,
+                    );
+                }
+            } else {
+                //不是最后一个块
+                return HexTextIter::new(
+                    [self.chunks.get(j), self.chunks.get(j + 1)],
+                    HEX_WITH,
+                    line_file_start,
+                );
+            }
+        }
+
+        //如果没有找到块 从新重读chunks
+        //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
+        let chunk_start = line_file_start / CHUNK_SIZE * CHUNK_SIZE;
+        self.read_chunks(chunk_start).unwrap();
+
+        return HexTextIter::new(
+            [self.chunks.get(0), self.chunks.get(1)],
+            HEX_WITH,
+            line_file_start,
+        );
     }
 }
 
 struct HexTextIter<'a> {
-    buffer: GapBytes<'a>,
+    hex_chunk: [Option<&'a Chunk>; 2],
     with: usize,
     line_file_start: usize,
 }
 
 impl<'a> HexTextIter<'a> {
-    fn new(buffer: GapBytes<'a>, with: usize, line_file_start: usize) -> HexTextIter<'a> {
+    fn new(
+        hex_chunk: [Option<&'a Chunk>; 2],
+        with: usize,
+        line_file_start: usize,
+    ) -> HexTextIter<'a> {
         HexTextIter {
-            buffer,
+            hex_chunk,
             with,
             line_file_start: line_file_start,
         }
@@ -408,28 +928,89 @@ impl<'a> HexTextIter<'a> {
 
 impl<'a> Iterator for HexTextIter<'a> {
     type Item = LineStr<'a>;
+
     fn next(&mut self) -> Option<Self::Item> {
-        if self.line_file_start >= self.buffer.len() {
-            return None;
+        for (i, chunk) in self.hex_chunk.iter().enumerate() {
+            if let Some(c) = chunk {
+                if self.line_file_start > c.file_end || self.line_file_start < c.file_start {
+                    continue;
+                }
+                let buffer = c.text(self.line_file_start..);
+                let line_start = self.line_file_start;
+                // log::debug!(
+                //     "next line_file_start: {} chunk.file_end: {} chunk.file_start: {}",
+                //     self.line_file_start,
+                //     c.file_end,
+                //     c.file_start
+                // );
+                //长度大于 buffer 说明当前chunk 不足以显示一行
+                if self.with > buffer.len() {
+                    let len = buffer.len();
+                    if i == 0 {
+                        //从第一个块读取完毕
+                        if let Some(c1) = self.hex_chunk[1] {
+                            let mut v: Vec<u8> = Vec::with_capacity(self.with);
+                            v.extend_from_slice(buffer.left());
+                            v.extend_from_slice(buffer.right());
+                            let remaining = self.with - buffer.len();
+                            //从下一个块读取
+                            let buf1 = c1.text(self.line_file_start + len..);
+                            //
+                            if remaining >= buf1.len() {
+                                // let buf2 = buf1.text(..need);
+                                v.extend_from_slice(buf1.left());
+                                v.extend_from_slice(buf1.right());
+                                self.line_file_start += len + buf1.len();
+                                return Some(LineStr {
+                                    // line: buffer,
+                                    line_data: LineData::Own(v),
+                                    line_file_start: line_start,
+                                    line_file_end: line_start + len + buf1.len(),
+                                });
+                            } else {
+                                self.line_file_start += self.with;
+                                let buf2 = buf1.text(..remaining);
+                                v.extend_from_slice(buf2.left());
+                                v.extend_from_slice(buf2.right());
+                                return Some(LineStr {
+                                    // line: buffer,
+                                    line_data: LineData::Own(v),
+                                    line_file_start: line_start,
+                                    line_file_end: line_start + self.with,
+                                });
+                            }
+                        } else {
+                            self.line_file_start += len;
+                            // println!("读取完毕");
+                            return Some(LineStr {
+                                //   line: buffer,
+                                line_data: LineData::GapBytes(buffer),
+                                line_file_start: line_start,
+                                line_file_end: line_start + len,
+                            });
+                        }
+                    } else {
+                        self.line_file_start += len;
+                        // println!("读取完毕");
+                        return Some(LineStr {
+                            //   line: buffer,
+                            line_data: LineData::GapBytes(buffer),
+                            line_file_start: line_start,
+                            line_file_end: line_start + len,
+                        });
+                    }
+                } else {
+                    self.line_file_start += self.with;
+                    return Some(LineStr {
+                        // line: buffer.text(..self.with),
+                        line_data: LineData::GapBytes(buffer.text(..self.with)),
+                        line_file_start: line_start,
+                        line_file_end: line_start + self.with,
+                    });
+                }
+            }
         }
-        let buffer = self.buffer.text(self.line_file_start..);
-        let line_start = self.line_file_start;
-        if self.with >= buffer.len() {
-            self.line_file_start += buffer.len();
-            let len = buffer.len();
-            Some(LineStr {
-                line: buffer,
-                line_file_start: line_start,
-                line_file_end: line_start + len,
-            })
-        } else {
-            self.line_file_start += self.with;
-            Some(LineStr {
-                line: buffer.text(..self.with),
-                line_file_start: line_start,
-                line_file_end: line_start + self.with,
-            })
-        }
+        return None;
     }
 }
 
@@ -475,7 +1056,8 @@ impl<'a> Iterator for MmapTextIter<'a> {
         let line_start = self.line_file_start;
         self.line_file_start += end + 1;
         Some(LineStr {
-            line: GapBytes::new(line, &[]),
+            // line: GapBytes::new(line, &[]),
+            line_data: LineData::GapBytes(GapBytes::new(line, &[])),
             line_file_start: line_start,
             line_file_end: line_start + end,
         })
@@ -509,7 +1091,8 @@ impl Text for MmapText {
         let line = &self.mmap[line_file_start..line_file_end];
 
         LineStr {
-            line: GapBytes::new(line, &[]),
+            //   line: GapBytes::new(line, &[]),
+            line_data: LineData::GapBytes(GapBytes::new(line, &[])),
             line_file_start: line_file_start,
             line_file_end: line_file_end,
         }
@@ -829,51 +1412,24 @@ impl<T: Text> TextWarp<T> {
         (text_len as f64 / with as f64).ceil() as usize
     }
 
-    // 计算光标所在行和列
-    // pub(crate) fn calculate_x_y(&self, cursor_y: usize, cursor_x: usize) -> (usize, usize) {
-    //     let mut line_count = 0;
-    //     let mut line_index = 0;
-    //     let mut shirt = 0;
-    //     // 计算光标所在行
-    //     let y = cursor_y + 1;
-    //     for (i, b) in self.borrow_lines().iter().enumerate() {
-    //         let cur_line_count = Self::calculate_lines(b.text_len(), self.with);
-    //         line_count += cur_line_count;
-    //         line_index = i;
-    //         if y <= line_count {
-    //             shirt = cur_line_count - (line_count - y) - 1;
-    //             break;
-    //         }
-    //     }
-    //     let line_offset = shirt * self.with + cursor_x;
-    //     (line_index, line_offset)
-    // }
-
-    //通过 line_index 获取页数
-    // fn get_page_num_from_line_index(&self, line_index: usize) -> usize {
-    //     for p in self.borrow_page_offset_list().iter() {
-    //         if line_index < p.line_index {
-    //             return p.line_index;
-    //         }
-    //     }
-    // }
-
     //从当前行开始获取后面n行
     pub(crate) fn get_pre_line<'a>(
         &'a self,
         meta: &EditLineMeta,
         line_count: usize,
     ) -> (Option<CacheStr>, EditLineMeta) {
+        // log::debug!("get_pre_line: {}", meta.get_line_num());
+        assert!(meta.get_line_num() >= 1);
         if meta.get_line_num() == 1 {
             return (None, EditLineMeta::default());
         }
-        let mut s: GapBytes<'_> = GapBytes::empty();
+        let mut s = LineData::empty();
         let mut m = EditLineMeta::default();
         self.get_text(meta.get_line_num() - line_count, line_count, |txt, meta| {
             s = txt;
             m = meta;
         });
-        (Some(CacheStr::from_bytes(s)), m)
+        (Some(CacheStr::from_data(s)), m)
     }
 
     //从当前行开始获取后面n行
@@ -893,8 +1449,9 @@ impl<T: Text> TextWarp<T> {
             self.borrow_lines_mut()
                 .get_line(line_index, meta.line_file_start, meta.line_file_end); //&self.borrow_lines()[line_index];
 
+        //这行已经读完 开始下一行
         if line_end == line.text_len() {
-            line_file_start = meta.get_line_file_end() + 1;
+            line_file_start = meta.get_line_file_end();
             line_end = 0;
             line_index += 1;
         }
@@ -904,7 +1461,7 @@ impl<T: Text> TextWarp<T> {
             line_offset: line_end,
             line_file_start: line_file_start,
         };
-        let mut s = GapBytes::empty();
+        let mut s = LineData::empty();
         let mut m = EditLineMeta::default();
         let start_page_num = meta.get_line_num() / self.height;
         self.get_char_text_fn(
@@ -918,7 +1475,7 @@ impl<T: Text> TextWarp<T> {
                 m = m1;
             },
         );
-        (Some(CacheStr::from_bytes(s)), m)
+        (Some(CacheStr::from_data(s)), m)
     }
 
     /**
@@ -972,8 +1529,7 @@ impl<T: Text> TextWarp<T> {
         self.borrow_cache_line_meta_mut().clear();
 
         self.get_text(line_num, line_count, |txt, meta| {
-            self.borrow_cache_lines_mut()
-                .push(CacheStr::from_bytes(txt));
+            self.borrow_cache_lines_mut().push(CacheStr::from_data(txt));
             self.borrow_cache_line_meta_mut().push(meta);
         });
 
@@ -988,7 +1544,7 @@ impl<T: Text> TextWarp<T> {
         let mut lines = Vec::new();
         let mut lines_meta = Vec::new();
         self.get_text(line_num, line_count, |txt, meta| {
-            lines.push(CacheStr::from_bytes(txt));
+            lines.push(CacheStr::from_data(txt));
             lines_meta.push(meta);
         });
         (lines, lines_meta)
@@ -996,7 +1552,7 @@ impl<T: Text> TextWarp<T> {
 
     fn get_text<'a, F>(&'a self, line_num: usize, line_count: usize, mut f: F)
     where
-        F: FnMut(GapBytes<'a>, EditLineMeta),
+        F: FnMut(LineData<'a>, EditLineMeta),
     {
         match self.text_type {
             TextType::Char => {
@@ -1056,14 +1612,8 @@ impl<T: Text> TextWarp<T> {
         f: &mut F,
     ) where
         // 使用高阶 trait bound，允许闭包接受任意较短生命周期的 &str
-        F: FnMut(GapBytes<'a>, EditLineMeta),
+        F: FnMut(LineData<'a>, EditLineMeta),
     {
-        // if page_offset.line_index >= self.borrow_lines().len() {
-        //     return;
-        // }
-        // let (a, b) = self
-        //     .borrow_lines_mut()
-        //     .split_at_mut(page_offset.line_index + 1);
         let mut cur_line_count = 0;
         let mut line_num = start_line_num;
         let mut page_num = start_page_num;
@@ -1094,46 +1644,6 @@ impl<T: Text> TextWarp<T> {
                 return;
             }
         }
-
-        // let line_txt = &a[page_offset.line_index].text()[page_offset.line_start..];
-        // Self::set_line_txt(
-        //     line_txt,
-        //     page_offset.line_index,
-        //     page_offset.line_start,
-        //     self.with,
-        //     self.height,
-        //     self.borrow_page_offset_list_mut(),
-        //     &mut line_num,
-        //     line_count,
-        //     &mut page_num,
-        //     &mut cur_line_count,
-        //     skip_line,
-        //     f,
-        // );
-        // if cur_line_count >= line_count {
-        //     return;
-        // }
-        // // 使用 split_at_mut 获取后续行的可变子切片
-        // for (i, line) in b.iter_mut().enumerate() {
-        //     let line_txt = line.text();
-        //     Self::set_line_txt(
-        //         line_txt,
-        //         page_offset.line_index + i + 1,
-        //         0,
-        //         self.with,
-        //         self.height,
-        //         self.borrow_page_offset_list_mut(),
-        //         &mut line_num,
-        //         line_count,
-        //         &mut page_num,
-        //         &mut cur_line_count,
-        //         skip_line,
-        //         f,
-        //     );
-        //     if cur_line_count >= line_count {
-        //         return;
-        //     }
-        // }
     }
 
     fn set_line_char_txt<'a, F>(
@@ -1151,7 +1661,7 @@ impl<T: Text> TextWarp<T> {
         f: &mut F,
     ) where
         // 使用高阶 trait bound，允许闭包接受任意较短生命周期的 &str
-        F: FnMut(GapBytes<'a>, EditLineMeta),
+        F: FnMut(LineData<'a>, EditLineMeta),
     {
         //空行
         let line_txt = line_str.text(line_start..);
@@ -1160,7 +1670,7 @@ impl<T: Text> TextWarp<T> {
             if *line_num >= skip_line {
                 *cur_line_count += 1;
                 f(
-                    GapBytes::empty(),
+                    LineData::empty(),
                     EditLineMeta::new(
                         0,
                         0,
@@ -1870,10 +2380,10 @@ mod tests {
     #[test]
     fn text_hex() {
         let mut hex = HexText::from_file_path("/root/aa.txt").unwrap();
-        println!("hex len: {:?}", hex.buffer.get_buffer());
-        let iter = hex.iter(0, 0, 0);
+        println!("hex len: {:?}", hex.chunks.get(0).unwrap().buffer.text(..));
+        let iter = hex.iter(0, 10, 0);
         for i in iter {
-            println!("i: {}", i.line);
+            println!("i: {:?}", i.line_data.as_str());
         }
     }
 
@@ -1921,262 +2431,11 @@ mod tests {
         println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
         let (s, c) = text.get_next_line(&c, 1);
         println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        // for p in text.borrow_page_offset_list().iter() {
-        //     println!("p:{:?}", p)
-        // }
-
-        // let (s, c) = text.get_one_page(3);
-        // for (i, l) in s.iter().enumerate() {
-        //     println!("l: {:?},{:?}", l.as_str(), c.get(i));
-        // }
-        // for p in text.borrow_page_offset_list().iter() {
-        //     println!("p:{:?}", p)
-        // }
-
-        // let (s, c) = text.get_one_page(4);
-        // for (i, l) in s.iter().enumerate() {
-        //     println!("l: {:?},{:?}", l.as_str(), c.get(i));
-        // }
-        // for p in text.borrow_page_offset_list().iter() {
-        //     println!("p:{:?}", p)
-        // }
     }
-
-    // #[test]
-    // fn test_print() {
-    //     let mut b = EditTextBuffer::from_file_path("/root/aa.txt", 2, 5).unwrap();
-
-    //     let c = {
-    //         let (s, c) = b.get_one_page(1);
-    //         for (i, l) in s.iter().enumerate() {
-    //             println!("l: {:?},{:?}", l.as_str(), c.get(i));
-    //         }
-    //         let (s, c) = b.get_one_page(3);
-    //         for (i, l) in s.iter().enumerate() {
-    //             println!("l: {:?},{:?}", l.as_str(), c.get(i));
-    //         }
-    //         let (s, c) = b.get_one_page(5);
-    //         for (i, l) in s.iter().enumerate() {
-    //             println!("l: {:?},{:?}", l.as_str(), c.get(i));
-    //         }
-    //         let (s, c) = b.get_one_page(7);
-    //         for (i, l) in s.iter().enumerate() {
-    //             println!("l: {:?},{:?}", l.as_str(), c.get(i));
-    //         }
-
-    //         let (s, c) = b.get_one_page(1);
-    //         for (i, l) in s.iter().enumerate() {
-    //             println!("l: {:?},{:?}", l.as_str(), c.get(i));
-    //         }
-
-    //         for p in b.borrow_page_offset_list().iter() {
-    //             println!("p:{:?}", p)
-    //         }
-    //         c
-    //     };
-    //     let y = 0;
-    //     let x = 5;
-    //     b.insert(y, x, c.get(y).unwrap(), 'a');
-    //     for p in b.borrow_page_offset_list().iter() {
-    //         println!("p1:{:?}", p)
-    //     }
-    //     // let (s, m) = b.get_next_line(&c.last().unwrap(), 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    //     // let (s, m) = b.get_next_line(&m, 1);
-    //     // println!("{:?},{:?}", s.unwrap().as_str(), m);
-    // }
-
-    // #[test]
-    // fn test_print2() {
-    //     let mut b =
-    //         EditTextBuffer::from_file_path("/opt/rsproject/chappie/src/chap.rs", 10, 90).unwrap();
-
-    //     let (s, c) = b.get_line_content_with_count(1, 100);
-    //     for (i, l) in s.iter().enumerate() {
-    //         println!("ll: {:?},{:?}", l.as_str(), c.get(i));
-    //     }
-
-    //     // let c = {
-    //     //     let (s, c) = b.get_one_page(1);
-    //     //     for (i, l) in s.iter().enumerate() {
-    //     //         println!("l: {:?},{:?}", l.as_str(), c.get(i));
-    //     //     }
-
-    //     //     // for p in b.page_offset_list.iter() {
-    //     //     //     println!("p:{:?}", p)
-    //     //     // }
-    //     //     c
-    //     // };
-
-    //     // b.scroll_next_one_line(c.last().unwrap());
-
-    //     // let (s, c) = b.get_current_page();
-    //     // for (i, l) in s.iter().enumerate() {
-    //     //     println!("n: {:?},{:?}", l.as_str(), c.get(i));
-    //     // }
-    //     // println!("=====================================");
-
-    //     // b.scroll_next_one_line(c.last().unwrap());
-
-    //     // let (s, c) = b.get_current_page();
-    //     // for (i, l) in s.iter().enumerate() {
-    //     //     println!("n: {:?},{:?}", l.as_str(), c.get(i));
-    //     // }
-    //     // println!("=====================================");
-    //     // b.scroll_next_one_line(c.last().unwrap());
-
-    //     // let (s, c) = b.get_current_page();
-    //     // for (i, l) in s.iter().enumerate() {
-    //     //     println!("n: {:?},{:?}", l.as_str(), c.get(i));
-    //     // }
-    //     // println!("=====================================");
-    //     // b.scroll_pre_one_line(c.get(0).unwrap());
-
-    //     // let (s, c) = b.get_current_page();
-    //     // for (i, l) in s.iter().enumerate() {
-    //     //     println!("p: {:?},{:?}", l.as_str(), c.get(i));
-    //     // }
-    //     // println!("=====================================");
-    //     // b.scroll_pre_one_line(c.get(0).unwrap());
-
-    //     // let (s, c) = b.get_current_page();
-    //     // for (i, l) in s.iter().enumerate() {
-    //     //     println!("p: {:?},{:?}", l.as_str(), c.get(i));
-    //     // }
-    //     // println!("=====================================");
-    //     // b.scroll_pre_one_line(c.get(0).unwrap());
-
-    //     // let (s, c) = b.get_current_page();
-    //     // for (i, l) in s.iter().enumerate() {
-    //     //     println!("p: {:?},{:?}", l.as_str(), c.get(i));
-    //     // }
-    //     // println!("=====================================");
-    // }
-
-    // #[test]
-    // fn test_insert() {
-    //     let mut b = EditTextBuffer::from_file_path("/root/aa.txt", 2, 5).unwrap();
-
-    //     {
-    //         let (s, c) = b.get_line_content_with_count(1, 10);
-    //         for l in s.iter() {
-    //             println!("l: {:?}", l.as_str());
-    //         }
-
-    //         let y = 0;
-    //         let x = 5;
-    //         b.insert(y, x, c.get(y).unwrap(), 'b');
-    //     }
-
-    //     // b.insert(y, x + 1, 'b');
-    //     // b.insert(y, x + 1 + 1, 'c');
-    //     // b.insert(y, x + 1 + 1 + 1, 'd');
-    //     // b.insert(y, x + 1 + 1 + 1 + 1, 'e');
-    //     {
-    //         let (s, c) = b.get_line_content_with_count(1, 10);
-    //         for l in s.iter() {
-    //             println!("l1: {:?}", l.as_str());
-    //         }
-    //     }
-    // }
-
-    // #[test]
-    // fn test_insert_newline() {
-    //     let mut b = EditTextBuffer::from_file_path("/root/aa.txt", 2, 5).unwrap();
-
-    //     {
-    //         let (s, c) = b.get_line_content(1, 10);
-    //         for l in s.iter() {
-    //             println!("l: {:?}", l.as_str());
-    //         }
-    //         let cursor_y = 1;
-    //         let cursor_x = 4;
-    //         b.insert_newline(cursor_y, cursor_x, c.get(cursor_y).unwrap());
-    //         {
-    //             let (s, c) = b.get_line_content(1, 10);
-    //             for l in s.iter() {
-    //                 println!("l1: {:?}", l.as_str());
-    //             }
-    //         }
-    //         {
-    //             let (s, c) = b.get_line_content(1, 10);
-    //             for l in s.iter() {
-    //                 println!("l1: {:?}", l.as_str());
-    //             }
-    //         }
-    //     }
-    // }
-
-    // #[test]
-    // fn test_backspace() {
-    //     let mut b = EditTextBuffer::from_file_path("/root/aa.txt", 10, 90).unwrap();
-
-    //     {
-    //         let (s, c) = b.get_line_content(1, 10);
-    //         for l in s.iter() {
-    //             println!("l: {:?}", l.as_str());
-    //         }
-    //         let cursor_y = 6;
-    //         let cursor_x = 0;
-    //         b.backspace(cursor_y, cursor_x, c.get(cursor_y).unwrap());
-    //         {
-    //             let (s, c) = b.get_line_content(1, 10);
-    //             for l in s.iter() {
-    //                 println!("l1: {:?}", l.as_str());
-    //             }
-    //         }
-    //         {
-    //             let (s, c) = b.get_line_content(1, 10);
-    //             for l in s.iter() {
-    //                 println!("l1: {:?}", l.as_str());
-    //             }
-    //         }
-    //     }
-    // }
-
-    // #[test]
-    // fn test_calculate_lines() {
-    //     let txt = "12345678910";
-    //     let line_count = EditTextBuffer::calculate_lines(txt.len(), 5);
-    //     println!("line_count: {}", line_count);
-    // }
-
-    // #[test]
-    // fn test_get_backup_name() {
-    //     let filepath = "/root/aa/12345678910";
-    //     let name = EditTextBuffer::get_backup_name(filepath).unwrap();
-    //     println!("name: {:?}", name);
-    // }
 
     #[test]
     fn test_ringcache() {
-        let mut ring_cache = RingVec::<usize>::new(10);
+        let mut ring_cache = RingVec::<usize>::new(8);
         for i in 0..11 {
             ring_cache.push(i);
         }
@@ -2184,6 +2443,8 @@ mod tests {
         for i in ring_cache.iter() {
             println!("i: {:?}", i);
         }
+
+        println!("{:?}", ring_cache.cache);
 
         ring_cache.push_front(0);
 
@@ -2218,7 +2479,117 @@ mod tests {
         println!("{:?}", ring_cache.get(10));
         println!("{:?}", ring_cache.get(11));
 
+        ring_cache.remove(0);
+
+        for i in ring_cache.iter() {
+            println!("i3: {:?}", i);
+        }
+
+        ring_cache.push(20);
+
+        for i in ring_cache.iter() {
+            println!("i4: {:?}", i);
+        }
+
         // println!("{:?}", ring_cache.last());
+    }
+    #[test]
+    fn test_remove() {
+        let mut ring_cache = RingVec::<usize>::new(8);
+        for i in 0.. {
+            ring_cache.push(i);
+        }
+
+        for i in ring_cache.iter() {
+            println!("i: {:?}", i);
+        }
+
+        println!("{:?}", ring_cache.cache);
+        ring_cache.remove(0);
+
+        for i in ring_cache.iter() {
+            println!("i: {:?}", i);
+        }
+
+        println!("{:?}", ring_cache.cache);
+
+        ring_cache.push(20);
+        for i in ring_cache.iter() {
+            println!("i: {:?}", i);
+        }
+        println!("{:?}", ring_cache.cache);
+
+        ring_cache.remove(0);
+
+        for i in ring_cache.iter() {
+            println!("i: {:?}", i);
+        }
+
+        println!("{:?}", ring_cache.cache);
+
+        ring_cache.push(30);
+        for i in ring_cache.iter() {
+            println!("i: {:?}", i);
+        }
+        println!("{:?}", ring_cache.cache);
+    }
+
+    #[test]
+    fn test_remove2() {
+        let mut ring_cache = RingVec::<usize>::new(3);
+        for i in 0..3 {
+            ring_cache.push(i);
+        }
+
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+
+        println!("{:?},{}", ring_cache.cache, ring_cache.start);
+        ring_cache.remove(7);
+
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+
+        println!("{:?},{}", ring_cache.cache, ring_cache.start);
+
+        ring_cache.push_front(20);
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+        println!("push_front {:?}", ring_cache.cache);
+
+        ring_cache.remove(7);
+
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+
+        println!("{:?},{}", ring_cache.cache, ring_cache.start);
+
+        ring_cache.push_front(30);
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+
+        ring_cache.remove(7);
+        ring_cache.push_front(40);
+
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+
+        println!("push_front{:?}", ring_cache.cache);
+
+        ring_cache.remove(7);
+        ring_cache.push_front(50);
+
+        for i in ring_cache.iter().enumerate() {
+            println!("i: {:?}", i);
+        }
+
+        println!("push_front{:?}", ring_cache.cache);
     }
 
     // #[test]

@@ -4,7 +4,7 @@ use std::fmt::{Debug, Write};
 use utf8_iter::Utf8CharIndices;
 use utf8_iter::Utf8CharsEx;
 
-use crate::editor::{Line, LineStr};
+use crate::editor::{Line, LineData, LineStr};
 
 pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
 
@@ -15,6 +15,12 @@ impl<'a> GapBytes<'a> {
 
     pub(crate) fn empty() -> GapBytes<'a> {
         GapBytes(&[], &[])
+    }
+
+    pub(crate) fn as_str(&self) -> (&str, &str) {
+        let left = std::str::from_utf8(self.left()).unwrap();
+        let right = std::str::from_utf8(self.right()).unwrap();
+        (left, right)
     }
 
     pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
@@ -36,13 +42,11 @@ impl<'a> GapBytes<'a> {
             } else {
                 GapBytes(self.0, &self.1[..end - self.left().len()])
             }
-        } else if start >= self.left().len() {
+        } else {
             GapBytes(
                 &[],
                 &self.1[start - self.left().len()..end - self.left().len()],
             )
-        } else {
-            todo!()
         }
     }
 
@@ -138,28 +142,9 @@ impl Line for GapBuffer {
         self.buffer.len() - (self.gap_end - self.gap_start)
     }
 
-    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes {
+    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'_> {
         self.get_text(range)
     }
-
-    // fn text(&mut self, range: impl std::ops::RangeBounds<usize>) -> &[u8] {
-    //     let start = match range.start_bound() {
-    //         std::ops::Bound::Included(&start) => start,
-    //         std::ops::Bound::Excluded(&start) => start + 1,
-    //         std::ops::Bound::Unbounded => 0,
-    //     };
-    //     let end = match range.end_bound() {
-    //         std::ops::Bound::Included(&end) => end + 1,
-    //         std::ops::Bound::Excluded(&end) => end,
-    //         std::ops::Bound::Unbounded => self.text_len(),
-    //     };
-    //     self.move_gap_to(end);
-    //     &self.buffer[start..end]
-    // }
-
-    // fn text_str(&mut self, range: impl std::ops::RangeBounds<usize>) -> &str {
-    //     std::str::from_utf8(self.text(range)).unwrap()
-    // }
 }
 
 impl GapBuffer {
@@ -196,13 +181,11 @@ impl GapBuffer {
                     &self.buffer[self.gap_end..end + self.gap_size()],
                 )
             }
-        } else if start >= self.gap_start {
+        } else {
             GapBytes(
                 &[],
                 &self.buffer[start + self.gap_size()..end + self.gap_size()],
             )
-        } else {
-            todo!()
         }
     }
 
@@ -212,7 +195,8 @@ impl GapBuffer {
 
     pub(crate) fn get_line_str<'a>(&'a mut self) -> LineStr<'a> {
         LineStr {
-            line: self.text(..),
+            // line: self.text(..),
+            line_data: LineData::GapBytes(self.text(..)),
             line_file_start: 0,
             line_file_end: 0,
         }
