@@ -1,0 +1,53 @@
+Date : 2025-04-27 11:37:58
+Directory : /opt/rsproject/chappie/src
+Total : 24 files,  4751 codes, 1404 comments, 634 blanks, all 6789 lines
+
+Languages
++----------+------------+------------+------------+------------+------------+
+| language | files      | code       | comment    | blank      | total      |
++----------+------------+------------+------------+------------+------------+
+| Rust     |         24 |      4,751 |      1,404 |        634 |      6,789 |
++----------+------------+------------+------------+------------+------------+
+
+Directories
++---------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                              | files      | code       | comment    | blank      | total      |
++---------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                 |         24 |      4,751 |      1,404 |        634 |      6,789 |
+| . (Files)                                         |         10 |      3,883 |      1,360 |        508 |      5,751 |
+| chatapi                                           |          3 |        174 |          8 |         35 |        217 |
+| fuzzy                                             |          5 |        692 |         35 |         80 |        807 |
+| tui                                               |          4 |          0 |          0 |          7 |          7 |
+| vb                                                |          2 |          2 |          1 |          4 |          7 |
++---------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++---------------------------------------------------+----------+------------+------------+------------+------------+
+| filename                                          | language | code       | comment    | blank      | total      |
++---------------------------------------------------+----------+------------+------------+------------+------------+
+| /opt/rsproject/chappie/src/chap.rs                | Rust     |        127 |         21 |         10 |        158 |
+| /opt/rsproject/chappie/src/chatapi/gemini.rs      | Rust     |         30 |          0 |          6 |         36 |
+| /opt/rsproject/chappie/src/chatapi/grop.rs        | Rust     |        100 |          0 |         16 |        116 |
+| /opt/rsproject/chappie/src/chatapi/mod.rs         | Rust     |         44 |          8 |         13 |         65 |
+| /opt/rsproject/chappie/src/cmd.rs                 | Rust     |         57 |          0 |         15 |         72 |
+| /opt/rsproject/chappie/src/editor.rs              | Rust     |      1,288 |        795 |        239 |      2,322 |
+| /opt/rsproject/chappie/src/error.rs               | Rust     |         17 |          0 |          3 |         20 |
+| /opt/rsproject/chappie/src/fuzzy/bitap.rs         | Rust     |        156 |         10 |         16 |        182 |
+| /opt/rsproject/chappie/src/fuzzy/boyermoore.rs    | Rust     |         97 |          6 |         15 |        118 |
+| /opt/rsproject/chappie/src/fuzzy/levenshtein.rs   | Rust     |        100 |          5 |          6 |        111 |
+| /opt/rsproject/chappie/src/fuzzy/mod.rs           | Rust     |        124 |          4 |         11 |        139 |
+| /opt/rsproject/chappie/src/fuzzy/smithwaterman.rs | Rust     |        215 |         10 |         32 |        257 |
+| /opt/rsproject/chappie/src/gap_buffer.rs          | Rust     |        268 |         30 |         40 |        338 |
+| /opt/rsproject/chappie/src/hex.rs                 | Rust     |          5 |          0 |          3 |          8 |
+| /opt/rsproject/chappie/src/main.rs                | Rust     |         35 |          1 |          2 |         38 |
+| /opt/rsproject/chappie/src/textwarp.rs            | Rust     |        544 |        322 |         71 |        937 |
+| /opt/rsproject/chappie/src/tui.rs                 | Rust     |      1,525 |        187 |        123 |      1,835 |
+| /opt/rsproject/chappie/src/tui/edit.rs            | Rust     |          0 |          0 |          2 |          2 |
+| /opt/rsproject/chappie/src/tui/hex.rs             | Rust     |          0 |          0 |          2 |          2 |
+| /opt/rsproject/chappie/src/tui/text.rs            | Rust     |          0 |          0 |          1 |          1 |
+| /opt/rsproject/chappie/src/tui/vector.rs          | Rust     |          0 |          0 |          2 |          2 |
+| /opt/rsproject/chappie/src/util.rs                | Rust     |         17 |          4 |          2 |         23 |
+| /opt/rsproject/chappie/src/vb/mod.rs              | Rust     |          1 |          0 |          1 |          2 |
+| /opt/rsproject/chappie/src/vb/vectorbase.rs       | Rust     |          1 |          1 |          3 |          5 |
+| Total                                             |          |      4,751 |      1,404 |        634 |      6,789 |
++---------------------------------------------------+----------+------------+------------+------------+------------+

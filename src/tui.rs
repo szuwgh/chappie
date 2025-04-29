@@ -3,7 +3,6 @@ use crate::editor::EditLineMeta;
 use crate::editor::EditTextWarp;
 use crate::editor::GapText;
 use crate::editor::HexText;
-use crate::editor::MmapText;
 use crate::editor::RingVec;
 use crate::editor::TextType;
 use crate::editor::TextWarp;
@@ -25,10 +24,8 @@ use crossterm::{
 };
 use std::path::Path;
 //use fastembed::TextEmbedding;
-use wwml::Tensor;
 
 use crate::cmd::UIType;
-use clap::ValueEnum;
 use ratatui::prelude::Backend;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
@@ -1585,6 +1582,14 @@ fn get_hex_content<'a>(
         let mut j = 1;
 
         if cursor_y == i {
+            log::debug!(
+                "cursor_y: {}, i: {}, line_num: {},line_file_start:{},line_file_end:{}",
+                cursor_y,
+                i,
+                line_meta.get(i).unwrap().get_line_num(),
+                line_meta.get(i).unwrap().get_line_file_start(),
+                line_meta.get(i).unwrap().get_line_file_end(),
+            );
             let mut line = String::new();
             line.push_str(&format_hex_slice(slice1, &mut j));
             line.push_str(&format_hex_slice(slice2, &mut j));

@@ -1,6 +1,7 @@
 #![feature(variant_count)]
 #![feature(async_closure)]
 #![feature(let_chains)]
+#![feature(trait_alias)]
 mod chatapi;
 mod error;
 mod fuzzy;
