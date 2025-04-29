@@ -58,6 +58,15 @@ enum ChapMod {
     Vector, //向量分析模式
 }
 
+//u8类型
+enum ByteCategory {
+    Null,
+    AsciiPrintable,
+    AsciiWhitespace,
+    AsciiOther,
+    NonAscii,
+}
+
 pub(crate) struct ChapTui {
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
     navi: Navigation,
