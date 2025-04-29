@@ -59,12 +59,45 @@ enum ChapMod {
 }
 
 //u8类型
-enum ByteCategory {
+enum U8Category {
     Null,
     AsciiPrintable,
     AsciiWhitespace,
     AsciiOther,
     NonAscii,
+}
+
+impl U8Category {
+    fn color(self) -> Color {
+        match self {
+            U8Category::Null => Color::LightRed,
+            U8Category::AsciiPrintable => Color::LightGreen,
+            U8Category::AsciiWhitespace => Color::LightBlue,
+            U8Category::AsciiOther => Color::Yellow,
+            U8Category::NonAscii => Color::White,
+        }
+    }
+}
+
+struct Byte(u8);
+
+impl Byte {
+    fn category(self) -> U8Category {
+        if self.0 == 0x00 {
+            U8Category::Null
+        } else if self.0.is_ascii_alphanumeric()
+            || self.0.is_ascii_punctuation()
+            || self.0.is_ascii_graphic()
+        {
+            U8Category::AsciiPrintable
+        } else if self.0.is_ascii_whitespace() {
+            U8Category::AsciiWhitespace
+        } else if self.0.is_ascii() {
+            U8Category::AsciiOther
+        } else {
+            U8Category::NonAscii
+        }
+    }
 }
 
 pub(crate) struct ChapTui {
@@ -1591,35 +1624,110 @@ fn get_hex_content<'a>(
         let mut j = 1;
 
         if cursor_y == i {
-            log::debug!(
-                "cursor_y: {}, i: {}, line_num: {},line_file_start:{},line_file_end:{}",
-                cursor_y,
-                i,
-                line_meta.get(i).unwrap().get_line_num(),
-                line_meta.get(i).unwrap().get_line_file_start(),
-                line_meta.get(i).unwrap().get_line_file_end(),
-            );
-            let mut line = String::new();
-            line.push_str(&format_hex_slice(slice1, &mut j));
-            line.push_str(&format_hex_slice(slice2, &mut j));
-            let (a, b, c) = n_chars(&line, cursor_x);
-            if !b.is_empty() {
-                spans.push(Span::raw(a.to_string().to_uppercase()));
-                spans.push(Span::styled(
-                    b.to_string().to_uppercase(),
-                    Style::default().bg(Color::LightRed),
-                ));
-                spans.push(Span::raw(c.to_string().to_uppercase()));
-            } else {
-                spans.push(Span::raw(line.to_uppercase()));
-                let diff = cursor_x.saturating_sub(txt.len());
-                let padding = " ".repeat(diff);
-                spans.push(Span::raw(padding));
-                spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+            // log::debug!(
+            //     "cursor_y: {}, i: {}, line_num: {},line_file_start:{},line_file_end:{}",
+            //     cursor_y,
+            //     i,
+            //     line_meta.get(i).unwrap().get_line_num(),
+            //     line_meta.get(i).unwrap().get_line_file_start(),
+            //     line_meta.get(i).unwrap().get_line_file_end(),
+            // );
+            let mut k = 0;
+
+            for b in slice1.iter() {
+                let category = Byte(*b).category();
+                let color = category.color();
+
+                let mut buffer = Buffer::<1>::new();
+                let c = buffer.format(&[*b]);
+                let space = if j % 8 == 0 { "  " } else { " " };
+
+                for x in c.chars() {
+                    spans.push(Span::styled(
+                        x.to_string().to_uppercase(),
+                        Style::default().fg(color),
+                    ));
+                }
+                for x in space.chars() {
+                    spans.push(Span::raw(x.to_string()));
+                }
+                j += 1;
             }
+
+            for b in slice2.iter() {
+                let category = Byte(*b).category();
+                let color = category.color();
+
+                let mut buffer = Buffer::<1>::new();
+                let c = buffer.format(&[*b]);
+                let space = if j % 8 == 0 { "  " } else { " " };
+                for x in c.chars() {
+                    spans.push(Span::styled(
+                        x.to_string().to_uppercase(),
+                        Style::default().fg(color),
+                    ));
+                }
+                for x in space.chars() {
+                    spans.push(Span::raw(x.to_string()));
+                }
+                j += 1;
+            }
+            spans[cursor_x] = Span::styled(
+                spans[cursor_x].content.clone(),
+                Style::default().bg(Color::LightRed),
+            );
+
+            // let mut line = String::new();
+            // line.push_str(&format_hex_slice(slice1, &mut j));
+            // line.push_str(&format_hex_slice(slice2, &mut j));
+            // let (a, b, c) = n_chars(&line, cursor_x);
+            // if !b.is_empty() {
+            //     spans.push(Span::raw(a.to_string().to_uppercase()));
+            //     spans.push(Span::styled(
+            //         b.to_string().to_uppercase(),
+            //         Style::default().bg(Color::LightRed),
+            //     ));
+            //     spans.push(Span::raw(c.to_string().to_uppercase()));
+            // } else {
+            //     spans.push(Span::raw(line.to_uppercase()));
+            //     let diff = cursor_x.saturating_sub(txt.len());
+            //     let padding = " ".repeat(diff);
+            //     spans.push(Span::raw(padding));
+            //     spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+            // }
         } else {
-            spans.push(Span::raw(format_hex_slice(slice1, &mut j).to_uppercase()));
-            spans.push(Span::raw(format_hex_slice(slice2, &mut j).to_uppercase()));
+            for b in slice1.iter() {
+                let category = Byte(*b).category();
+                let color = category.color();
+
+                let mut buffer = Buffer::<1>::new();
+                let c = buffer.format(&[*b]);
+                spans.push(Span::styled(
+                    c.to_string().to_uppercase(),
+                    Style::default().fg(color),
+                ));
+                let white = if j % 8 == 0 { "  " } else { " " };
+                spans.push(Span::raw(white));
+                j += 1;
+            }
+
+            for b in slice2.iter() {
+                let category = Byte(*b).category();
+                let color = category.color();
+
+                let mut buffer = Buffer::<1>::new();
+                let c = buffer.format(&[*b]);
+                spans.push(Span::styled(
+                    c.to_string().to_uppercase(),
+                    Style::default().fg(color),
+                ));
+                let white = if j % 8 == 0 { "  " } else { " " };
+                spans.push(Span::raw(white));
+                j += 1;
+            }
+
+            // spans.push(Span::raw(format_hex_slice(slice1, &mut j).to_uppercase()));
+            // spans.push(Span::raw(format_hex_slice(slice2, &mut j).to_uppercase()));
         }
 
         spans.push(Span::raw("   ".repeat(20 - txt.len() + 1)));
