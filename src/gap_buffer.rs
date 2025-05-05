@@ -1,6 +1,7 @@
 use std::fmt::Display;
 use std::fmt::{Debug, Write};
 
+use std::borrow::Cow;
 use utf8_iter::Utf8CharIndices;
 use utf8_iter::Utf8CharsEx;
 
@@ -17,10 +18,11 @@ impl<'a> GapBytes<'a> {
         GapBytes(&[], &[])
     }
 
-    pub(crate) fn as_str(&self) -> (&str, &str) {
-        let left = std::str::from_utf8(self.left()).unwrap();
-        let right = std::str::from_utf8(self.right()).unwrap();
-        (left, right)
+    pub(crate) fn as_str(&self) -> (Cow<str>, Cow<str>) {
+        let str1 = String::from_utf8_lossy(self.left());
+        let str2 = String::from_utf8_lossy(self.right());
+
+        (str1, str2)
     }
 
     pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
@@ -30,7 +32,7 @@ impl<'a> GapBytes<'a> {
             std::ops::Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            std::ops::Bound::Included(&end) => end + 1,
+            std::ops::Bound::Included(&end) => end,
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.len(),
         };
@@ -42,11 +44,13 @@ impl<'a> GapBytes<'a> {
             } else {
                 GapBytes(self.0, &self.1[..end - self.left().len()])
             }
-        } else {
+        } else if self.right().len() > 0 {
             GapBytes(
                 &[],
                 &self.1[start - self.left().len()..end - self.left().len()],
             )
+        } else {
+            return GapBytes(&[], &[]);
         }
     }
 
