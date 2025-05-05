@@ -20,3 +20,11 @@ where
     // 创建 BufReader 并返回行迭代器
     Ok(io::BufReader::new(file).lines())
 }
+
+pub(crate) fn get_char_byte_len(c: char) -> usize {
+    // 计算字符的字节长度
+    if c == char::REPLACEMENT_CHARACTER {
+        return 1;
+    }
+    c.len_utf8()
+}

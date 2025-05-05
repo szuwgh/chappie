@@ -6,6 +6,7 @@ use crate::editor::HexText;
 use crate::editor::RingVec;
 use crate::editor::TextType;
 use crate::editor::TextWarp;
+use crate::editor::TextWarpType;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
 use crate::textwarp::LineMeta;
@@ -238,16 +239,16 @@ impl ChapTui {
         // 文本框显示内容的高度
         let tv_heigth = (tui_height - 2) as usize;
         // 文本框显示内容的宽度
-        let tv_width = (tui_width as f32 * 0.6) as usize - 3;
+        let tv_width = (tui_width as f32 * 0.3) as usize - 3;
 
-        let chat_tv_width = (tui_width as f32 * 0.4) as usize - 3;
+        let chat_tv_width = 0; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
 
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)].as_ref())
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
             .split(rect);
 
         let (nav_chk, tv_chk, seach_chk, chat_tv_chk, chat_inp_chk) = {
@@ -342,7 +343,7 @@ impl ChapTui {
             HexText::from_file_path(&p)?,
             self.tv.get_height(),
             self.tv.get_width(),
-            TextType::Char,
+            TextWarpType::NoWrap,
         );
         // EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
         let mut cursor_x: usize = 0;
@@ -368,14 +369,14 @@ impl ChapTui {
                         .style(Style::default().fg(Color::White));
                     f.render_widget(text_para, self.tv.get_rect());
 
-                    let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
-                        .block(
-                            Block::default()
-                                .title("cmd")
-                                .borders(Borders::TOP | Borders::LEFT),
-                        )
-                        .style(Style::default().fg(Color::White)); // 设置输入框样式
-                    f.render_widget(input_box, self.fuzzy_inp.get_rect());
+                    // let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                    //     .block(
+                    //         Block::default()
+                    //             .title("cmd")
+                    //             .borders(Borders::TOP | Borders::LEFT),
+                    //     )
+                    //     .style(Style::default().fg(Color::White)); // 设置输入框样式
+                    // f.render_widget(input_box, self.fuzzy_inp.get_rect());
                 })?;
                 if let Some(start_line_meta) = meta.get(0) {
                     start_line_num = start_line_meta.get_line_num();
@@ -546,15 +547,16 @@ impl ChapTui {
         //     self.tv.get_height(),
         //     self.tv.get_width(),
         // );
+        let twy = TextWarpType::NoWrap;
         let mut edit = EditTextWarp::new(
             GapText::from_file_path(&p)?,
             self.tv.get_height(),
             self.tv.get_width(),
-            TextType::Char,
+            twy,
         );
-        // EditTextBuffer::from_file_path(&p, self.tv.get_height(), self.tv.get_width()).unwrap();
         let mut cursor_x: usize = 0;
         let mut cursor_y: usize = 0;
+        let mut offset: usize = 0;
         let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
         edit.get_one_page(1);
         let mut start_line_num = 1;
@@ -568,6 +570,7 @@ impl ChapTui {
                         self.navi.get_cur_line(),
                         &self.navi.select_line,
                         self.tv.get_height(),
+                        offset.saturating_sub(self.tv.width),
                         cursor_y,
                         cursor_x,
                     );
@@ -599,67 +602,136 @@ impl ChapTui {
                 {
                     match (code, modifiers) {
                         (KeyCode::Up, _) => {
-                            if cursor_y == 0 {
-                                //滚动上一行
-                                let (_, _line_meta) =
-                                    edit.scroll_pre_one_line(line_meta.get(0).unwrap());
-                                line_meta = _line_meta;
-                            }
-                            cursor_y = cursor_y.saturating_sub(1);
-                            if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
-                                cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
-                            }
+                            match twy {
+                                TextWarpType::NoWrap => {
+                                    if cursor_y == 0 {
+                                        //滚动上一行
+                                        let (_, _line_meta) =
+                                            edit.scroll_pre_one_line(line_meta.get(0).unwrap());
+                                        line_meta = _line_meta;
+                                    }
+                                    cursor_y = cursor_y.saturating_sub(1);
+                                    if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
+                                        cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
+                                    }
+                                    let meta = line_meta.get(cursor_y).unwrap();
+                                    if offset >= meta.get_char_len() {
+                                        offset = meta.get_char_len();
+                                    }
+                                    is_last = false;
+                                }
+                                TextWarpType::SoftWrap => {
+                                    if cursor_y == 0 {
+                                        //滚动上一行
+                                        let (_, _line_meta) =
+                                            edit.scroll_pre_one_line(line_meta.get(0).unwrap());
+                                        line_meta = _line_meta;
+                                    }
+                                    cursor_y = cursor_y.saturating_sub(1);
+                                    if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
+                                        cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
+                                    }
 
-                            is_last = false;
+                                    is_last = false;
+                                }
+                            }
                         }
                         (KeyCode::Down, _) => {
-                            if cursor_y < self.tv.get_height() - 1 {
-                                cursor_y += 1;
-                            } else {
-                                //滚动下一行
-                                let (_, _line_meta) =
-                                    edit.scroll_next_one_line(line_meta.last().unwrap());
-                                line_meta = _line_meta;
+                            match twy {
+                                TextWarpType::NoWrap => {
+                                    if cursor_y < self.tv.get_height() - 1 {
+                                        cursor_y += 1;
+                                    } else {
+                                        //滚动下一行
+                                        let (_, _line_meta) =
+                                            edit.scroll_next_one_line(line_meta.last().unwrap());
+                                        line_meta = _line_meta;
+                                    }
+                                    if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
+                                        cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
+                                    }
+                                    let meta = line_meta.get(cursor_y).unwrap();
+                                    if offset >= meta.get_char_len() {
+                                        offset = meta.get_char_len();
+                                    }
+                                    is_last = false;
+                                }
+                                TextWarpType::SoftWrap => {
+                                    if cursor_y < self.tv.get_height() - 1 {
+                                        cursor_y += 1;
+                                    } else {
+                                        //滚动下一行
+                                        let (_, _line_meta) =
+                                            edit.scroll_next_one_line(line_meta.last().unwrap());
+                                        line_meta = _line_meta;
+                                    }
+                                    if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
+                                        cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
+                                    }
+                                    is_last = false;
+                                }
                             }
-                            if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len() {
-                                cursor_x = line_meta.get(cursor_y).unwrap().get_char_len();
-                            }
-                            is_last = false;
                         }
                         (KeyCode::Left, _) => {
-                            if cursor_x == 0 {
-                                // 这个判断说明当前行已经读完了
-                                if line_meta.get(cursor_y).unwrap().get_line_offset() == 0 {
-                                    //无需操作
-                                } else {
-                                    cursor_x =
-                                        line_meta.get(cursor_y - 1).unwrap().get_char_len() - 1;
-                                    cursor_y = cursor_y.saturating_sub(1);
+                            match twy {
+                                TextWarpType::NoWrap => {
+                                    cursor_x = cursor_x.saturating_sub(1);
+                                    offset = offset.saturating_sub(1);
                                 }
-                            } else {
-                                cursor_x = cursor_x.saturating_sub(1);
+                                TextWarpType::SoftWrap => {
+                                    if cursor_x == 0 {
+                                        // 这个判断说明当前行已经读完了
+                                        if line_meta.get(cursor_y).unwrap().get_line_offset() == 0 {
+                                            //无需操作
+                                        } else {
+                                            cursor_x =
+                                                line_meta.get(cursor_y - 1).unwrap().get_char_len()
+                                                    - 1;
+                                            cursor_y = cursor_y.saturating_sub(1);
+                                        }
+                                    } else {
+                                        cursor_x = cursor_x.saturating_sub(1);
+                                    }
+                                    is_last = false;
+                                }
                             }
-                            is_last = false;
                         }
                         (KeyCode::Right, _) => {
-                            if cursor_x < line_meta.get(cursor_y).unwrap().get_char_len() {
-                                cursor_x += 1;
-
-                                if cursor_x >= line_meta.get(cursor_y).unwrap().get_char_len()
-                                    && cursor_y < self.tv.get_height()
-                                {
-                                    //判断当前行是否读完
-                                    if line_meta.get(cursor_y).unwrap().get_line_end()
-                                        < edit.get_text_len(
-                                            line_meta.get(cursor_y).unwrap().get_line_index(),
-                                        )
-                                    {
-                                        cursor_x = 0;
-                                        cursor_y += 1;
+                            match twy {
+                                TextWarpType::NoWrap => {
+                                    let meta = line_meta.get(cursor_y).unwrap();
+                                    if cursor_x < meta.get_char_len() && cursor_x < self.tv.width {
+                                        cursor_x += 1;
+                                    }
+                                    if offset <= meta.get_char_len() {
+                                        offset += 1;
                                     }
                                 }
+                                TextWarpType::SoftWrap => {
+                                    if cursor_x < line_meta.get(cursor_y).unwrap().get_char_len() {
+                                        cursor_x += 1;
+
+                                        if cursor_x
+                                            >= line_meta.get(cursor_y).unwrap().get_char_len()
+                                            && cursor_y < self.tv.get_height()
+                                        {
+                                            //判断当前行是否读完
+                                            if line_meta.get(cursor_y).unwrap().get_line_end()
+                                                < edit.get_text_len(
+                                                    line_meta
+                                                        .get(cursor_y)
+                                                        .unwrap()
+                                                        .get_line_index(),
+                                                )
+                                            {
+                                                cursor_x = 0;
+                                                cursor_y += 1;
+                                            }
+                                        }
+                                    }
+                                    is_last = false;
+                                }
                             }
-                            is_last = false;
                         }
                         (KeyCode::Enter, _) => {
                             self.fuzzy_inp.clear();
@@ -1574,6 +1646,34 @@ fn get_chat_content<'a>(
     text
 }
 
+fn n_chars_skip_control_mem_opt(s: &str, n: usize) -> (&str, &str, &str) {
+    let mut count = 0;
+    let mut start_idx = None;
+    let mut end_idx = None;
+
+    for (idx, ch) in s.char_indices() {
+        if ch.is_control() {
+            continue;
+        }
+        if count == n {
+            // 第 n 个非控制字符
+            start_idx = Some(idx);
+        }
+        if count == n + 1 {
+            // 第 n+1 个非控制字符
+            end_idx = Some(idx);
+            break;
+        }
+        count += 1;
+    }
+
+    // 如果 never set, 默认到末尾
+    let start = start_idx.unwrap_or_else(|| s.len());
+    let end = end_idx.unwrap_or_else(|| s.len());
+
+    (&s[..start], &s[start..end], &s[end..])
+}
+
 fn n_chars(s: &str, n: usize) -> (&str, &str, &str) {
     // 使用 char_indices 获取每个字符的起始字节位置
     let mut iter = s.char_indices();
@@ -1676,25 +1776,6 @@ fn get_hex_content<'a>(
                 spans[cursor_x].content.clone(),
                 Style::default().bg(Color::LightRed),
             );
-
-            // let mut line = String::new();
-            // line.push_str(&format_hex_slice(slice1, &mut j));
-            // line.push_str(&format_hex_slice(slice2, &mut j));
-            // let (a, b, c) = n_chars(&line, cursor_x);
-            // if !b.is_empty() {
-            //     spans.push(Span::raw(a.to_string().to_uppercase()));
-            //     spans.push(Span::styled(
-            //         b.to_string().to_uppercase(),
-            //         Style::default().bg(Color::LightRed),
-            //     ));
-            //     spans.push(Span::raw(c.to_string().to_uppercase()));
-            // } else {
-            //     spans.push(Span::raw(line.to_uppercase()));
-            //     let diff = cursor_x.saturating_sub(txt.len());
-            //     let padding = " ".repeat(diff);
-            //     spans.push(Span::raw(padding));
-            //     spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
-            // }
         } else {
             for b in slice1.iter() {
                 let category = Byte(*b).category();
@@ -1725,9 +1806,6 @@ fn get_hex_content<'a>(
                 spans.push(Span::raw(white));
                 j += 1;
             }
-
-            // spans.push(Span::raw(format_hex_slice(slice1, &mut j).to_uppercase()));
-            // spans.push(Span::raw(format_hex_slice(slice2, &mut j).to_uppercase()));
         }
 
         spans.push(Span::raw("   ".repeat(20 - txt.len() + 1)));
@@ -1773,21 +1851,25 @@ fn get_content2<'a>(
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
     height: usize,
+    offset: usize,
     cursor_y: usize,
     cursor_x: usize,
 ) -> (Text<'a>, Text<'a>) {
     // assert!(content.len() == line_meta.len());
     let mut lines = Vec::with_capacity(line_meta.len());
     for (i, txt) in txts.iter().enumerate() {
-        let (str1, str2) = txt.as_str();
+        let (str1, str2) = txt.text(offset..);
         if cursor_y == i {
             let mut spans = Vec::new();
             if cursor_x < str1.chars().count() {
-                let (a, b, c) = n_chars(str1, cursor_x);
+                let (a, b, c) = n_chars_skip_control_mem_opt(str1.as_ref(), cursor_x);
                 if b.len() > 0 {
-                    spans.push(Span::raw(a));
-                    spans.push(Span::styled(b, Style::default().bg(Color::LightRed)));
-                    spans.push(Span::raw(c));
+                    spans.push(Span::raw(a.to_string()));
+                    spans.push(Span::styled(
+                        b.to_string(),
+                        Style::default().bg(Color::LightRed),
+                    ));
+                    spans.push(Span::raw(c.to_string()));
                     spans.push(Span::raw(str2));
                 } else {
                     spans.push(Span::raw(str1));
@@ -1799,12 +1881,15 @@ fn get_content2<'a>(
                     spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
                 }
             } else {
-                let (a, b, c) = n_chars(str2, cursor_x - str1.chars().count());
+                let (a, b, c) = n_chars(str2.as_ref(), cursor_x - str1.chars().count());
                 if b.len() > 0 {
                     spans.push(Span::raw(str1));
-                    spans.push(Span::raw(a));
-                    spans.push(Span::styled(b, Style::default().bg(Color::LightRed)));
-                    spans.push(Span::raw(c));
+                    spans.push(Span::raw(a.to_string()));
+                    spans.push(Span::styled(
+                        b.to_string(),
+                        Style::default().bg(Color::LightRed),
+                    ));
+                    spans.push(Span::raw(c.to_string()));
                 } else {
                     spans.push(Span::raw(str1));
                     spans.push(Span::raw(str2));
