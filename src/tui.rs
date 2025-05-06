@@ -542,11 +542,6 @@ impl ChapTui {
     }
 
     pub(crate) async fn render_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        // let mut edit = EditTextWarp::new(
-        //     GapText::from_file_path(&p)?,
-        //     self.tv.get_height(),
-        //     self.tv.get_width(),
-        // );
         let twy = TextWarpType::NoWrap;
         let mut edit = EditTextWarp::new(
             GapText::from_file_path(&p)?,

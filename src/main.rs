@@ -25,7 +25,6 @@ use tui::ChapTui;
 fn main() -> ChapResult<()> {
     let cli = Cli::parse();
     if atty::is(atty::Stream::Stdin) {
-        // let mmap = map_file(cli.get_filepath()?)?;
         let mut chap = Chappie::new(&cli)?;
         chap.run_edit(cli.get_filepath()?)?;
     } else {
