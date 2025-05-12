@@ -206,10 +206,6 @@ impl GapBuffer {
         }
     }
 
-    // pub(crate) fn text_len(&self) -> usize {
-    //     self.buffer.len() - (self.gap_end - self.gap_start)
-    // }
-
     /// Move the gap to the specified index
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
     /// [H][e][l][ ][ ][ ][ ][ ][l][o][W][o][r][l][d]

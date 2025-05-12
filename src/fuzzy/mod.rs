@@ -55,8 +55,8 @@ impl FuzzySearch {
         if is_exact {
             //使用 bm算法
             return Match::Byte(
-                BoyerMoore::new(pattern)
-                    .find(text)
+                BoyerMoore::new(pattern.as_bytes())
+                    .find(text.as_bytes())
                     .map(|e| ByteMatch {
                         distance: 0,
                         start: e,

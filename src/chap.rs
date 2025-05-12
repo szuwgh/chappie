@@ -9,17 +9,14 @@ use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 use vectorbase::ann::AnnType;
 use vectorbase::collection::Collection;
 use vectorbase::config::ConfigBuilder;
-use vectorbase::schema::Document;
 use vectorbase::schema::FieldEntry;
 use vectorbase::schema::Schema;
 use vectorbase::schema::TensorEntry;
-use vectorbase::schema::Vector;
 use vectorbase::schema::VectorEntry;
 use vectorbase::schema::VectorType;
 
@@ -32,7 +29,7 @@ pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     Builder::new_multi_thread()
         .enable_io()
         .enable_time() // Enable time (timers)
-        .worker_threads(2)
+        .worker_threads(num_cpus::get())
         .build()
         .expect("Failed to create runtime")
 });
@@ -42,7 +39,7 @@ pub(crate) struct Chappie {
     tui: ChapTui,
     vdb: Option<Collection>,
 }
-/// ////
+//
 impl Chappie {
     pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
         fs::create_dir_all(LLM_MODEL_DIR)?;
@@ -79,6 +76,7 @@ impl Chappie {
             None
         };
         let chap_ui = ChapTui::new(
+            cli.get_chap_mod(),
             prompt_tx,
             vdb.clone(),
             //  embed.clone(),
@@ -107,17 +105,21 @@ impl Chappie {
         });
     }
 
+    pub(crate) fn run<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        RUNTIME.block_on(async move { self.tui.render(p).await })
+    }
+
     pub(crate) fn run_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render_edit(p).await })
+        RUNTIME.block_on(async move { self.tui.render(p).await })
     }
 
     pub(crate) fn run_hex<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render_hex(p).await })
+        RUNTIME.block_on(async move { self.tui.render(p).await })
     }
 
-    pub(crate) fn run_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render_text(bytes).await })
-    }
+    // pub(crate) fn run_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
+    //     RUNTIME.block_on(async move { self.tui.render(bytes).await })
+    // }
 }
 
 async fn request_llm(

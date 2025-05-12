@@ -11,7 +11,6 @@ mod chap;
 mod cmd;
 mod editor;
 mod gap_buffer;
-mod hex;
 mod textwarp;
 mod tui;
 mod util;
@@ -26,12 +25,7 @@ fn main() -> ChapResult<()> {
     let cli = Cli::parse();
     if atty::is(atty::Stream::Stdin) {
         let mut chap = Chappie::new(&cli)?;
-        chap.run_edit(cli.get_filepath()?)?;
-    } else {
-        let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)?;
-        let mut chap = Chappie::new(&cli)?;
-        chap.run_text(buffer)?;
+        chap.run(cli.get_filepath()?)?;
     }
     Ok(())
 }
