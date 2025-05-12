@@ -4,6 +4,7 @@ use crate::mmap_file;
 use crate::util;
 use crate::util::read_lines;
 use crate::{error::ChapResult, gap_buffer::GapBuffer};
+use anyhow::Ok;
 use inherit_methods_macro::inherit_methods;
 use memmap2::Mmap;
 use std::borrow::Cow;
@@ -32,14 +33,161 @@ const CHAR_GAP_SIZE: usize = 128;
 const HEX_GAP_SIZE: usize = 5;
 const HEX_WITH: usize = 19;
 
-pub(crate) enum TextType {
-    Char, //字符
-    Hex,  //16进制
+pub(crate) trait TextOper {
+    //滑动上一行
+    fn scroll_pre_one_line(&self, meta: &EditLineMeta) -> ChapResult<()>;
+
+    //滑动下一行
+    fn scroll_next_one_line(&self, meta: &EditLineMeta) -> ChapResult<()>;
+
+    //插入
+    fn insert(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+        c: char,
+    ) -> ChapResult<()>;
+
+    //
+    fn insert_newline(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+    ) -> ChapResult<()>;
+
+    fn backspace(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+    ) -> ChapResult<()>;
+
+    fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()>;
+
+    //获取一页数据 从line_num 行开始
+    fn get_one_page(
+        &self,
+        line_num: usize,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)>;
+
+    fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)>;
+
+    fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>>;
+
+    fn get_text_len_from_index(&self, line_index: usize) -> usize;
+}
+
+pub(crate) enum TextDisplay {
+    Text(TextWarp<MmapText>),
+    Hex(TextWarp<HexText>),
+    Edit(EditTextWarp<GapText>),
+}
+
+impl TextOper for TextDisplay {
+    fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)> {
+        match self {
+            TextDisplay::Text(v) => v.get_current_page(),
+            TextDisplay::Hex(v) => v.get_current_page(),
+            TextDisplay::Edit(v) => v.get_current_page(),
+        }
+    }
+
+    fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>> {
+        match self {
+            TextDisplay::Text(v) => v.get_current_line_meta(),
+            TextDisplay::Hex(v) => v.get_current_line_meta(),
+            TextDisplay::Edit(v) => v.get_current_line_meta(),
+        }
+    }
+
+    fn get_text_len_from_index(&self, line_index: usize) -> usize {
+        match self {
+            TextDisplay::Text(v) => v.get_text_len(line_index),
+            TextDisplay::Hex(v) => v.get_text_len(line_index),
+            TextDisplay::Edit(v) => v.get_text_len(line_index),
+        }
+    }
+
+    fn insert(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+        c: char,
+    ) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Edit(v) => v.insert(cursor_y, cursor_x, line_meta, c),
+        }
+    }
+
+    fn insert_newline(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+    ) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Edit(v) => v.insert_newline(cursor_y, cursor_x, line_meta),
+        }
+    }
+
+    fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Edit(v) => v.save(filepath),
+        }
+    }
+
+    fn scroll_next_one_line(&self, meta: &EditLineMeta) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => v.scroll_next_one_line(meta),
+            TextDisplay::Hex(v) => v.scroll_next_one_line(meta),
+            TextDisplay::Edit(v) => v.scroll_next_one_line(meta),
+        }
+    }
+
+    fn scroll_pre_one_line(&self, meta: &EditLineMeta) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => v.scroll_pre_one_line(meta),
+            TextDisplay::Hex(v) => v.scroll_pre_one_line(meta),
+            TextDisplay::Edit(v) => v.scroll_pre_one_line(meta),
+        }
+    }
+
+    fn backspace(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+    ) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Edit(v) => v.backspace(cursor_y, cursor_x, line_meta),
+        }
+    }
+
+    fn get_one_page(
+        &self,
+        line_num: usize,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)> {
+        match self {
+            TextDisplay::Text(v) => v.get_one_page(line_num),
+            TextDisplay::Hex(v) => v.get_one_page(line_num),
+            TextDisplay::Edit(v) => v.get_one_page(line_num),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct EditLineMeta {
-    //  txt: &'a str,
     txt_len: usize,         //文本长度
     char_len: usize,        //char字符大小
     page_num: usize,        //所在页数
@@ -150,8 +298,6 @@ impl<T> RingVec<T> {
 
     pub(crate) fn push_front(&mut self, item: T) {
         if self.cache.len() < self.size {
-            // self.cache.push(item);
-            // self.start = self.cache.len() - 1;
             self.cache.insert(self.start, item);
         } else {
             if self.start == 0 {
@@ -403,10 +549,7 @@ impl CacheStr {
         }
     }
 
-    pub(crate) fn text<'a>(
-        &'a self,
-        range: impl std::ops::RangeBounds<usize>,
-    ) -> (Cow<str>, Cow<str>) {
+    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> (Cow<str>, Cow<str>) {
         match self {
             CacheStr::Gap(v) => {
                 let (l, r) = v.text(range);
@@ -1171,11 +1314,8 @@ impl Text for MmapText {
         line_file_start: usize,
         line_file_end: usize,
     ) -> LineStr<'a> {
-        // todo!()
         let line = &self.mmap[line_file_start..line_file_end];
-
         LineStr {
-            //   line: GapBytes::new(line, &[]),
             line_data: LineData::GapBytes(GapBytes::new(line, &[])),
             line_file_start: line_file_start,
             line_file_end: line_file_end,
@@ -1343,7 +1483,6 @@ impl EditText for GapText {
             if line_index == 0 {
                 return;
             }
-            //用.split_at_mut(position)修改代码
             let (pre_lines, cur_lines) = self.borrow_lines_mut().split_at_mut(line_index);
             let pre_line = &mut pre_lines[line_index - 1];
             if pre_line.text_len() == 0 {
@@ -1376,12 +1515,6 @@ impl EditText for GapText {
             line.insert(line.text_len(), " ".repeat(gap_len).as_bytes());
         }
         line.insert(line_offset, s.as_bytes());
-
-        //切断page_offset_list 索引
-        // let page_offset_list = self.borrow_page_offset_list_mut();
-        // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
-        // self.borrow_cache_lines_mut().clear();
-        // self.borrow_cache_line_meta_mut().clear();
     }
 
     fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta) {
@@ -1416,10 +1549,6 @@ impl EditText for GapText {
                 self.borrow_lines_mut()[line_index].delete(line_len, delete_len);
             }
         }
-        // let page_offset_list = self.borrow_page_offset_list_mut();
-        // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
-        // self.borrow_cache_lines_mut().clear();
-        // self.borrow_cache_line_meta_mut().clear();
     }
 
     fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
@@ -1577,42 +1706,42 @@ impl<T: Text> TextWarp<T> {
     /**
      * 滚动下一行
      */
-    pub(crate) fn scroll_next_one_line(
-        &self,
-        meta: &EditLineMeta,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>) {
+    pub(crate) fn scroll_next_one_line(&self, meta: &EditLineMeta) -> ChapResult<()> {
         let (s, l) = self.get_next_line(meta, 1);
         if let Some(s) = s {
             self.borrow_cache_lines_mut().push(s);
             self.borrow_cache_line_meta_mut().push(l);
         }
-        (self.borrow_cache_lines(), self.borrow_cache_line_meta())
+        Ok(())
     }
 
     /**
      * 滚动上一行
      */
-    pub(crate) fn scroll_pre_one_line(
-        &self,
-        meta: &EditLineMeta,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>) {
+    pub(crate) fn scroll_pre_one_line(&self, meta: &EditLineMeta) -> ChapResult<()> {
         let (s, l) = self.get_pre_line(meta, 1);
         if let Some(s) = s {
             self.borrow_cache_lines_mut().push_front(s);
             self.borrow_cache_line_meta_mut().push_front(l);
         }
-        (self.borrow_cache_lines(), self.borrow_cache_line_meta())
+        Ok(())
     }
 
     pub(crate) fn get_one_page(
         &self,
         line_num: usize,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>) {
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)> {
         self.get_line_content(line_num, self.height)
     }
 
-    pub(crate) fn get_current_page(&self) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>) {
-        (self.borrow_cache_lines(), self.borrow_cache_line_meta())
+    pub(crate) fn get_current_page(
+        &self,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)> {
+        Ok((self.borrow_cache_lines(), self.borrow_cache_line_meta()))
+    }
+
+    pub(crate) fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>> {
+        Ok(self.borrow_cache_line_meta())
     }
 
     // 从第n行开始获取内容
@@ -1620,7 +1749,7 @@ impl<T: Text> TextWarp<T> {
         &self,
         line_num: usize,
         line_count: usize,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>) {
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)> {
         self.borrow_cache_lines_mut().clear();
         self.borrow_cache_line_meta_mut().clear();
 
@@ -1629,7 +1758,7 @@ impl<T: Text> TextWarp<T> {
             self.borrow_cache_line_meta_mut().push(meta);
         });
 
-        (self.borrow_cache_lines(), self.borrow_cache_line_meta())
+        Ok((self.borrow_cache_lines(), self.borrow_cache_line_meta()))
     }
 
     pub(crate) fn get_line_content_with_count(
@@ -2037,105 +2166,25 @@ impl<T: Text + EditText> EditTextWarp<T> {
     pub(crate) fn get_one_page(
         &self,
         line_num: usize,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>);
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)>;
 
-    pub(crate) fn get_current_page(&self) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>);
+    pub(crate) fn get_current_page(
+        &self,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<EditLineMeta>)>;
+
+    pub(crate) fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>>;
 
     /**
      * 滚动下一行
      */
-    pub(crate) fn scroll_next_one_line(
-        &self,
-        meta: &EditLineMeta,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>);
+    pub(crate) fn scroll_next_one_line(&self, meta: &EditLineMeta) -> ChapResult<()>;
 
     /**
      * 滚动上一行
      */
-    pub(crate) fn scroll_pre_one_line(
-        &self,
-        meta: &EditLineMeta,
-    ) -> (&RingVec<CacheStr>, &RingVec<EditLineMeta>);
+    pub(crate) fn scroll_pre_one_line(&self, meta: &EditLineMeta) -> ChapResult<()>;
 
     pub(crate) fn get_text_len(&self, index: usize) -> usize;
-
-    // fn borrow_lines(&self) -> &T {
-    //     unsafe { &*self.lines.get() }
-    // }
-
-    // fn borrow_lines_mut(&self) -> &mut T {
-    //     unsafe { &mut *self.lines.get() }
-    // }
-
-    // fn borrow_page_offset_list(&self) -> &Vec<PageOffset> {
-    //     unsafe { &*self.page_offset_list.get() }
-    // }
-
-    // fn borrow_page_offset_list_mut(&self) -> &mut Vec<PageOffset> {
-    //     unsafe { &mut *self.page_offset_list.get() }
-    // }
-
-    // fn borrow_cache_lines(&self) -> &RingVec<CacheStr> {
-    //     unsafe { &*self.cache_lines.get() }
-    // }
-
-    // fn borrow_cache_lines_mut(&self) -> &mut RingVec<CacheStr> {
-    //     unsafe { &mut *self.cache_lines.get() }
-    // }
-
-    // fn borrow_cache_line_meta(&self) -> &RingVec<EditLineMeta> {
-    //     unsafe { &*self.cache_line_meta.get() }
-    // }
-
-    // fn borrow_cache_line_meta_mut(&self) -> &mut RingVec<EditLineMeta> {
-    //     unsafe { &mut *self.cache_line_meta.get() }
-    // }
-
-    // pub(crate) fn get_text_len(&self, index: usize) -> usize {
-    //     self.borrow_lines().get_line_text_len(index)
-    // }
-
-    // // 计算页码，等同于向上取整
-    // fn get_page_num(&self, num: usize) -> usize {
-    //     (num + self.height - 1) / self.height
-    // }
-
-    // // 计算行数，等同于向上取整
-    // fn calculate_lines(text_len: usize, with: usize) -> usize {
-    //     if text_len == 0 {
-    //         return 1;
-    //     }
-    //     (text_len as f64 / with as f64).ceil() as usize
-    // }
-
-    // 计算光标所在行和列
-    // pub(crate) fn calculate_x_y(&self, cursor_y: usize, cursor_x: usize) -> (usize, usize) {
-    //     let mut line_count = 0;
-    //     let mut line_index = 0;
-    //     let mut shirt = 0;
-    //     // 计算光标所在行
-    //     let y = cursor_y + 1;
-    //     for (i, b) in self.borrow_lines().iter().enumerate() {
-    //         let cur_line_count = Self::calculate_lines(b.text_len(), self.with);
-    //         line_count += cur_line_count;
-    //         line_index = i;
-    //         if y <= line_count {
-    //             shirt = cur_line_count - (line_count - y) - 1;
-    //             break;
-    //         }
-    //     }
-    //     let line_offset = shirt * self.with + cursor_x;
-    //     (line_index, line_offset)
-    // }
-
-    //通过 line_index 获取页数
-    // fn get_page_num_from_line_index(&self, line_index: usize) -> usize {
-    //     for p in self.borrow_page_offset_list().iter() {
-    //         if line_index < p.line_index {
-    //             return p.line_index;
-    //         }
-    //     }
-    // }
 
     // 插入字符
     // 计算光标所在行
@@ -2146,7 +2195,7 @@ impl<T: Text + EditText> EditTextWarp<T> {
         cursor_x: usize,
         line_meta: &EditLineMeta,
         c: char,
-    ) {
+    ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
             .insert(cursor_y, cursor_x, line_meta, c);
@@ -2155,6 +2204,7 @@ impl<T: Text + EditText> EditTextWarp<T> {
         unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
+        Ok(())
     }
 
     //插入换行
@@ -2163,7 +2213,7 @@ impl<T: Text + EditText> EditTextWarp<T> {
         cursor_y: usize,
         cursor_x: usize,
         line_meta: &EditLineMeta,
-    ) {
+    ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
             .insert_newline(cursor_y, cursor_x, line_meta);
@@ -2171,10 +2221,16 @@ impl<T: Text + EditText> EditTextWarp<T> {
         unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
+        Ok(())
     }
 
     // 删除光标前一个字符
-    pub(crate) fn backspace(&self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta) {
+    pub(crate) fn backspace(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &EditLineMeta,
+    ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
             .backspace(cursor_y, cursor_x, line_meta);
@@ -2182,6 +2238,7 @@ impl<T: Text + EditText> EditTextWarp<T> {
         unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
+        Ok(())
     }
 
     pub(crate) fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
@@ -2610,7 +2667,7 @@ mod tests {
         let mmap_text = MmapText::new(mmap);
 
         let text = TextWarp::new(mmap_text, 2, 5, TextWarpType::NoWrap);
-        let (s, c) = text.get_one_page(1);
+        let (s, c) = text.get_one_page(1).unwrap();
         for (i, l) in s.iter().enumerate() {
             println!("l: {:?},{:?}", l.as_str(), c.get(i));
         }

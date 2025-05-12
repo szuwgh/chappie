@@ -1,4 +1,5 @@
 use crate::error::{ChapError, ChapResult};
+use crate::tui::ChapMod;
 use clap::Parser;
 use clap::ValueEnum;
 #[derive(Parser, Debug)]
@@ -21,6 +22,23 @@ pub(crate) struct Cli {
 
     #[arg(long = "vb", default_value_t = false, env = "CHAP_VB")]
     vb: bool,
+
+    #[arg(
+        short = 'i',
+        long = "ins",
+        default_value_t = false,
+        env = "CHAP_INSERT"
+    )]
+    insert: bool, //编辑模式
+
+    #[arg(long = "hex", default_value_t = false, env = "CHAP_HEX")]
+    hex: bool, //16进制编辑模式
+
+    #[arg(long = "vector", default_value_t = false, env = "CHAP_VECTOR")]
+    vector: bool, //向量分析模式
+
+    #[arg(short = 'w', default_value = "no", env = "CHAP_WARP")]
+    warp: String,
 
     #[arg(short = 'q', long = "que", default_value_t = false)]
     question: bool,
@@ -67,5 +85,17 @@ impl Cli {
 
     pub(crate) fn get_que(&self) -> bool {
         self.question
+    }
+
+    pub(crate) fn get_chap_mod(&self) -> ChapMod {
+        if self.insert {
+            return ChapMod::Edit;
+        } else if self.hex {
+            return ChapMod::Hex;
+        } else if self.vector {
+            return ChapMod::Vector;
+        } else {
+            return ChapMod::Text;
+        }
     }
 }
