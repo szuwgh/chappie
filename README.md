@@ -1,29 +1,53 @@
 # Chappie
-A simple command line tool that takes a text or file, performs a fuzzy search, and then asks the questions you care about in the large language model.
-store the results in vectorbase, generate embeddings 
-
-<img src="./docs/img1.png" style="zoom:60%;" />
+Text cli tool, with integrated Vector database and AI
 
 # Get start
 ```
 $ chap filename
 ```
 
+### 1. Text Editing Mode
+In Text Editing Mode, users can:
 
+Open and edit plain text files (e.g., .txt, .md, .log, etc.)
+Use standard editing features such as cut, copy, paste, undo, redo, find & replace
+Support syntax highlighting for programming and markup languages
+Save and export edited content in various formats
+This mode is ideal for general-purpose writing, code editing, and note-taking.
 
-# Commands
-* `llm`: Choose a large language model API currently only supports `groq` and `gemini`,env is CHAP_LLM_NAME
-* `model`: Large language model types such as llama3-8b-8192,env is CHAP_LLM_MODEL
-* `api_key`: remote api API key,env is CHAP_LLM_API_KEY
-* `ui`: UI type full or lite,env is CHAP_UI
-* `vb`: Whether to use vector database to save results,env is CHAP_VB
+<img src="./docs/img2.png" style="zoom:60%;" />
 
-# operate
-* `up`: Previous row of text
-* `down`: Next row of text
-* `ctrl+up`: Previous page of text
-* `ctrl+down`: Next page of text
-* `tab`: Switch focus between text and chat
-* `shift+up`: Select Previous row
-* `shift+down`: Select next row
-* `ctrl+x`: Exit and display the results on the terminal
+### 2. Hex Editing Mode
+Hex Editing Mode enables users to:
+View and modify the raw byte-level content of files
+Edit both hexadecimal values and corresponding ASCII characters
+Analyze binary structures such as headers or firmware dumps
+Ensure byte-level accuracy for debugging, reverse engineering, or file repair
+Useful for developers, reverse engineers, and digital forensics experts.
+
+<img src="./docs/img3.png" style="zoom:60%;" />
+
+### 3. Large File Viewing Mode
+Designed for efficient navigation of very large files, this mode provides:
+Optimized performance for opening multi-GB files without loading them entirely into memory
+Chunked reading with on-demand rendering
+Line-by-line or paginated browsing
+Search functionality over partial or streamed content
+Perfect for viewing log files, datasets, or system outputs that are too large for typical editors.
+
+### 4. RAG Mode (Retrieval-Augmented Generation)
+RAG Mode leverages AI to enable:
+Context-aware question answering based on local documents
+Retrieval of relevant text snippets from files or knowledge bases
+Integration with LLMs to generate accurate, grounded responses
+Customizable sources and vector indexing support
+
+Ideal for building intelligent document assistants, chatbots, or research tools that combine search with generative AI.
+
+### 5. Multimedia-to-Text Mode
+Multimedia-to-Text Mode automatically converts image, audio, and video content into readable text. It supports:
+OCR (Optical Character Recognition) to extract text from images (eg, scanned documents, screenshots)
+Audio transcription to convert speech into written text (eg, interviews, podcasts)
+Video transcription with optional timestamped captions
+Multilingual support and speaker diarization (depending on configuration)
+Ideal for media archiving, content analysis, accessibility, and note-taking from non-text sources.

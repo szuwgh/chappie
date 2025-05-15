@@ -14,7 +14,7 @@ pub(crate) struct Cli {
     #[arg(short = 'm', long, env = "CHAP_LLM_MODEL")]
     model: Option<String>,
 
-    #[arg(short = 'k', long, env = "CHAP_LLM_API_KEY")]
+    #[arg(short = 'k', long, env = "CHAP_LLM_API_KEY", default_value = "")]
     api_key: String,
 
     #[arg(value_enum, long, default_value = "full", env = "CHAP_UI")]

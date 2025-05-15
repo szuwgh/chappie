@@ -43,6 +43,7 @@ use ratatui::widgets::Block;
 use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
+use std::fmt::format;
 use std::io;
 use std::mem;
 use std::path::Path;
@@ -287,7 +288,7 @@ impl ChapTui {
             //导航栏和文本框
             let nav_text_chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
+                .constraints([Constraint::Length(8), Constraint::Percentage(100)].as_ref())
                 .split(left_chunks[0]); // chunks[1] 是左侧区域
 
             let search_chunks = Layout::default()
@@ -374,9 +375,12 @@ impl ChapTui {
                     cursor_x,
                 );
                 let text_para = Paragraph::new(visible_content)
-                    .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                    .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(text_para, self.tv.get_rect());
+
+                let nav_paragraph = Paragraph::new(navi);
+                f.render_widget(nav_paragraph, self.navi.get_rect());
 
                 // let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
                 //     .block(
@@ -453,10 +457,10 @@ impl ChapTui {
                         self.tv.get_width(),
                         line_meta.get(*cursor_y - 1).unwrap(),
                         c,
-                    );
+                    )?;
                     *is_last = false;
                 } else {
-                    td.insert(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap(), c);
+                    td.insert(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap(), c)?;
                 }
                 if *cursor_x < self.tv.get_width() {
                     *cursor_x += 1;
@@ -467,7 +471,7 @@ impl ChapTui {
                         *cursor_y += 1;
                     }
                 }
-                td.get_one_page(start_line_num);
+                td.get_one_page(start_line_num)?;
             }
             ChapMod::Text => {
                 todo!()
@@ -561,7 +565,7 @@ impl ChapTui {
                     TextWarpType::NoWrap => {
                         if *cursor_y == 0 {
                             //滚动上一行
-                            td.scroll_pre_one_line(line_meta.get(0).unwrap());
+                            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
                             line_meta = td.get_current_line_meta()?;
                         }
                         *cursor_y = cursor_y.saturating_sub(1);
@@ -577,7 +581,7 @@ impl ChapTui {
                     TextWarpType::SoftWrap => {
                         if *cursor_y == 0 {
                             //滚动上一行
-                            td.scroll_pre_one_line(line_meta.get(0).unwrap());
+                            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
                             line_meta = td.get_current_line_meta()?;
                         }
                         *cursor_y = cursor_y.saturating_sub(1);
@@ -625,7 +629,7 @@ impl ChapTui {
                             *cursor_y += 1;
                         } else {
                             //滚动下一行
-                            td.scroll_next_one_line(line_meta.last().unwrap());
+                            td.scroll_next_one_line(line_meta.last().unwrap())?;
                             line_meta = td.get_current_line_meta()?;
                         }
                         if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
@@ -642,7 +646,7 @@ impl ChapTui {
                             *cursor_y += 1;
                         } else {
                             //滚动下一行
-                            td.scroll_next_one_line(line_meta.last().unwrap());
+                            td.scroll_next_one_line(line_meta.last().unwrap())?;
                             line_meta = td.get_current_line_meta()?;
                         }
                         if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
@@ -937,9 +941,12 @@ impl ChapTui {
                     cursor_x,
                 );
                 let text_para = Paragraph::new(visible_content)
-                    .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+                    .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(text_para, self.tv.get_rect());
+
+                let nav_paragraph = Paragraph::new(navi);
+                f.render_widget(nav_paragraph, self.navi.get_rect());
 
                 let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
                     .block(
@@ -2227,12 +2234,13 @@ fn get_hex_content<'a>(
         (0..height)
             .enumerate()
             .map(|(i, _)| {
-                if i == cur_line {
-                    Line::from(Span::styled(">", Style::default().fg(Color::LightRed)))
-                // 高亮当前行
-                } else {
-                    Line::from(" ") // 非当前行为空白
+                if i > line_meta.len() {
+                    return Line::raw("");
                 }
+                Line::from(Span::styled(
+                    format!("{:07x}", line_meta.get(i).unwrap().get_line_file_start()),
+                    Style::default().fg(Color::White),
+                ))
             })
             .collect::<Vec<Line>>(),
     );
@@ -2320,12 +2328,14 @@ fn get_content2<'a>(
         (0..height)
             .enumerate()
             .map(|(i, _)| {
-                if i == cur_line {
-                    Line::from(Span::styled(">", Style::default().fg(Color::LightRed)))
-                // 高亮当前行
-                } else {
-                    Line::from(" ") // 非当前行为空白
+                if i > line_meta.len() {
+                    return Line::raw("");
                 }
+                Line::from(Span::styled(
+                    format!("{:>6} ", line_meta.get(i).unwrap().get_line_num()),
+                    Style::default().fg(Color::White),
+                ))
+                // 高亮当前行
             })
             .collect::<Vec<Line>>(),
     );
