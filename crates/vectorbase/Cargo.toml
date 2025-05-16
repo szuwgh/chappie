@@ -1,0 +1,49 @@
+[package]
+name = "vectorbase"
+version = "0.0.1"
+edition = "2021"
+description = "A simple vector-based search engine, also supports ordinary text search"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[profile.release]
+# 使用更强的优化来减少文件大小
+opt-level = "z"  # 'z' 是最强的优化选项，目的是最小化二进制文件大小
+# 启用 LTO (Link-Time Optimization) 进一步优化
+lto = true
+# 启用 `panic=abort`，可以减少二进制文件的大小
+panic = "abort"
+# 启用 `strip`，进一步减小符号表
+strip = "debuginfo"
+
+
+[dependencies]
+thiserror = "1.0"
+space = { version = "0.18.0", default-features = false, features = ["alloc"] }
+rand = "0.8.5"
+num-traits = "0.2"
+sp-std = "14.0.0"
+rand_pcg = "0.3.1"
+byteorder = "1.4.3"
+varintrs = "0.2.1"
+jiebars = "0.1.0"
+parking_lot = "0.12"
+lock_api = "0.4.9"
+art-tree = "0.2.0"
+memmap2 = "0.9.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11.12"
+fs2 = "0.4.3"
+bytes = "1.4.0"
+chrono = "0.4"
+serde_json = "1.0.122"
+wwml =  "0.1.0"
+bloomfilter = "2"
+regex = "1.10.6"
+tokio = {version ="1.40.0",features = ["full"]}
+once_cell = "1.20.1"
+base64 = "0.22.1"   
+ulid = "1.1.3"
+fst = "0.4.7"
+roaring = "0.10.6"
