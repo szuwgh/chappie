@@ -52,7 +52,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 use unicode_width::UnicodeWidthStr;
-use vectorbase::collection::Collection;
+//use vectorbase::collection::Collection;
 
 pub(crate) enum ChapMod {
     Edit,   //普通编辑器模式
@@ -114,7 +114,7 @@ pub(crate) struct ChapTui {
     chat_inp: ChatInput,
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
-    vdb: Option<Collection>,
+    // vdb: Option<Collection>,
     //embed_model: Arc<TextEmbedding>,
     start_row: u16,
     llm_res_rx: mpsc::Receiver<String>,
@@ -221,7 +221,7 @@ impl ChapTui {
     pub(crate) fn new(
         chap_mod: ChapMod,
         prompt_tx: mpsc::Sender<String>,
-        vdb: Option<Collection>,
+        // vdb: Option<Collection>,
         llm_res_rx: mpsc::Receiver<String>,
         ui_type: UIType,
         que: bool,
@@ -258,7 +258,7 @@ impl ChapTui {
         if que {}
 
         // 文本框显示内容的高度
-        let tv_heigth = (tui_height - 2) as usize;
+        let tv_heigth = (tui_height - 1) as usize;
         // 文本框显示内容的宽度
         let tv_width = (tui_width as f32) as usize - 3;
 
@@ -276,7 +276,7 @@ impl ChapTui {
             //文本框和输入框
             let left_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(100), Constraint::Length(2)].as_ref())
+                .constraints([Constraint::Percentage(100), Constraint::Length(1)].as_ref())
                 .split(chunks[0]); // chunks[1] 是左侧区域
 
             //LLM聊天和输入框
@@ -288,7 +288,7 @@ impl ChapTui {
             //导航栏和文本框
             let nav_text_chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(8), Constraint::Percentage(100)].as_ref())
+                .constraints([Constraint::Length(5), Constraint::Percentage(100)].as_ref())
                 .split(left_chunks[0]); // chunks[1] 是左侧区域
 
             let search_chunks = Layout::default()
@@ -347,7 +347,7 @@ impl ChapTui {
             chat_inp: chat_inp,
             focus: Focus::new(),
             prompt_tx: prompt_tx,
-            vdb: vdb,
+            // vdb: vdb,
             //  embed_model: embed_model,
             start_row: start_row,
             llm_res_rx: llm_res_rx,
@@ -499,14 +499,14 @@ impl ChapTui {
                 if *cursor_y == 0 && *cursor_x == 0 {
                     return Ok(());
                 }
-                td.backspace(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap());
+                td.backspace(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
                 if *cursor_x == 0 {
                     *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_txt_len();
                     *cursor_y = cursor_y.saturating_sub(1);
                 } else {
                     *cursor_x = cursor_x.saturating_sub(1);
                 }
-                td.get_one_page(start_line_num);
+                td.get_one_page(start_line_num)?;
             }
             ChapMod::Text => {
                 todo!()
@@ -536,7 +536,7 @@ impl ChapTui {
                     *cursor_y += 1;
                 }
                 *cursor_x = 0;
-                td.get_one_page(start_line_num);
+                td.get_one_page(start_line_num)?;
             }
             ChapMod::Text => {
                 todo!()
@@ -917,7 +917,6 @@ impl ChapTui {
                 }
             }
         }
-        Ok(())
     }
 
     pub(crate) fn render_edit<'a>(
@@ -949,278 +948,14 @@ impl ChapTui {
                 f.render_widget(nav_paragraph, self.navi.get_rect());
 
                 let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
-                    .block(
-                        Block::default()
-                            .title("cmd")
-                            .borders(Borders::TOP | Borders::LEFT),
-                    )
+                    .block(Block::default().title(":"))
                     .style(Style::default().fg(Color::White)); // 设置输入框样式
                 f.render_widget(input_box, self.fuzzy_inp.get_rect());
             })?;
             meta
         };
         return Ok(line_meta);
-        // loop {
-        //     // let twy = TextWarpType::NoWrap;
-        //     // let mut edit = EditTextWarp::new(
-        //     //     GapText::from_file_path(&p)?,
-        //     //     self.tv.get_height(),
-        //     //     self.tv.get_width(),
-        //     //     twy,
-        //     // );
-        //     // let mut cursor_x: usize = 0;
-        //     // let mut cursor_y: usize = 0;
-        //     // let mut offset: usize = 0;
-        //     // let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
-        //     // let mut start_line_num = 1;
-        //     // edit.get_one_page(1);
-
-        //     'tui: loop {
-        //         'key: loop {
-        //             if let event::Event::Key(KeyEvent {
-        //                 code, modifiers, ..
-        //             }) = event::read()?
-        //             {
-        //                 match (code, modifiers) {
-        //                     (KeyCode::Up, _) => {
-        //                         match twy {
-        //                             TextWarpType::NoWrap => {
-        //                                 if cursor_y == 0 {
-        //                                     //滚动上一行
-
-        //                                     edit.scroll_pre_one_line(line_meta.get(0).unwrap());
-        //                                     line_meta = edit.get_current_line_meta()?;
-        //                                 }
-        //                                 cursor_y = cursor_y.saturating_sub(1);
-        //                                 if cursor_x
-        //                                     >= line_meta.get(cursor_y).unwrap().get_char_len()
-        //                                 {
-        //                                     cursor_x =
-        //                                         line_meta.get(cursor_y).unwrap().get_char_len();
-        //                                 }
-        //                                 let meta = line_meta.get(cursor_y).unwrap();
-        //                                 if offset >= meta.get_char_len() {
-        //                                     offset = meta.get_char_len();
-        //                                 }
-        //                                 is_last = false;
-        //                             }
-        //                             TextWarpType::SoftWrap => {
-        //                                 if cursor_y == 0 {
-        //                                     //滚动上一行
-        //                                     edit.scroll_pre_one_line(line_meta.get(0).unwrap());
-        //                                     line_meta = edit.get_current_line_meta()?;
-        //                                 }
-        //                                 cursor_y = cursor_y.saturating_sub(1);
-        //                                 if cursor_x
-        //                                     >= line_meta.get(cursor_y).unwrap().get_char_len()
-        //                                 {
-        //                                     cursor_x =
-        //                                         line_meta.get(cursor_y).unwrap().get_char_len();
-        //                                 }
-
-        //                                 is_last = false;
-        //                             }
-        //                         }
-        //                     }
-        //                     (KeyCode::Down, _) => {
-        //                         match twy {
-        //                             TextWarpType::NoWrap => {
-        //                                 if cursor_y < self.tv.get_height() - 1 {
-        //                                     cursor_y += 1;
-        //                                 } else {
-        //                                     //滚动下一行
-        //                                     edit.scroll_next_one_line(line_meta.last().unwrap());
-        //                                     line_meta = edit.get_current_line_meta()?;
-        //                                 }
-        //                                 if cursor_x
-        //                                     >= line_meta.get(cursor_y).unwrap().get_char_len()
-        //                                 {
-        //                                     cursor_x =
-        //                                         line_meta.get(cursor_y).unwrap().get_char_len();
-        //                                 }
-        //                                 let meta = line_meta.get(cursor_y).unwrap();
-        //                                 if offset >= meta.get_char_len() {
-        //                                     offset = meta.get_char_len();
-        //                                 }
-        //                                 is_last = false;
-        //                             }
-        //                             TextWarpType::SoftWrap => {
-        //                                 if cursor_y < self.tv.get_height() - 1 {
-        //                                     cursor_y += 1;
-        //                                 } else {
-        //                                     //滚动下一行
-        //                                     edit.scroll_next_one_line(line_meta.last().unwrap());
-        //                                     line_meta = edit.get_current_line_meta()?;
-        //                                 }
-        //                                 if cursor_x
-        //                                     >= line_meta.get(cursor_y).unwrap().get_char_len()
-        //                                 {
-        //                                     cursor_x =
-        //                                         line_meta.get(cursor_y).unwrap().get_char_len();
-        //                                 }
-        //                                 is_last = false;
-        //                             }
-        //                         }
-        //                     }
-        //                     (KeyCode::Left, _) => {
-        //                         match twy {
-        //                             TextWarpType::NoWrap => {
-        //                                 cursor_x = cursor_x.saturating_sub(1);
-        //                                 offset = offset.saturating_sub(1);
-        //                             }
-        //                             TextWarpType::SoftWrap => {
-        //                                 if cursor_x == 0 {
-        //                                     // 这个判断说明当前行已经读完了
-        //                                     if line_meta.get(cursor_y).unwrap().get_line_offset()
-        //                                         == 0
-        //                                     {
-        //                                         //无需操作
-        //                                     } else {
-        //                                         cursor_x = line_meta
-        //                                             .get(cursor_y - 1)
-        //                                             .unwrap()
-        //                                             .get_char_len()
-        //                                             - 1;
-        //                                         cursor_y = cursor_y.saturating_sub(1);
-        //                                     }
-        //                                 } else {
-        //                                     cursor_x = cursor_x.saturating_sub(1);
-        //                                 }
-        //                                 is_last = false;
-        //                             }
-        //                         }
-        //                     }
-        //                     (KeyCode::Right, _) => {
-        //                         match twy {
-        //                             TextWarpType::NoWrap => {
-        //                                 let meta = line_meta.get(cursor_y).unwrap();
-        //                                 if cursor_x < meta.get_char_len()
-        //                                     && cursor_x < self.tv.width
-        //                                 {
-        //                                     cursor_x += 1;
-        //                                 }
-        //                                 if offset <= meta.get_char_len() {
-        //                                     offset += 1;
-        //                                 }
-        //                             }
-        //                             TextWarpType::SoftWrap => {
-        //                                 if cursor_x
-        //                                     < line_meta.get(cursor_y).unwrap().get_char_len()
-        //                                 {
-        //                                     cursor_x += 1;
-
-        //                                     if cursor_x
-        //                                         >= line_meta.get(cursor_y).unwrap().get_char_len()
-        //                                         && cursor_y < self.tv.get_height()
-        //                                     {
-        //                                         //判断当前行是否读完
-        //                                         if line_meta.get(cursor_y).unwrap().get_line_end()
-        //                                             < edit.get_text_len(
-        //                                                 line_meta
-        //                                                     .get(cursor_y)
-        //                                                     .unwrap()
-        //                                                     .get_line_index(),
-        //                                             )
-        //                                         {
-        //                                             cursor_x = 0;
-        //                                             cursor_y += 1;
-        //                                         }
-        //                                     }
-        //                                 }
-        //                                 is_last = false;
-        //                             }
-        //                         }
-        //                     }
-        //                     (KeyCode::Enter, _) => {
-        //                         self.fuzzy_inp.clear();
-        //                         edit.insert_newline(
-        //                             cursor_y,
-        //                             cursor_x,
-        //                             line_meta.get(cursor_y).unwrap(),
-        //                         );
-        //                         if cursor_y < self.tv.get_height() - 1 {
-        //                             cursor_y += 1;
-        //                         }
-        //                         cursor_x = 0;
-        //                         edit.get_one_page(start_line_num);
-        //                     }
-        //                     (KeyCode::Backspace, _) => {
-        //                         self.fuzzy_inp.clear();
-        //                         if cursor_y == 0 && cursor_x == 0 {
-        //                             break;
-        //                         }
-        //                         edit.backspace(
-        //                             cursor_y,
-        //                             cursor_x,
-        //                             line_meta.get(cursor_y).unwrap(),
-        //                         );
-        //                         if cursor_x == 0 {
-        //                             cursor_x = line_meta.get(cursor_y - 1).unwrap().get_txt_len();
-        //                             cursor_y = cursor_y.saturating_sub(1);
-        //                         } else {
-        //                             cursor_x = cursor_x.saturating_sub(1);
-        //                         }
-        //                         edit.get_one_page(start_line_num);
-        //                     }
-        //                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-        //                         //退出
-        //                         crossterm::terminal::disable_raw_mode()?;
-        //                         execute!(
-        //                             self.terminal.backend_mut(),
-        //                             LeaveAlternateScreen // 离开备用屏幕
-        //                         );
-        //                         io::stdout().execute(cursor::Show)?;
-        //                         exit(0);
-        //                     }
-        //                     (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-        //                         self.fuzzy_inp.clear();
-        //                         //保存
-        //                         if let Ok(_) = edit.save(&p) {
-        //                             self.fuzzy_inp.push_str("saved");
-        //                         } else {
-        //                             self.fuzzy_inp.push_str("save fail");
-        //                         }
-        //                         break;
-        //                     }
-        //                     (KeyCode::Char(c), _) => {
-        //                         self.fuzzy_inp.clear();
-        //                         if cursor_x == 0 && is_last {
-        //                             edit.insert(
-        //                                 cursor_y - 1,
-        //                                 self.tv.get_width(),
-        //                                 line_meta.get(cursor_y - 1).unwrap(),
-        //                                 c,
-        //                             );
-        //                             is_last = false;
-        //                         } else {
-        //                             edit.insert(
-        //                                 cursor_y,
-        //                                 cursor_x,
-        //                                 line_meta.get(cursor_y).unwrap(),
-        //                                 c,
-        //                             );
-        //                         }
-        //                         if cursor_x < self.tv.get_width() {
-        //                             cursor_x += 1;
-        //                             if cursor_x >= self.tv.get_width()
-        //                                 && cursor_y < self.tv.get_height()
-        //                             {
-        //                                 //不断添加字符 还是续接上一行
-        //                                 is_last = true;
-        //                                 cursor_x = 0;
-        //                                 cursor_y += 1;
-        //                             }
-        //                         }
-        //                         edit.get_one_page(start_line_num);
-        //                         break;
-        //                     }
-        //                     _ => {}
-        //                 }
-        //             }
-        //             break 'key;
-        //         }
-        //     }
-        // }
+    
     }
 
     pub(crate) async fn render_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
@@ -1383,47 +1118,47 @@ impl ChapTui {
                                     message.push_str("\n");
                                 }
                                 message.push_str(chat_inp);
-                                if let Some(vb) = &self.vdb {
-                                    if let Ok(searcher) = vb.searcher().await {
-                                        let prompt_field_id =
-                                            vb.get_schema().get_field("prompt").unwrap();
-                                        let _id_field_id =
-                                            vb.get_schema().get_field("_id").unwrap();
-                                        let answer_field_id =
-                                            vb.get_schema().get_field("answer").unwrap();
-                                        // let embeddings =
-                                        //     self.embed_model.embed(vec![&message], None).unwrap();
-                                        // for (_, v) in embeddings.iter().enumerate() {
-                                        //     let tensor = Tensor::arr_slice(v, &wwml::Device::Cpu)?;
-                                        //     for ns in searcher.query(&tensor, 1, None)? {
-                                        //         let v = searcher.vector(&ns)?;
-                                        //         let prompt = v
-                                        //             .doc()
-                                        //             .get_field_value(prompt_field_id)
-                                        //             .value()
-                                        //             .str();
-                                        //         let answer = v
-                                        //             .doc()
-                                        //             .get_field_value(answer_field_id)
-                                        //             .value()
-                                        //             .str();
-                                        //         let chat_item_start =
-                                        //             chat_eg.get_line_count().max(1);
-                                        //         self.chat_tv.set_scroll(chat_item_start);
-                                        //         chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
-                                        //         chat_eg.push_str(answer);
-                                        //         chat_eg.push_str("\n");
-                                        //         let chat_item_end = chat_eg.get_line_count().max(1);
-                                        //         chat_item.push(ChatItemIndex(
-                                        //             chat_item_start,
-                                        //             chat_item_end - 1,
-                                        //         ));
-                                        //         self.chat_inp.clear();
-                                        //         chat_index = chat_item.len() - 1;
-                                        //     }
-                                        // }
-                                    }
-                                }
+                                // if let Some(vb) = &self.vdb {
+                                //     if let Ok(searcher) = vb.searcher().await {
+                                //         let prompt_field_id =
+                                //             vb.get_schema().get_field("prompt").unwrap();
+                                //         let _id_field_id =
+                                //             vb.get_schema().get_field("_id").unwrap();
+                                //         let answer_field_id =
+                                //             vb.get_schema().get_field("answer").unwrap();
+                                // let embeddings =
+                                //     self.embed_model.embed(vec![&message], None).unwrap();
+                                // for (_, v) in embeddings.iter().enumerate() {
+                                //     let tensor = Tensor::arr_slice(v, &wwml::Device::Cpu)?;
+                                //     for ns in searcher.query(&tensor, 1, None)? {
+                                //         let v = searcher.vector(&ns)?;
+                                //         let prompt = v
+                                //             .doc()
+                                //             .get_field_value(prompt_field_id)
+                                //             .value()
+                                //             .str();
+                                //         let answer = v
+                                //             .doc()
+                                //             .get_field_value(answer_field_id)
+                                //             .value()
+                                //             .str();
+                                //         let chat_item_start =
+                                //             chat_eg.get_line_count().max(1);
+                                //         self.chat_tv.set_scroll(chat_item_start);
+                                //         chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
+                                //         chat_eg.push_str(answer);
+                                //         chat_eg.push_str("\n");
+                                //         let chat_item_end = chat_eg.get_line_count().max(1);
+                                //         chat_item.push(ChatItemIndex(
+                                //             chat_item_start,
+                                //             chat_item_end - 1,
+                                //         ));
+                                //         self.chat_inp.clear();
+                                //         chat_index = chat_item.len() - 1;
+                                //     }
+                                // }
+                                //     }
+                                // }
                                 break;
                             }
                             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
@@ -2259,7 +1994,7 @@ fn get_content2<'a>(
     cursor_y: usize,
     cursor_x: usize,
 ) -> (Text<'a>, Text<'a>) {
-    // assert!(content.len() == line_meta.len());
+    assert!(txts.len() == line_meta.len());
     let mut lines = Vec::with_capacity(line_meta.len());
     for (i, txt) in txts.iter().enumerate() {
         let (str1, str2) = txt.text(offset..);
@@ -2332,7 +2067,7 @@ fn get_content2<'a>(
                     return Line::raw("");
                 }
                 Line::from(Span::styled(
-                    format!("{:>6} ", line_meta.get(i).unwrap().get_line_num()),
+                    format!("{:>4} ", line_meta.get(i).unwrap().get_line_num()),
                     Style::default().fg(Color::White),
                 ))
                 // 高亮当前行

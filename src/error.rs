@@ -1,6 +1,6 @@
 use std::io::Error as IOError;
 use thiserror::Error;
-use vectorbase::util::error::GyError;
+//use vectorbase::util::error::GyError;
 
 pub type ChapResult<T> = anyhow::Result<T>;
 
@@ -12,8 +12,8 @@ pub enum ChapError {
     UnexpectIO(IOError),
     #[error("Please enter a file name")]
     NoFilePath,
-    #[error("vectorbase error: {0}")]
-    VectorBaseError(GyError),
+    //#[error("vectorbase error: {0}")]
+    //VectorBaseError(GyError),
     #[error("LLM api not registered: {0}")]
     LLMNotRegistered(String),
 }

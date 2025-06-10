@@ -44,11 +44,11 @@ reqwest = { version = "0.12.5", features = ["blocking", "json", "multipart"] }
 groq-api-rs = "0.2.0"
 tokio = {version ="1.40.0",features = ["full"]}
 once_cell = "1.20.1"
-vectorbase = "0.0.1"
+#vectorbase = "0.0.1"
 #fastembed = "4.1.0"
 #fastembed = {path = "rust-lib/fastembed-rs", version = "4.2.0"}
-wwml =  "0.1.0"
-llmapi = {path = "crates/llmapi", version = "0.0.1"}
+#wwml =  "0.1.0"
+llmapi = {path = "crates/llmapi", version = "0.0.1"}  
 async-trait = "0.1"
 anyhow = "1.0"
 simplelog = "0.12.2"
