@@ -206,92 +206,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
         None
     }
 
-    //获取行数
-    // pub(crate) fn get_line_count(&mut self) -> usize {
-    //     if self.eof {
-    //         return self.max_line_num;
-    //     }
-
-    //     let page_offset = if let Some(offset) = self.page_offset_list.last() {
-    //         *offset
-    //     } else {
-    //         0
-    //     };
-    //     let start_page_num = (self.page_offset_list.len() - 1) * PAGE_GROUP;
-    //     //开始的行数
-    //     //开始滑动到最后一行
-    //     let mmap = self.text.cursor(page_offset);
-    //     let max_bytes = mmap.len();
-    //     let mut start = 0;
-    //     let start_line_num = start_page_num * self.height;
-    //     let mut line_num = 0;
-    //     let mut page_num = start_page_num;
-    //     let mut last_u8 = 0u8;
-    //     for (i, byte) in mmap.iter().enumerate() {
-    //         last_u8 = *byte;
-    //         if *byte == b'\n' || i == max_bytes - 1 {
-    //             let line = &mmap[start..=i];
-    //             let line_txt = std::str::from_utf8(line).unwrap();
-    //             let mut current_width = 0; //最近的矿都
-    //             let mut line_offset = 0; //
-    //             let mut current_bytes = 0;
-    //             for ch in line_txt.chars() {
-    //                 let ch_width = ch.width().unwrap_or(0);
-    //                 //检查是否超过屏幕宽度
-    //                 if current_width + ch_width > self.with {
-    //                     let end = (line_offset + current_bytes).min(line_txt.len());
-    //                     line_num += 1; //行数加1
-    //                     if line_num % self.height == 0 {
-    //                         //到达一页
-    //                         page_num += 1; //页数加1
-    //                         let m = page_num / PAGE_GROUP;
-    //                         let n = page_num % PAGE_GROUP;
-    //                         if n == 0 && m > self.page_offset_list.len() - 1 {
-    //                             //保存页数的偏移量 下一页开始位置
-    //                             self.page_offset_list.push(page_offset + start + end);
-    //                         }
-    //                     }
-    //                     line_offset += current_bytes;
-    //                     current_width = 0;
-    //                     current_bytes = 0;
-    //                 }
-    //                 current_width += ch_width;
-    //                 current_bytes += ch.len_utf8();
-    //             }
-    //             if current_bytes > 0 {
-    //                 line_num += 1;
-    //                 if line_num % self.height == 0 {
-    //                     page_num += 1; //页数加1
-    //                     let m = page_num / PAGE_GROUP;
-    //                     let n = page_num % PAGE_GROUP;
-    //                     if n == 0 && m > self.page_offset_list.len() - 1 {
-    //                         //保存页数的偏移量 下一页开始位置
-    //                         self.page_offset_list.push(page_offset + i + 1);
-    //                     }
-    //                 }
-    //             }
-    //             start = i + 1;
-    //         }
-    //     }
-    //     if last_u8 == b'\n' {
-    //         line_num += 1;
-    //         if line_num % self.height == 0 {
-    //             page_num += 1; //页数加1
-    //             let m = page_num / PAGE_GROUP;
-    //             let n = page_num % PAGE_GROUP;
-    //             if n == 0 && m > self.page_offset_list.len() - 1 {
-    //                 //保存页数的偏移量 下一页开始位置
-    //                 self.page_offset_list.push(page_offset + start);
-    //             }
-    //         }
-    //     }
-
-    //     self.max_line_num = start_line_num + line_num;
-    //     self.max_page_num = page_num;
-    //     self.eof = true;
-    //     return self.max_line_num;
-    // }
-
     pub(crate) fn get_start_end<'a>(
         &'a self,
         start: usize,
@@ -414,7 +328,7 @@ impl<T: SimpleText> SimpleTextEngine<T> {
             if *byte == b'\n' || i == max_bytes - 1 {
                 let line = &mmap[start..=i];
                 let line_txt = std::str::from_utf8(line).unwrap();
-                let mut current_width = 0; //
+                let mut current_width = 0; //字符宽度
                 let mut line_offset = 0; //
                 let mut current_bytes = 0;
                 for ch in line_txt.chars() {
