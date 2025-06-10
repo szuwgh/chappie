@@ -1,9 +1,1 @@
-[submodule "crates/wwml"]
-	path = crates/wwml
-	url = https://github.com/szuwgh/wwml.git
-[submodule "crates/llm-rs"]
-        path = crates/llm-rs
-        url = https://github.com/szuwgh/llm-rs.git
-[submodule "crates/aerogel"]
-	path = crates/aerogel
-	url = https://github.com/szuwgh/aerogel.git
+

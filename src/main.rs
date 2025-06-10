@@ -6,7 +6,7 @@ mod chatapi;
 mod error;
 mod fuzzy;
 mod vb;
-use std::io::{self, Read};
+use std::io::{self, Read};  
 mod chap;
 mod cmd;
 mod editor;
@@ -17,7 +17,7 @@ mod util;
 use crate::cmd::Cli;
 use crate::util::mmap_file;
 use chap::Chappie;
-use clap::Parser;
+use clap::Parser; 
 use error::ChapResult;
 use tui::ChapTui;
 
