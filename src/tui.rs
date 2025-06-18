@@ -36,6 +36,7 @@ use ratatui::prelude::Position;
 use ratatui::prelude::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
+use ratatui::symbols::line;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
@@ -228,6 +229,10 @@ impl HexSelect {
 
     fn inc_end(&mut self) {
         self.1 += 1;
+    }
+
+    fn is_selected(&self, pos: usize) -> bool {
+        pos >= self.start() && pos < self.end()
     }
 
     // 递减end
@@ -797,20 +802,24 @@ impl ChapTui {
                 todo!()
             }
             ChapMod::Hex => {
-                self.handle_right(cursor_x, cursor_y, offset, is_last, line_meta, td)?;
-                hex_sel.inc_end();
+                if *cursor_x < line_meta.get(*cursor_y).unwrap().get_hex_len() {
+                    *cursor_x += 1;
+                }
+                hex_sel
+                    .set_end(line_meta.get(*cursor_y).unwrap().get_line_file_start() + *cursor_x);
             }
             _ => {}
         };
         Ok(())
     }
 
-    pub fn handle_right(
+    fn handle_right(
         &self,
         cursor_x: &mut usize,
         cursor_y: &mut usize,
         offset: &mut usize,
         is_last: &mut bool,
+        hex_sel: &mut HexSelect,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
@@ -855,6 +864,8 @@ impl ChapTui {
                 if *cursor_x < line_meta.get(*cursor_y).unwrap().get_hex_len() {
                     *cursor_x += 1;
                 }
+                hex_sel
+                    .set_start(line_meta.get(*cursor_y).unwrap().get_line_file_start() + *cursor_x);
             }
             _ => {}
         };
@@ -915,6 +926,13 @@ impl ChapTui {
                     }) = event::read()?
                     {
                         match (code, modifiers) {
+                            (KeyCode::Esc, _) => {
+                                self.fuzzy_inp.clear();
+                                self.assist_inp.clear();
+                                self.navi.select_line = None;
+                                hex_sel.reset_to_start();
+                                break;
+                            }
                             (KeyCode::Right, KeyModifiers::SHIFT) => {
                                 self.handle_right_shift(
                                     &mut cursor_x,
@@ -962,6 +980,7 @@ impl ChapTui {
                                     &mut cursor_y,
                                     &mut offset,
                                     &mut is_last,
+                                    &mut hex_sel,
                                     &line_meta,
                                     &td,
                                 )?;
@@ -1180,6 +1199,7 @@ impl ChapTui {
                                 self.fuzzy_inp.clear();
                                 self.assist_inp.clear();
                                 self.navi.select_line = None;
+
                                 break;
                             }
                             (KeyCode::Tab, _) => {
@@ -1203,47 +1223,6 @@ impl ChapTui {
                                     message.push_str("\n");
                                 }
                                 message.push_str(assist_inp);
-                                // if let Some(vb) = &self.vdb {
-                                //     if let Ok(searcher) = vb.searcher().await {
-                                //         let prompt_field_id =
-                                //             vb.get_schema().get_field("prompt").unwrap();
-                                //         let _id_field_id =
-                                //             vb.get_schema().get_field("_id").unwrap();
-                                //         let answer_field_id =
-                                //             vb.get_schema().get_field("answer").unwrap();
-                                // let embeddings =
-                                //     self.embed_model.embed(vec![&message], None).unwrap();
-                                // for (_, v) in embeddings.iter().enumerate() {
-                                //     let tensor = Tensor::arr_slice(v, &wwml::Device::Cpu)?;
-                                //     for ns in searcher.query(&tensor, 1, None)? {
-                                //         let v = searcher.vector(&ns)?;
-                                //         let prompt = v
-                                //             .doc()
-                                //             .get_field_value(prompt_field_id)
-                                //             .value()
-                                //             .str();
-                                //         let answer = v
-                                //             .doc()
-                                //             .get_field_value(answer_field_id)
-                                //             .value()
-                                //             .str();
-                                //         let chat_item_start =
-                                //             chat_eg.get_line_count().max(1);
-                                //         self.assist_tv.set_scroll(chat_item_start);
-                                //         chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
-                                //         chat_eg.push_str(answer);
-                                //         chat_eg.push_str("\n");
-                                //         let chat_item_end = chat_eg.get_line_count().max(1);
-                                //         chat_item.push(ChatItemIndex(
-                                //             chat_item_start,
-                                //             chat_item_end - 1,
-                                //         ));
-                                //         self.assist_inp.clear();
-                                //         chat_index = chat_item.len() - 1;
-                                //     }
-                                // }
-                                //     }
-                                // }
                                 break;
                             }
                             (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
@@ -1956,23 +1935,33 @@ fn get_hex_content<'a>(
             // );
 
             for b in slice1.iter() {
+                j += 1;
                 let category = Byte(*b).category();
                 let color = category.color();
 
                 let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
+                let bg_col =
+                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
+                        Some(Color::LightRed)
+                    } else {
+                        None
+                    };
                 let space = if j % 8 == 0 { "  " } else { " " };
-
                 for x in c.chars() {
-                    spans.push(Span::styled(
-                        x.to_string().to_uppercase(),
-                        Style::default().fg(color),
-                    ));
+                    let s = if let Some(bg_color) = bg_col {
+                        Span::styled(
+                            x.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(bg_color),
+                        )
+                    } else {
+                        Span::styled(x.to_string().to_uppercase(), Style::default().fg(color))
+                    };
+                    spans.push(s);
                 }
                 for x in space.chars() {
                     spans.push(Span::raw(x.to_string()));
                 }
-                j += 1;
             }
 
             for b in slice2.iter() {
@@ -2030,6 +2019,7 @@ fn get_hex_content<'a>(
         }
 
         spans.push(Span::raw("   ".repeat(20 - txt.len() + 1)));
+        //添加字符串
         spans.push(Span::raw(bytes_to_string_with_dot(slice1)));
         spans.push(Span::raw(bytes_to_string_with_dot(slice2)));
 
