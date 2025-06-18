@@ -8,7 +8,6 @@ use crate::fuzzy::{FuzzySearch, Match};
 const PAGE_GROUP: usize = 1;
 
 pub(crate) struct LineMeta {
-    //  txt: &'a str,
     txt_len: usize,
     line_num: usize,
     end_offset: usize, //这一行在整个文件最后偏移量
@@ -348,12 +347,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                                     helper.page_offset_list.push(page_offset + start + end);
                                 }
                             }
-                            // let m = page_num / PAGE_GROUP;
-                            // let n = page_num % PAGE_GROUP;
-                            // if n == 0 && m > page_offset_list.len() - 1 {
-                            //     //保存页数的偏移量
-                            //     page_offset_list.push(page_offset + start + end);
-                            // }
                         }
                         if line_num >= skip_line {
                             let txt = &line_txt[line_offset..end];
@@ -412,12 +405,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                                 helper.page_offset_list.push(page_offset + i + 1);
                             }
                         }
-                        // let m = page_num / PAGE_GROUP;
-                        // let n = page_num % PAGE_GROUP;
-                        // if n == 0 && m > page_offset_list.len() - 1 {
-                        //     //保存页数的偏移量
-                        //     page_offset_list.push(page_offset + i + 1);
-                        // }
                     }
                     if line_num >= skip_line {
                         let txt = &line_txt[line_offset..];
@@ -437,9 +424,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                                         Some(m),
                                     ),
                                 );
-                                // split_lines.push(txt);
-                                // line_meta_list
-                                //     .push(LineMeta::new(start_line_num + line_num, Some(m)));
                             }
                         } else {
                             cur_line_count += 1;
@@ -453,8 +437,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                                     None,
                                 ),
                             );
-                            // split_lines.push(txt);
-                            // line_meta_list.push(LineMeta::new(start_line_num + line_num, None));
                         }
                         if cur_line_count >= line_count {
                             return;
@@ -477,12 +459,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                         helper.page_offset_list.push(page_offset + start);
                     }
                 }
-                // let m = page_num / PAGE_GROUP;
-                // let n = page_num % PAGE_GROUP;
-                // if n == 0 && m > page_offset_list.len() - 1 {
-                //     //保存页数的偏移量
-                //     page_offset_list.push(page_offset + start);
-                // }
             }
         }
 
@@ -494,16 +470,6 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                 helper.eof = true;
             }
         }
-        // if split_lines.len() < line_count {
-        //     self.max_line_num = start_line_num + line_num;
-        //     self.max_page_num = page_num;
-        //     self.eof = true;
-        // }
-        // if split_lines.len() > 0 {
-        //     (Some(split_lines), line_meta_list)
-        // } else {
-        //     (None, line_meta_list)
-        // }
     }
 
     fn get_line_content<'a>(

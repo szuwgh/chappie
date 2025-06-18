@@ -110,8 +110,8 @@ pub(crate) struct ChapTui {
     navi: Navigation,
     tv: TextView,
     fuzzy_inp: CmdInput,
-    chat_tv: TextView,
-    chat_inp: ChatInput,
+    assist_tv: TextView,
+    assist_inp: ChatInput,
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
     // vdb: Option<Collection>,
@@ -208,6 +208,48 @@ impl ChatItemIndex {
     }
 }
 
+struct HexSelect(usize, usize);
+
+impl HexSelect {
+    fn new() -> Self {
+        HexSelect(0, 0)
+    }
+
+    fn start(&self) -> usize {
+        self.0
+    }
+    fn end(&self) -> usize {
+        self.1
+    }
+
+    fn len(&self) -> usize {
+        self.end() - self.start()
+    }
+
+    fn inc_end(&mut self) {
+        self.1 += 1;
+    }
+
+    // 递减end
+    fn dec_end(&mut self) {
+        if self.1 > self.0 {
+            self.1 -= 1;
+        }
+    }
+
+    fn reset_to_start(&mut self) {
+        self.1 = self.0;
+    }
+
+    fn set_start(&mut self, start: usize) {
+        self.0 = start;
+    }
+
+    fn set_end(&mut self, end: usize) {
+        self.1 = end;
+    }
+}
+
 #[derive(Default)]
 // 聊天框的类型
 enum ChatType {
@@ -255,14 +297,19 @@ impl ChapTui {
             }
         };
 
-        if que {}
+        let nav_with = match chap_mod {
+            ChapMod::Edit => 5,
+            ChapMod::Hex => 8,
+            ChapMod::Text => 5,
+            ChapMod::Vector => 5,
+        };
 
         // 文本框显示内容的高度
         let tv_heigth = (tui_height - 1) as usize;
         // 文本框显示内容的宽度
         let tv_width = (tui_width as f32) as usize - 3;
 
-        let chat_tv_width = 0; //(tui_width as f32 * 0.0) as usize - 3;
+        let assist_tv_width = 0; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
 
@@ -272,7 +319,7 @@ impl ChapTui {
             .constraints([Constraint::Percentage(100), Constraint::Percentage(0)].as_ref())
             .split(rect);
 
-        let (nav_chk, tv_chk, seach_chk, chat_tv_chk, chat_inp_chk) = {
+        let (nav_chk, tv_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
             //文本框和输入框
             let left_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -288,7 +335,7 @@ impl ChapTui {
             //导航栏和文本框
             let nav_text_chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(5), Constraint::Percentage(100)].as_ref())
+                .constraints([Constraint::Length(nav_with), Constraint::Percentage(100)].as_ref())
                 .split(left_chunks[0]); // chunks[1] 是左侧区域
 
             let search_chunks = Layout::default()
@@ -324,16 +371,16 @@ impl ChapTui {
             rect: seach_chk,
         };
 
-        let chat_tv = TextView {
+        let assist_tv = TextView {
             height: tv_heigth,
-            width: chat_tv_width,
+            width: assist_tv_width,
             scroll: 1,
-            rect: chat_tv_chk,
+            rect: assist_tv_chk,
         };
 
-        let chat_inp = ChatInput {
+        let assist_inp = ChatInput {
             input: String::new(),
-            rect: chat_inp_chk,
+            rect: assist_inp_chk,
         };
 
         Ok(ChapTui {
@@ -343,8 +390,8 @@ impl ChapTui {
             navi: navi,
             tv: tv,
             fuzzy_inp: fuzzy_inp,
-            chat_tv: chat_tv,
-            chat_inp: chat_inp,
+            assist_tv: assist_tv,
+            assist_inp: assist_inp,
             focus: Focus::new(),
             prompt_tx: prompt_tx,
             // vdb: vdb,
@@ -356,10 +403,11 @@ impl ChapTui {
         })
     }
 
-    pub(crate) fn render_hex<'a>(
+    fn render_hex<'a>(
         &mut self,
         cursor_x: usize,
         cursor_y: usize,
+        hex_sel: &HexSelect,
         td: &'a TextDisplay,
     ) -> ChapResult<&'a RingVec<EditLineMeta>> {
         let line_meta = {
@@ -369,7 +417,7 @@ impl ChapTui {
                     content,
                     &meta,
                     self.navi.get_cur_line(),
-                    &self.navi.select_line,
+                    hex_sel,
                     self.tv.get_height(),
                     cursor_y,
                     cursor_x,
@@ -485,7 +533,7 @@ impl ChapTui {
         Ok(())
     }
 
-    pub(crate) fn handle_backspace(
+    fn handle_backspace(
         &mut self,
         cursor_x: &mut usize,
         cursor_y: &mut usize,
@@ -731,7 +779,33 @@ impl ChapTui {
         Ok(())
     }
 
-    pub(crate) fn handle_right(
+    fn handle_right_shift(
+        &self,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        offset: &mut usize,
+        is_last: &mut bool,
+        hex_sel: &mut HexSelect,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                todo!()
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                self.handle_right(cursor_x, cursor_y, offset, is_last, line_meta, td)?;
+                hex_sel.inc_end();
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub fn handle_right(
         &self,
         cursor_x: &mut usize,
         cursor_y: &mut usize,
@@ -813,7 +887,7 @@ impl ChapTui {
                     todo!()
                 }
             };
-
+            let mut hex_sel = HexSelect::new();
             let mut cursor_x: usize = 0;
             let mut cursor_y: usize = 0;
             let mut offset: usize = 0;
@@ -822,12 +896,12 @@ impl ChapTui {
             td.get_one_page(1)?;
 
             'tui: loop {
-                let mut line_meta = match self.chap_mod {
+                let line_meta = match self.chap_mod {
                     ChapMod::Edit => self.render_edit(cursor_x, cursor_y, offset, &td)?,
                     ChapMod::Text => {
                         todo!()
                     }
-                    ChapMod::Hex => self.render_hex(cursor_x, cursor_y, &td)?,
+                    ChapMod::Hex => self.render_hex(cursor_x, cursor_y, &hex_sel, &td)?,
                     _ => {
                         todo!()
                     }
@@ -841,6 +915,17 @@ impl ChapTui {
                     }) = event::read()?
                     {
                         match (code, modifiers) {
+                            (KeyCode::Right, KeyModifiers::SHIFT) => {
+                                self.handle_right_shift(
+                                    &mut cursor_x,
+                                    &mut cursor_y,
+                                    &mut offset,
+                                    &mut is_last,
+                                    &mut hex_sel,
+                                    &line_meta,
+                                    &td,
+                                )?;
+                            }
                             (KeyCode::Up, _) => {
                                 self.handle_up(
                                     &mut cursor_x,
@@ -881,6 +966,7 @@ impl ChapTui {
                                     &td,
                                 )?;
                             }
+
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.handle_ctrl_c()?,
                             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
                                 self.handle_ctrl_s(&p, &mut td)?;
@@ -929,7 +1015,7 @@ impl ChapTui {
         let line_meta = {
             let (content, meta) = td.get_current_page()?;
             self.terminal.draw(|f| {
-                let (navi, visible_content) = get_content2(
+                let (navi, visible_content) = get_edit_content(
                     content,
                     &meta,
                     self.navi.get_cur_line(),
@@ -955,15 +1041,14 @@ impl ChapTui {
             meta
         };
         return Ok(line_meta);
-    
     }
 
     pub(crate) async fn render_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
         let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
         let mut chat_eg = SimpleTextEngine::new(
             String::with_capacity(1024),
-            self.chat_tv.get_height(),
-            self.chat_tv.get_width(),
+            self.assist_tv.get_height(),
+            self.assist_tv.get_width(),
         );
         let mut chat_index: usize = 0;
         let mut chat_item: Vec<ChatItemIndex> = Vec::new();
@@ -973,7 +1058,7 @@ impl ChapTui {
                 let (inp, is_exact) = self.fuzzy_inp.get_inp_exact();
                 let (txt, line_meta) = eg.get_line(self.tv.get_scroll(), inp, is_exact);
                 self.terminal.draw(|f| {
-                    let (txt_clr, inp_clr, chat_clr_, chat_inp_clr) = self.focus.get_colors();
+                    let (txt_clr, inp_clr, chat_clr_, assist_inp_clr) = self.focus.get_colors();
                     // 左下输入框区
                     let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
                         .block(
@@ -1010,19 +1095,19 @@ impl ChapTui {
                     match chat_type {
                         ChatType::ChatTv => {
                             let (chat_line_meta, meta) =
-                                chat_eg.get_line(self.chat_tv.get_scroll(), "", is_exact);
+                                chat_eg.get_line(self.assist_tv.get_scroll(), "", is_exact);
                             if let Some(c) = &chat_line_meta {
                                 let chat_content =
                                     get_chat_content(c, &meta, &chat_item[chat_index]);
-                                let chat_tv = Paragraph::new(chat_content)
+                                let assist_tv = Paragraph::new(chat_content)
                                     .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
                                     .style(Style::default().fg(chat_clr_));
-                                f.render_widget(chat_tv, self.chat_tv.get_rect());
+                                f.render_widget(assist_tv, self.assist_tv.get_rect());
                             } else {
-                                let chat_tv = Paragraph::new("")
+                                let assist_tv = Paragraph::new("")
                                     .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
                                     .style(Style::default().fg(chat_clr_));
-                                f.render_widget(chat_tv, self.chat_tv.get_rect());
+                                f.render_widget(assist_tv, self.assist_tv.get_rect());
                             }
                         }
                         ChatType::Promt => {}
@@ -1030,14 +1115,14 @@ impl ChapTui {
                     }
                     // 右侧部分可以显示空白或其他内容
                     // let block = Block::default().borders(Borders::ALL).title("LLM Chat");
-                    let input_box = Paragraph::new(Text::raw(self.chat_inp.get_inp()))
+                    let input_box = Paragraph::new(Text::raw(self.assist_inp.get_inp()))
                         .block(
                             Block::default()
                                 .title("prompt")
                                 .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT),
                         )
-                        .style(Style::default().fg(chat_inp_clr)); // 设置输入框样式
-                    f.render_widget(input_box, self.chat_inp.get_rect());
+                        .style(Style::default().fg(assist_inp_clr)); // 设置输入框样式
+                    f.render_widget(input_box, self.assist_inp.get_rect());
 
                     match self.focus.current() {
                         FocusType::TxtFuzzy => {
@@ -1054,13 +1139,13 @@ impl ChapTui {
                         }
                         FocusType::Chat => {
                             // 将光标移动到输入框中合适的位置
-                            let inp_len = self.chat_inp.get_inp().width();
+                            let inp_len = self.assist_inp.get_inp().width();
                             let x = if inp_len == 0 {
-                                self.chat_inp.get_rect().x + 2
+                                self.assist_inp.get_rect().x + 2
                             } else {
-                                self.chat_inp.get_rect().x + inp_len as u16 + 1
+                                self.assist_inp.get_rect().x + inp_len as u16 + 1
                             };
-                            let y = self.chat_inp.get_rect().y + 1; // 输入框的 Y 起点
+                            let y = self.assist_inp.get_rect().y + 1; // 输入框的 Y 起点
                             f.set_cursor_position(Position { x, y });
                         }
                         _ => {}
@@ -1093,7 +1178,7 @@ impl ChapTui {
                         match (code, modifiers) {
                             (KeyCode::Esc, _) => {
                                 self.fuzzy_inp.clear();
-                                self.chat_inp.clear();
+                                self.assist_inp.clear();
                                 self.navi.select_line = None;
                                 break;
                             }
@@ -1103,8 +1188,8 @@ impl ChapTui {
                                 break;
                             }
                             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                                let chat_inp = self.chat_inp.get_inp();
-                                if chat_inp.len() == 0 {
+                                let assist_inp = self.assist_inp.get_inp();
+                                if assist_inp.len() == 0 {
                                     break;
                                 }
                                 let mut message = String::new();
@@ -1117,7 +1202,7 @@ impl ChapTui {
                                     }
                                     message.push_str("\n");
                                 }
-                                message.push_str(chat_inp);
+                                message.push_str(assist_inp);
                                 // if let Some(vb) = &self.vdb {
                                 //     if let Ok(searcher) = vb.searcher().await {
                                 //         let prompt_field_id =
@@ -1144,7 +1229,7 @@ impl ChapTui {
                                 //             .str();
                                 //         let chat_item_start =
                                 //             chat_eg.get_line_count().max(1);
-                                //         self.chat_tv.set_scroll(chat_item_start);
+                                //         self.assist_tv.set_scroll(chat_item_start);
                                 //         chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",prompt));
                                 //         chat_eg.push_str(answer);
                                 //         chat_eg.push_str("\n");
@@ -1153,7 +1238,7 @@ impl ChapTui {
                                 //             chat_item_start,
                                 //             chat_item_end - 1,
                                 //         ));
-                                //         self.chat_inp.clear();
+                                //         self.assist_inp.clear();
                                 //         chat_index = chat_item.len() - 1;
                                 //     }
                                 // }
@@ -1234,8 +1319,8 @@ impl ChapTui {
                                     break;
                                 }
                                 FocusType::Chat => {
-                                    let chat_inp = self.chat_inp.get_inp();
-                                    if chat_inp.len() == 0 {
+                                    let assist_inp = self.assist_inp.get_inp();
+                                    if assist_inp.len() == 0 {
                                         break;
                                     }
                                     let mut message = String::new();
@@ -1247,18 +1332,18 @@ impl ChapTui {
                                         // }
                                         message.push_str("\n");
                                     }
-                                    message.push_str(chat_inp);
+                                    message.push_str(assist_inp);
 
                                     if message.trim().len() > 0 {
                                         let chat_item_start = chat_eg.get_line_count().max(1);
-                                        self.chat_tv.set_scroll(chat_item_start);
+                                        self.assist_tv.set_scroll(chat_item_start);
                                         chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",message));
                                         let chat_item_end = chat_eg.get_line_count().max(1);
                                         chat_item.push(ChatItemIndex(
                                             chat_item_start,
                                             chat_item_end - 1,
                                         ));
-                                        self.chat_inp.clear();
+                                        self.assist_inp.clear();
                                         chat_index = chat_item.len() - 1;
                                         let _ = self.prompt_tx.send(message.to_string()).await;
                                         break;
@@ -1312,7 +1397,7 @@ impl ChapTui {
                                         break;
                                     }
                                     FocusType::Chat => {
-                                        self.chat_tv.down_line(chat_eg.get_max_scroll_num());
+                                        self.assist_tv.down_line(chat_eg.get_max_scroll_num());
                                         break;
                                     }
                                     _ => {}
@@ -1359,7 +1444,7 @@ impl ChapTui {
                                     }
 
                                     FocusType::Chat => {
-                                        // self.chat_tv.up_line();
+                                        // self.assist_tv.up_line();
                                     }
                                     _ => {}
                                 }
@@ -1399,26 +1484,26 @@ impl ChapTui {
                                         break;
                                     }
                                     FocusType::Chat => {
-                                        // self.chat_tv.up_line();
+                                        // self.assist_tv.up_line();
                                         if chat_index >= chat_item.len() {
                                             break;
                                         }
                                         let chat_item_index = &chat_item[chat_index];
                                         let start = chat_item_index.start();
                                         let pre_scorll = (self
-                                            .chat_tv
+                                            .assist_tv
                                             .get_scroll()
-                                            .saturating_sub(self.chat_tv.get_height()))
+                                            .saturating_sub(self.assist_tv.get_height()))
                                         .max(1);
                                         if pre_scorll >= start {
-                                            self.chat_tv.set_scroll(pre_scorll);
-                                        } else if self.chat_tv.get_scroll() <= start {
+                                            self.assist_tv.set_scroll(pre_scorll);
+                                        } else if self.assist_tv.get_scroll() <= start {
                                             chat_index = chat_index.saturating_sub(1);
                                             let pre_chat_item_index = &chat_item[chat_index];
                                             let pre_start = pre_chat_item_index.start();
-                                            self.chat_tv.set_scroll(pre_start);
+                                            self.assist_tv.set_scroll(pre_start);
                                         } else if pre_scorll < start {
-                                            self.chat_tv.set_scroll(start);
+                                            self.assist_tv.set_scroll(start);
                                         }
 
                                         break;
@@ -1447,18 +1532,18 @@ impl ChapTui {
                                                 let chat_item_index = &chat_item[chat_index];
                                                 let start = chat_item_index.start();
                                                 let end = chat_item_index.end();
-                                                if self.chat_tv.get_scroll() < start {
-                                                    self.chat_tv.set_scroll(start);
-                                                } else if self.chat_tv.get_scroll()
-                                                    + self.chat_tv.get_height()
+                                                if self.assist_tv.get_scroll() < start {
+                                                    self.assist_tv.set_scroll(start);
+                                                } else if self.assist_tv.get_scroll()
+                                                    + self.assist_tv.get_height()
                                                     <= end
                                                 {
-                                                    self.chat_tv.set_scroll(
-                                                        self.chat_tv.get_scroll()
-                                                            + self.chat_tv.get_height(),
+                                                    self.assist_tv.set_scroll(
+                                                        self.assist_tv.get_scroll()
+                                                            + self.assist_tv.get_height(),
                                                     );
-                                                } else if self.chat_tv.get_scroll()
-                                                    + self.chat_tv.get_height()
+                                                } else if self.assist_tv.get_scroll()
+                                                    + self.assist_tv.get_height()
                                                     > end
                                                 {
                                                     if chat_index + 1 < chat_item.len() {
@@ -1467,7 +1552,7 @@ impl ChapTui {
                                                             &chat_item[chat_index];
                                                         let next_start =
                                                             next_chat_item_index.start();
-                                                        self.chat_tv.set_scroll(next_start);
+                                                        self.assist_tv.set_scroll(next_start);
                                                     }
                                                 }
                                             }
@@ -1491,7 +1576,7 @@ impl ChapTui {
                                         break;
                                     }
                                     FocusType::Chat => {
-                                        self.chat_inp.push(c); // 添加字符到输入缓冲区
+                                        self.assist_inp.push(c); // 添加字符到输入缓冲区
                                         break;
                                     }
                                     _ => {}
@@ -1507,12 +1592,11 @@ impl ChapTui {
                                         break;
                                     }
                                     FocusType::Chat => {
-                                        self.chat_inp.pop();
+                                        self.assist_inp.pop();
                                         break;
                                     }
                                     _ => {}
                                 }
-
                                 break;
                             }
 
@@ -1850,7 +1934,7 @@ fn get_hex_content<'a>(
     txts: &'a RingVec<CacheStr>,
     line_meta: &'a RingVec<EditLineMeta>,
     cur_line: usize,
-    select_line: &Option<(usize, usize)>,
+    hex_sel: &HexSelect,
     height: usize,
     cursor_y: usize,
     cursor_x: usize,
@@ -1870,7 +1954,6 @@ fn get_hex_content<'a>(
             //     line_meta.get(i).unwrap().get_line_file_start(),
             //     line_meta.get(i).unwrap().get_line_file_end(),
             // );
-            let mut k = 0;
 
             for b in slice1.iter() {
                 let category = Byte(*b).category();
@@ -1984,7 +2067,7 @@ fn get_hex_content<'a>(
     (nav_text, text)
 }
 
-fn get_content2<'a>(
+fn get_edit_content<'a>(
     txts: &'a RingVec<CacheStr>,
     line_meta: &'a RingVec<EditLineMeta>,
     cur_line: usize,

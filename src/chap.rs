@@ -1,6 +1,5 @@
 use crate::chatapi::LlmClient;
 use crate::cmd::Cli;
-use crate::textwarp::SimpleText;
 use crate::ChapResult;
 use crate::ChapTui;
 use once_cell::sync::Lazy;
@@ -109,13 +108,13 @@ impl Chappie {
         RUNTIME.block_on(async move { self.tui.render(p).await })
     }
 
-    pub(crate) fn run_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render(p).await })
-    }
+    // pub(crate) fn run_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+    //     RUNTIME.block_on(async move { self.tui.render(p).await })
+    // }
 
-    pub(crate) fn run_hex<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render(p).await })
-    }
+    // pub(crate) fn run_hex<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+    //     RUNTIME.block_on(async move { self.tui.render(p).await })
+    // }
 
     // pub(crate) fn run_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
     //     RUNTIME.block_on(async move { self.tui.render(bytes).await })
