@@ -246,6 +246,11 @@ impl HexSelect {
         self.1 = self.0;
     }
 
+    fn set_pos(&mut self, pos: usize) {
+        self.0 = pos;
+        self.1 = pos;
+    }
+
     fn set_start(&mut self, start: usize) {
         self.0 = start;
     }
@@ -861,11 +866,11 @@ impl ChapTui {
                 todo!()
             }
             ChapMod::Hex => {
-                if *cursor_x < line_meta.get(*cursor_y).unwrap().get_hex_len() {
+                if *cursor_x < line_meta.get(*cursor_y).unwrap().get_txt_len() {
                     *cursor_x += 1;
                 }
                 hex_sel
-                    .set_start(line_meta.get(*cursor_y).unwrap().get_line_file_start() + *cursor_x);
+                    .set_pos(line_meta.get(*cursor_y).unwrap().get_line_file_start() + *cursor_x);
             }
             _ => {}
         };
@@ -1922,7 +1927,7 @@ fn get_hex_content<'a>(
     for (i, txt) in txts.iter().enumerate() {
         let (slice1, slice2) = txt.as_slice();
         let mut spans = Vec::with_capacity(slice1.len() + slice2.len());
-        let mut j = 1;
+        let mut j = 0;
 
         if cursor_y == i {
             // log::debug!(
@@ -1935,7 +1940,6 @@ fn get_hex_content<'a>(
             // );
 
             for b in slice1.iter() {
-                j += 1;
                 let category = Byte(*b).category();
                 let color = category.color();
 
@@ -1947,21 +1951,40 @@ fn get_hex_content<'a>(
                     } else {
                         None
                     };
-                let space = if j % 8 == 0 { "  " } else { " " };
-                for x in c.chars() {
-                    let s = if let Some(bg_color) = bg_col {
-                        Span::styled(
-                            x.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(bg_color),
-                        )
+                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+                // for x in c.chars() {
+                //     let s = if let Some(bg_color) = bg_col {
+                //         Span::styled(
+                //             x.to_string().to_uppercase(),
+                //             Style::default().fg(color).bg(bg_color),
+                //         )
+                //     } else {
+                //         Span::styled(x.to_string().to_uppercase(), Style::default().fg(color))
+                //     };
+                //     spans.push(s);
+                // }
+                if j == cursor_x {
+                    spans.push(Span::styled(
+                        c.to_string().to_uppercase(),
+                        Style::default().fg(color).bg(Color::LightRed),
+                    ));
+                } else {
+                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(Color::LightRed),
+                        ));
                     } else {
-                        Span::styled(x.to_string().to_uppercase(), Style::default().fg(color))
-                    };
-                    spans.push(s);
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color),
+                        ));
+                    }
                 }
                 for x in space.chars() {
                     spans.push(Span::raw(x.to_string()));
                 }
+                j += 1;
             }
 
             for b in slice2.iter() {
@@ -1970,22 +1993,40 @@ fn get_hex_content<'a>(
 
                 let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
-                let space = if j % 8 == 0 { "  " } else { " " };
-                for x in c.chars() {
+                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+                // for x in c.chars() {
+                //     spans.push(Span::styled(
+                //         x.to_string().to_uppercase(),
+                //         Style::default().fg(color),
+                //     ));
+                // }
+                if j == cursor_x {
                     spans.push(Span::styled(
-                        x.to_string().to_uppercase(),
-                        Style::default().fg(color),
+                        c.to_string().to_uppercase(),
+                        Style::default().fg(color).bg(Color::LightRed),
                     ));
+                } else {
+                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(Color::LightRed),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color),
+                        ));
+                    }
                 }
                 for x in space.chars() {
                     spans.push(Span::raw(x.to_string()));
                 }
                 j += 1;
             }
-            spans[cursor_x] = Span::styled(
-                spans[cursor_x].content.clone(),
-                Style::default().bg(Color::LightRed),
-            );
+            // spans[cursor_x] = Span::styled(
+            //     spans[cursor_x].content.clone(),
+            //     Style::default().bg(Color::LightRed),
+            // );
         } else {
             for b in slice1.iter() {
                 let category = Byte(*b).category();
@@ -1997,7 +2038,7 @@ fn get_hex_content<'a>(
                     c.to_string().to_uppercase(),
                     Style::default().fg(color),
                 ));
-                let white = if j % 8 == 0 { "  " } else { " " };
+                let white = if j != 0 && j % 8 == 0 { "  " } else { " " };
                 spans.push(Span::raw(white));
                 j += 1;
             }
@@ -2012,7 +2053,7 @@ fn get_hex_content<'a>(
                     c.to_string().to_uppercase(),
                     Style::default().fg(color),
                 ));
-                let white = if j % 8 == 0 { "  " } else { " " };
+                let white = if j != 0 && j % 8 == 0 { "  " } else { " " };
                 spans.push(Span::raw(white));
                 j += 1;
             }
