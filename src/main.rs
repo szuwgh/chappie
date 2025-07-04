@@ -11,6 +11,7 @@ mod chap;
 mod cmd;
 mod editor;
 mod gap_buffer;
+mod handle;
 mod textwarp;
 mod tui;
 mod util;

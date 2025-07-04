@@ -108,19 +108,24 @@ pub(crate) struct ChapTui {
     chap_mod: ChapMod,
     warp_type: TextWarpType,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
-    navi: Navigation,
+    pub(crate) navi: Navigation,
     tv: TextView,
-    fuzzy_inp: CmdInput,
+    pub(crate) fuzzy_inp: CmdInput,
     assist_tv: TextView,
-    assist_inp: ChatInput,
+    pub(crate) assist_inp: ChatInput,
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
-    // vdb: Option<Collection>,
-    //embed_model: Arc<TextEmbedding>,
     start_row: u16,
     llm_res_rx: mpsc::Receiver<String>,
     ui_type: UIType,
     que: bool,
+
+    pub(crate) txt_sel: TextSelect, // 文本选择
+    cursor_x: usize,                // 光标x坐标
+    cursor_y: usize,                // 光标y坐标
+    offset: usize,                  // 偏移量
+    start_line_num: usize,          // 起始行号
+    is_last_line: bool,             // 是否是最后一行
 }
 
 // 文本编辑器大文件浏览 窗口
@@ -209,11 +214,11 @@ impl ChatItemIndex {
     }
 }
 
-struct HexSelect(usize, usize);
+struct TextSelect(usize, usize);
 
-impl HexSelect {
+impl TextSelect {
     fn new() -> Self {
-        HexSelect(0, 0)
+        TextSelect(0, 0)
     }
 
     fn start(&self) -> usize {
@@ -242,7 +247,7 @@ impl HexSelect {
         }
     }
 
-    fn reset_to_start(&mut self) {
+    pub(crate) fn reset_to_start(&mut self) {
         self.1 = self.0;
     }
 
@@ -404,12 +409,17 @@ impl ChapTui {
             assist_inp: assist_inp,
             focus: Focus::new(),
             prompt_tx: prompt_tx,
-            // vdb: vdb,
-            //  embed_model: embed_model,
             start_row: start_row,
             llm_res_rx: llm_res_rx,
             ui_type: ui_type,
             que: que,
+
+            txt_sel: TextSelect::new(),
+            cursor_x: 0,
+            cursor_y: 0,
+            offset: 0,
+            start_line_num: 0,
+            is_last_line: false,
         })
     }
 
@@ -417,7 +427,7 @@ impl ChapTui {
         &mut self,
         cursor_x: usize,
         cursor_y: usize,
-        hex_sel: &HexSelect,
+        hex_sel: &TextSelect,
         td: &'a TextDisplay,
     ) -> ChapResult<&'a RingVec<EditLineMeta>> {
         let line_meta = {
@@ -791,11 +801,7 @@ impl ChapTui {
 
     fn handle_right_shift(
         &self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        offset: &mut usize,
-        is_last: &mut bool,
-        hex_sel: &mut HexSelect,
+        chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
@@ -807,11 +813,46 @@ impl ChapTui {
                 todo!()
             }
             ChapMod::Hex => {
-                if *cursor_x < line_meta.get(*cursor_y).unwrap().get_hex_len() {
-                    *cursor_x += 1;
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+                    chap_tui.cursor_x += 1;
                 }
-                hex_sel
-                    .set_end(line_meta.get(*cursor_y).unwrap().get_line_file_start() + *cursor_x);
+                chap_tui.txt_sel.set_end(
+                    line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_line_file_start()
+                        + chap_tui.cursor_x,
+                );
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_left_shift(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                todo!()
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+                    chap_tui.cursor_x += 1;
+                }
+                chap_tui.txt_sel.set_end(
+                    line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_line_file_start()
+                        + chap_tui.cursor_x,
+                );
             }
             _ => {}
         };
@@ -820,11 +861,7 @@ impl ChapTui {
 
     fn handle_right(
         &self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        offset: &mut usize,
-        is_last: &mut bool,
-        hex_sel: &mut HexSelect,
+        chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
@@ -832,33 +869,38 @@ impl ChapTui {
             ChapMod::Edit => {
                 match self.warp_type {
                     TextWarpType::NoWrap => {
-                        let meta = line_meta.get(*cursor_y).unwrap();
-                        if *cursor_x < meta.get_char_len() && *cursor_x < self.tv.width {
-                            *cursor_x += 1;
+                        let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                        if chap_tui.cursor_x < meta.get_char_len()
+                            && chap_tui.cursor_x < self.tv.width
+                        {
+                            chap_tui.cursor_x += 1;
                         }
-                        if *offset <= meta.get_char_len() {
-                            *offset += 1;
+                        if chap_tui.offset <= meta.get_char_len() {
+                            chap_tui.offset += 1;
                         }
                     }
                     TextWarpType::SoftWrap => {
-                        if *cursor_x < line_meta.get(*cursor_y).unwrap().get_char_len() {
-                            *cursor_x += 1;
+                        if chap_tui.cursor_x
+                            < line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+                        {
+                            chap_tui.cursor_x += 1;
 
-                            if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len()
-                                && *cursor_y < self.tv.get_height()
+                            if chap_tui.cursor_x
+                                >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+                                && chap_tui.cursor_y < self.tv.get_height()
                             {
                                 //判断当前行是否读完
-                                if line_meta.get(*cursor_y).unwrap().get_line_end()
+                                if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
                                     < td.get_text_len_from_index(
-                                        line_meta.get(*cursor_y).unwrap().get_line_index(),
+                                        line_meta.get(chap_tui.cursor_y).unwrap().get_line_index(),
                                     )
                                 {
-                                    *cursor_x = 0;
-                                    *cursor_y += 1;
+                                    chap_tui.cursor_x = 0;
+                                    chap_tui.cursor_y += 1;
                                 }
                             }
                         }
-                        *is_last = false;
+                        chap_tui.is_last_line = false;
                     }
                 }
             }
@@ -866,11 +908,16 @@ impl ChapTui {
                 todo!()
             }
             ChapMod::Hex => {
-                if *cursor_x < line_meta.get(*cursor_y).unwrap().get_txt_len() {
-                    *cursor_x += 1;
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() {
+                    chap_tui.cursor_x += 1;
                 }
-                hex_sel
-                    .set_pos(line_meta.get(*cursor_y).unwrap().get_line_file_start() + *cursor_x);
+                chap_tui.txt_sel.set_pos(
+                    line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_line_file_start()
+                        + chap_tui.cursor_x,
+                );
             }
             _ => {}
         };
@@ -903,27 +950,31 @@ impl ChapTui {
                     todo!()
                 }
             };
-            let mut hex_sel = HexSelect::new();
-            let mut cursor_x: usize = 0;
-            let mut cursor_y: usize = 0;
-            let mut offset: usize = 0;
-            let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
-            let mut start_line_num = 1;
+            // let mut txt_sel = TextSelect::new();
+            // let mut cursor_x: usize = 0;
+            // let mut cursor_y: usize = 0;
+            // let mut offset: usize = 0;
+            // let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
+            // let mut start_line_num = 1;
             td.get_one_page(1)?;
 
             'tui: loop {
                 let line_meta = match self.chap_mod {
-                    ChapMod::Edit => self.render_edit(cursor_x, cursor_y, offset, &td)?,
+                    ChapMod::Edit => {
+                        self.render_edit(self.cursor_x, self.cursor_y, self.offset, &td)?
+                    }
                     ChapMod::Text => {
                         todo!()
                     }
-                    ChapMod::Hex => self.render_hex(cursor_x, cursor_y, &hex_sel, &td)?,
+                    ChapMod::Hex => {
+                        self.render_hex(self.cursor_x, self.cursor_y, &self.txt_sel, &td)?
+                    }
                     _ => {
                         todo!()
                     }
                 };
                 if let Some(start_line_meta) = line_meta.get(0) {
-                    start_line_num = start_line_meta.get_line_num();
+                    self.start_line_num = start_line_meta.get_line_num();
                 }
                 'key: loop {
                     if let event::Event::Key(KeyEvent {
@@ -935,20 +986,13 @@ impl ChapTui {
                                 self.fuzzy_inp.clear();
                                 self.assist_inp.clear();
                                 self.navi.select_line = None;
-                                hex_sel.reset_to_start();
+                                self.txt_sel.reset_to_start();
                                 break;
                             }
                             (KeyCode::Right, KeyModifiers::SHIFT) => {
-                                self.handle_right_shift(
-                                    &mut cursor_x,
-                                    &mut cursor_y,
-                                    &mut offset,
-                                    &mut is_last,
-                                    &mut hex_sel,
-                                    &line_meta,
-                                    &td,
-                                )?;
+                                self.handle_right_shift(self, &line_meta, &td)?;
                             }
+                            (KeyCode::Left, KeyModifiers::SHIFT) => {}
                             (KeyCode::Up, _) => {
                                 self.handle_up(
                                     &mut cursor_x,
@@ -1602,6 +1646,10 @@ struct Navigation {
 }
 
 impl Navigation {
+    pub(crate) fn clear(&mut self) {
+        self.select_line = None;
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1712,7 +1760,7 @@ impl CmdInput {
         self.rect
     }
 
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.input.clear();
     }
 
@@ -1812,7 +1860,7 @@ impl ChatInput {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.input.clear();
     }
 
@@ -1918,7 +1966,7 @@ fn get_hex_content<'a>(
     txts: &'a RingVec<CacheStr>,
     line_meta: &'a RingVec<EditLineMeta>,
     cur_line: usize,
-    hex_sel: &HexSelect,
+    hex_sel: &TextSelect,
     height: usize,
     cursor_y: usize,
     cursor_x: usize,
@@ -1928,61 +1976,34 @@ fn get_hex_content<'a>(
         let (slice1, slice2) = txt.as_slice();
         let mut spans = Vec::with_capacity(slice1.len() + slice2.len());
         let mut j = 0;
-
         if cursor_y == i {
-            // log::debug!(
-            //     "cursor_y: {}, i: {}, line_num: {},line_file_start:{},line_file_end:{}",
-            //     cursor_y,
-            //     i,
-            //     line_meta.get(i).unwrap().get_line_num(),
-            //     line_meta.get(i).unwrap().get_line_file_start(),
-            //     line_meta.get(i).unwrap().get_line_file_end(),
-            // );
-
             for b in slice1.iter() {
                 let category = Byte(*b).category();
                 let color = category.color();
 
                 let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
-                let bg_col =
-                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
-                        Some(Color::LightRed)
-                    } else {
-                        None
-                    };
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
-                // for x in c.chars() {
-                //     let s = if let Some(bg_color) = bg_col {
-                //         Span::styled(
-                //             x.to_string().to_uppercase(),
-                //             Style::default().fg(color).bg(bg_color),
-                //         )
-                //     } else {
-                //         Span::styled(x.to_string().to_uppercase(), Style::default().fg(color))
-                //     };
-                //     spans.push(s);
-                // }
                 if j == cursor_x {
                     spans.push(Span::styled(
                         c.to_string().to_uppercase(),
                         Style::default().fg(color).bg(Color::LightRed),
                     ));
+                    spans.push(Span::raw(space));
                 } else {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color).bg(Color::LightRed),
                         ));
+                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
+                        spans.push(Span::raw(space));
                     }
-                }
-                for x in space.chars() {
-                    spans.push(Span::raw(x.to_string()));
                 }
                 j += 1;
             }
@@ -1994,33 +2015,30 @@ fn get_hex_content<'a>(
                 let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
-                // for x in c.chars() {
-                //     spans.push(Span::styled(
-                //         x.to_string().to_uppercase(),
-                //         Style::default().fg(color),
-                //     ));
-                // }
                 if j == cursor_x {
                     spans.push(Span::styled(
                         c.to_string().to_uppercase(),
                         Style::default().fg(color).bg(Color::LightRed),
                     ));
+                    spans.push(Span::raw(space));
                 } else {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color).bg(Color::LightRed),
                         ));
+                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
+                        spans.push(Span::raw(space));
                     }
                 }
-                for x in space.chars() {
-                    spans.push(Span::raw(x.to_string()));
-                }
+                //for x in space.chars() {
+                // spans.push(Span::raw(space));
+                //}
                 j += 1;
             }
             // spans[cursor_x] = Span::styled(
