@@ -1,95 +1,633 @@
 use crate::editor::EditLineMeta;
 use crate::editor::RingVec;
 use crate::editor::TextDisplay;
-use crate::tui::ChapMod;
+use crate::editor::TextOper;
+use crate::editor::TextWarpType;
+use crate::error::ChapResult;
 use crate::ChapTui;
+use crossterm::cursor;
+use crossterm::execute;
+use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::ExecutableCommand;
+use std::io;
 use std::path::Path;
-
-enum HandleImpl {
-    Text(HandleText),
-    Impl(HandleHex),
+use std::process::exit;
+pub(crate) enum HandleImpl {
+    Edit(HandleEdit),
+    Hex(HandleHex),
 }
 
 impl Handle for HandleImpl {
-    fn handle_ctrl_c(
+    fn handle_ctrl_s<P: AsRef<Path>>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) {
+        p: P,
+        td: &mut TextDisplay,
+    ) -> ChapResult<()> {
         match self {
-            HandleImpl::Text(handle_text) => {
-                handle_text.handle_ctrl_c(chap_tui, line_meta, td);
-            }
-            HandleImpl::Impl(handle_hex) => {
-                // handle_hex.handle_ctrl_c(chap_tui, line_meta, td);
-                // Implement hex mode Ctrl+C handling
-            }
+            HandleImpl::Edit(h) => h.handle_ctrl_s(chap_tui, p, td),
+            HandleImpl::Hex(h) => h.handle_ctrl_s(chap_tui, p, td),
         }
     }
 
-    fn handle_ctrl_s<P: AsRef<Path>>(&mut self, p: P, td: &mut TextDisplay) {}
-}
-
-trait Handle {
-    fn handle_esc(
+    fn handle_up(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
-    ) {
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_up(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_up(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_right_shift(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_right_shift(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_right_shift(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_down(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_down(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_left<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_left(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_left(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_right<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_right(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_right(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_enter<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_enter(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_enter(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_backspace<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_backspace(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_backspace(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_char<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+        c: char,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_char(chap_tui, line_meta, td, c),
+            HandleImpl::Hex(h) => h.handle_char(chap_tui, line_meta, td, c),
+        }
+    }
+}
+
+pub(crate) trait Handle {
+    fn handle_esc(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
         chap_tui.fuzzy_inp.clear();
         chap_tui.assist_inp.clear();
         chap_tui.navi.clear();
         chap_tui.txt_sel.reset_to_start();
+        Ok(())
     }
-    fn handle_ctrl_c(
+
+    fn handle_ctrl_c(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
+        crossterm::terminal::disable_raw_mode()?;
+        execute!(
+            chap_tui.terminal.backend_mut(),
+            LeaveAlternateScreen // 离开备用屏幕
+        )?;
+        io::stdout().execute(cursor::Show)?;
+        exit(0);
+    }
+
+    fn handle_ctrl_s<P: AsRef<Path>>(
+        &self,
+        chap_tui: &mut ChapTui,
+        p: P,
+        td: &mut TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_right_shift<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_left<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_right<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_enter<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_backspace<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_char<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+        c: char,
+    ) -> ChapResult<()>;
+}
+
+pub(crate) struct HandleEdit;
+
+impl HandleEdit {
+    pub(crate) fn new() -> Self {
+        HandleEdit {}
+    }
+}
+
+impl Handle for HandleEdit {
+    fn handle_ctrl_s<P: AsRef<Path>>(
+        &self,
+        chap_tui: &mut ChapTui,
+        p: P,
+        td: &mut TextDisplay,
+    ) -> ChapResult<()> {
+        chap_tui.fuzzy_inp.clear();
+        //保存
+        if let Ok(_) = td.save(&p) {
+            chap_tui.fuzzy_inp.push_str("saved");
+        } else {
+            chap_tui.fuzzy_inp.push_str("save fail");
+        }
+        Ok(())
+    }
+
+    fn handle_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match chap_tui.warp_type {
+            TextWarpType::NoWrap => {
+                if chap_tui.cursor_y == 0 {
+                    //滚动上一行
+                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                    td.get_current_line_meta()?;
+                }
+                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
+                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                }
+                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                if chap_tui.offset >= meta.get_char_len() {
+                    chap_tui.offset = meta.get_char_len();
+                }
+                chap_tui.is_last_line = false;
+            }
+            TextWarpType::SoftWrap => {
+                if chap_tui.cursor_y == 0 {
+                    //滚动上一行
+                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                    line_meta = td.get_current_line_meta()?;
+                }
+                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
+                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                }
+
+                chap_tui.is_last_line = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match chap_tui.warp_type {
+            TextWarpType::NoWrap => {
+                if chap_tui.cursor_y < chap_tui.tv.get_height() - 1 {
+                    chap_tui.cursor_y += 1;
+                } else {
+                    //滚动下一行
+                    td.scroll_next_one_line(line_meta.last().unwrap())?;
+                    line_meta = td.get_current_line_meta()?;
+                }
+                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
+                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                }
+                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                if chap_tui.offset >= meta.get_char_len() {
+                    chap_tui.offset = meta.get_char_len();
+                }
+                chap_tui.is_last_line = false;
+            }
+            TextWarpType::SoftWrap => {
+                if chap_tui.cursor_y < chap_tui.tv.get_height() - 1 {
+                    chap_tui.cursor_y += 1;
+                } else {
+                    //滚动下一行
+                    td.scroll_next_one_line(line_meta.last().unwrap())?;
+                    line_meta = td.get_current_line_meta()?;
+                }
+                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
+                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                }
+                chap_tui.is_last_line = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_left<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match chap_tui.warp_type {
+            TextWarpType::NoWrap => {
+                chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+                chap_tui.offset = chap_tui.offset.saturating_sub(1);
+            }
+            TextWarpType::SoftWrap => {
+                if chap_tui.cursor_x == 0 {
+                    // 这个判断说明当前行已经读完了
+                    if line_meta.get(chap_tui.cursor_y).unwrap().get_line_offset() == 0 {
+                        //无需操作
+                    } else {
+                        chap_tui.cursor_x =
+                            line_meta.get(chap_tui.cursor_y - 1).unwrap().get_char_len() - 1;
+                        chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                    }
+                } else {
+                    chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+                }
+                chap_tui.is_last_line = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_right<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match chap_tui.warp_type {
+            TextWarpType::NoWrap => {
+                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                if chap_tui.cursor_x < meta.get_char_len()
+                    && chap_tui.cursor_x < chap_tui.tv.get_width()
+                {
+                    chap_tui.cursor_x += 1;
+                }
+                {
+                    chap_tui.cursor_x += 1;
+                }
+                if chap_tui.offset <= meta.get_char_len() {
+                    chap_tui.offset += 1;
+                }
+            }
+            TextWarpType::SoftWrap => {
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
+                    chap_tui.cursor_x += 1;
+
+                    if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+                        && chap_tui.cursor_y < chap_tui.tv.get_height()
+                    {
+                        //判断当前行是否读完
+                        if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
+                            < td.get_text_len_from_index(
+                                line_meta.get(chap_tui.cursor_y).unwrap().get_line_index(),
+                            )
+                        {
+                            chap_tui.cursor_x = 0;
+                            chap_tui.cursor_y += 1;
+                        }
+                    }
+                }
+                chap_tui.is_last_line = false;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_enter<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        chap_tui.fuzzy_inp.clear();
+        td.insert_newline(
+            chap_tui.cursor_y,
+            chap_tui.cursor_x,
+            line_meta.get(chap_tui.cursor_y).unwrap(),
+        )?;
+        if chap_tui.cursor_y < chap_tui.tv.get_height() - 1 {
+            chap_tui.cursor_y += 1;
+        }
+        chap_tui.cursor_x = 0;
+        td.get_one_page(chap_tui.start_line_num)?;
+        Ok(())
+    }
+
+    fn handle_backspace<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        chap_tui.fuzzy_inp.clear();
+        if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
+            return Ok(());
+        }
+        td.backspace(
+            chap_tui.cursor_y,
+            chap_tui.cursor_x,
+            line_meta.get(chap_tui.cursor_y).unwrap(),
+        )?;
+        if chap_tui.cursor_x == 0 {
+            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y - 1).unwrap().get_txt_len();
+            chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+        } else {
+            chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+        }
+        td.get_one_page(chap_tui.start_line_num)?;
+        Ok(())
+    }
+
+    fn handle_char<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+        c: char,
+    ) -> ChapResult<()> {
+        chap_tui.fuzzy_inp.clear();
+        if chap_tui.cursor_x == 0 && chap_tui.is_last_line {
+            td.insert(
+                chap_tui.cursor_y - 1,
+                chap_tui.tv.get_width(),
+                line_meta.get(chap_tui.cursor_y - 1).unwrap(),
+                c,
+            )?;
+            chap_tui.is_last_line = false;
+        } else {
+            td.insert(
+                chap_tui.cursor_y,
+                chap_tui.cursor_x,
+                line_meta.get(chap_tui.cursor_y).unwrap(),
+                c,
+            )?;
+        }
+        if chap_tui.cursor_x < chap_tui.tv.get_width() {
+            chap_tui.cursor_x += 1;
+            if chap_tui.cursor_x >= chap_tui.tv.get_width()
+                && chap_tui.cursor_y < chap_tui.tv.get_height()
+            {
+                //不断添加字符 还是续接上一行
+                chap_tui.is_last_line = true;
+                chap_tui.cursor_x = 0;
+                chap_tui.cursor_y += 1;
+            }
+        }
+        td.get_one_page(chap_tui.start_line_num)?;
+        Ok(())
+    }
+
+    fn handle_right_shift(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
-    );
-
-    fn handle_ctrl_s<P: AsRef<Path>>(&mut self, p: P, td: &mut TextDisplay);
-}
-
-struct HandleText;
-
-impl Handle for HandleText {
-    fn handle_ctrl_c(
-        &self,
-        chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) {
-        // Implement text mode Ctrl+C handling
+    ) -> ChapResult<()> {
+        todo!()
     }
-
-    fn handle_ctrl_s<P: AsRef<Path>>(&mut self, p: P, td: &mut TextDisplay) {}
 }
 
-struct HandleHex;
+pub(crate) struct HandleHex;
+
+impl HandleHex {
+    pub(crate) fn new() -> Self {
+        HandleHex {}
+    }
+}
 
 impl Handle for HandleHex {
-    fn handle_esc(
+    fn handle_ctrl_s<P: AsRef<Path>>(
+        &self,
+        chap_tui: &mut ChapTui,
+        p: P,
+        td: &mut TextDisplay,
+    ) -> ChapResult<()> {
+        todo!("Handle ctrl+s in hex mode");
+    }
+
+    fn handle_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        if chap_tui.cursor_y == 0 {
+            //滚动上一行
+            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+            line_meta = td.get_current_line_meta()?;
+        }
+        chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len();
+        }
+        Ok(())
+    }
+
+    fn handle_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        if chap_tui.cursor_y < line_meta.len() - 1 {
+            chap_tui.cursor_y += 1;
+        } else {
+            //滚动下一行
+            td.scroll_next_one_line(line_meta.last().unwrap())?;
+            line_meta = td.get_current_line_meta()?;
+        }
+        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len();
+        };
+        Ok(())
+    }
+
+    fn handle_left<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        if chap_tui.cursor_x == 0 {
+            // 这个判断说明当前行已经读完了
+            if line_meta.get(chap_tui.cursor_y).unwrap().get_line_offset() == 0 {
+                //无需操作
+            } else {
+                chap_tui.cursor_x =
+                    line_meta.get(chap_tui.cursor_y - 1).unwrap().get_char_len() - 1;
+                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+            }
+        } else {
+            chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+        }
+        Ok(())
+    }
+
+    fn handle_right<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() {
+            chap_tui.cursor_x += 1;
+        }
+        chap_tui.txt_sel.set_pos(
+            line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_line_file_start()
+                + chap_tui.cursor_x,
+        );
+        Ok(())
+    }
+
+    fn handle_enter<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        todo!("Handle enter in hex mode");
+    }
+
+    fn handle_right_shift(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
-    ) {
-        // Implement hex mode ESC handling
+    ) -> ChapResult<()> {
+        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+            chap_tui.cursor_x += 1;
+        }
+        chap_tui.txt_sel.set_end(
+            line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_line_file_start()
+                + chap_tui.cursor_x,
+        );
+        Ok(())
     }
 
-    fn handle_ctrl_c(
+    fn handle_backspace<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) {
-        // Implement hex mode Ctrl+C handling
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        todo!("Handle backspace in hex mode");
     }
 
-    fn handle_ctrl_s<P: AsRef<Path>>(&mut self, p: P, td: &mut TextDisplay) {}
+    fn handle_char<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+        c: char,
+    ) -> ChapResult<()> {
+        todo!("Handle char input in hex mode");
+    }
 }
 
 // impl Handle for HandleHex {
@@ -112,6 +650,6 @@ impl Handle for HandleHex {
 //     }
 // }
 
-struct HandleEdit;
+//struct HandleEdit;
 
 struct HandleVector;

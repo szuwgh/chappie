@@ -12,10 +12,13 @@ use crate::editor::TextWarp;
 use crate::editor::TextWarpType;
 use crate::error::ChapResult;
 use crate::fuzzy::Match;
+use crate::handle::Handle;
+use crate::handle::HandleEdit;
+use crate::handle::HandleHex;
+use crate::handle::HandleImpl;
 use crate::textwarp::LineMeta;
 use crate::textwarp::SimpleText;
 use crate::textwarp::SimpleTextEngine;
-use anyhow::Ok as AnyhowOk;
 use const_hex::Buffer;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -106,12 +109,12 @@ impl Byte {
 
 pub(crate) struct ChapTui {
     chap_mod: ChapMod,
-    warp_type: TextWarpType,
-    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    pub(crate) warp_type: TextWarpType,
+    pub(crate) terminal: Terminal<CrosstermBackend<io::Stdout>>,
     pub(crate) navi: Navigation,
-    tv: TextView,
+    pub(crate) tv: TextView,
     pub(crate) fuzzy_inp: CmdInput,
-    assist_tv: TextView,
+    pub(crate) assist_tv: TextView,
     pub(crate) assist_inp: ChatInput,
     focus: Focus,
     prompt_tx: mpsc::Sender<String>,
@@ -120,12 +123,12 @@ pub(crate) struct ChapTui {
     ui_type: UIType,
     que: bool,
 
-    pub(crate) txt_sel: TextSelect, // 文本选择
-    cursor_x: usize,                // 光标x坐标
-    cursor_y: usize,                // 光标y坐标
-    offset: usize,                  // 偏移量
-    start_line_num: usize,          // 起始行号
-    is_last_line: bool,             // 是否是最后一行
+    pub(crate) txt_sel: TextSelect,   // 文本选择
+    pub(crate) cursor_x: usize,       // 光标x坐标
+    pub(crate) cursor_y: usize,       // 光标y坐标
+    pub(crate) offset: usize,         // 偏移量
+    pub(crate) start_line_num: usize, // 起始行号
+    pub(crate) is_last_line: bool,    // 是否是最后一行
 }
 
 // 文本编辑器大文件浏览 窗口
@@ -214,7 +217,8 @@ impl ChatItemIndex {
     }
 }
 
-struct TextSelect(usize, usize);
+#[derive(Debug, Clone)]
+pub(crate) struct TextSelect(usize, usize);
 
 impl TextSelect {
     fn new() -> Self {
@@ -251,7 +255,7 @@ impl TextSelect {
         self.1 = self.0;
     }
 
-    fn set_pos(&mut self, pos: usize) {
+    pub(crate) fn set_pos(&mut self, pos: usize) {
         self.0 = pos;
         self.1 = pos;
     }
@@ -260,7 +264,7 @@ impl TextSelect {
         self.0 = start;
     }
 
-    fn set_end(&mut self, end: usize) {
+    pub(crate) fn set_end(&mut self, end: usize) {
         self.1 = end;
     }
 }
@@ -427,7 +431,7 @@ impl ChapTui {
         &mut self,
         cursor_x: usize,
         cursor_y: usize,
-        hex_sel: &TextSelect,
+        hex_sel: TextSelect,
         td: &'a TextDisplay,
     ) -> ChapResult<&'a RingVec<EditLineMeta>> {
         let line_meta = {
@@ -437,7 +441,7 @@ impl ChapTui {
                     content,
                     &meta,
                     self.navi.get_cur_line(),
-                    hex_sel,
+                    &hex_sel,
                     self.tv.get_height(),
                     cursor_y,
                     cursor_x,
@@ -950,6 +954,15 @@ impl ChapTui {
                     todo!()
                 }
             };
+
+            let hand = match self.chap_mod {
+                ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
+                ChapMod::Text => todo!(),
+                ChapMod::Hex => HandleImpl::Hex(HandleHex::new()),
+                _ => {
+                    todo!()
+                }
+            };
             // let mut txt_sel = TextSelect::new();
             // let mut cursor_x: usize = 0;
             // let mut cursor_y: usize = 0;
@@ -967,7 +980,7 @@ impl ChapTui {
                         todo!()
                     }
                     ChapMod::Hex => {
-                        self.render_hex(self.cursor_x, self.cursor_y, &self.txt_sel, &td)?
+                        self.render_hex(self.cursor_x, self.cursor_y, self.txt_sel.clone(), &td)?
                     }
                     _ => {
                         todo!()
@@ -983,87 +996,37 @@ impl ChapTui {
                     {
                         match (code, modifiers) {
                             (KeyCode::Esc, _) => {
-                                self.fuzzy_inp.clear();
-                                self.assist_inp.clear();
-                                self.navi.select_line = None;
-                                self.txt_sel.reset_to_start();
-                                break;
+                                hand.handle_esc(self)?;
                             }
                             (KeyCode::Right, KeyModifiers::SHIFT) => {
-                                self.handle_right_shift(self, &line_meta, &td)?;
+                                hand.handle_right_shift(self, &line_meta, &td)?;
                             }
                             (KeyCode::Left, KeyModifiers::SHIFT) => {}
                             (KeyCode::Up, _) => {
-                                self.handle_up(
-                                    &mut cursor_x,
-                                    &mut cursor_y,
-                                    &mut offset,
-                                    &mut is_last,
-                                    &line_meta,
-                                    &td,
-                                )?;
+                                hand.handle_up(self, &line_meta, &td)?;
                             }
                             (KeyCode::Down, _) => {
-                                self.handle_down(
-                                    &mut cursor_x,
-                                    &mut cursor_y,
-                                    &mut offset,
-                                    &mut is_last,
-                                    &line_meta,
-                                    &td,
-                                )?;
+                                hand.handle_down(self, &line_meta, &td)?;
                             }
                             (KeyCode::Left, _) => {
-                                self.handle_left(
-                                    &mut cursor_x,
-                                    &mut cursor_y,
-                                    &mut offset,
-                                    &mut is_last,
-                                    &line_meta,
-                                    &td,
-                                )?;
+                                hand.handle_left(self, &line_meta, &td)?;
                             }
                             (KeyCode::Right, _) => {
-                                self.handle_right(
-                                    &mut cursor_x,
-                                    &mut cursor_y,
-                                    &mut offset,
-                                    &mut is_last,
-                                    &mut hex_sel,
-                                    &line_meta,
-                                    &td,
-                                )?;
+                                hand.handle_right(self, &line_meta, &td)?;
                             }
 
-                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.handle_ctrl_c()?,
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                hand.handle_ctrl_c(self)?
+                            }
                             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                                self.handle_ctrl_s(&p, &mut td)?;
+                                hand.handle_ctrl_s(self, &p, &mut td)?;
                             }
-                            (KeyCode::Enter, _) => self.handle_enter(
-                                &mut cursor_x,
-                                &mut cursor_y,
-                                start_line_num,
-                                line_meta,
-                                &td,
-                            )?,
-                            (KeyCode::Backspace, _) => self.handle_backspace(
-                                &mut cursor_x,
-                                &mut cursor_y,
-                                start_line_num,
-                                line_meta,
-                                &td,
-                            )?,
+                            (KeyCode::Enter, _) => hand.handle_enter(self, line_meta, &td)?,
+                            (KeyCode::Backspace, _) => {
+                                hand.handle_backspace(self, line_meta, &td)?
+                            }
 
-                            (KeyCode::Char(c), _) => self.handle_char(
-                                c,
-                                &mut cursor_x,
-                                &mut cursor_y,
-                                &mut offset,
-                                &mut is_last,
-                                start_line_num,
-                                line_meta,
-                                &td,
-                            )?,
+                            (KeyCode::Char(c), _) => hand.handle_char(self, line_meta, &td, c)?,
                             _ => {}
                         }
                     }
@@ -1637,7 +1600,7 @@ impl ChapTui {
     }
 }
 
-struct Navigation {
+pub(crate) struct Navigation {
     min_line: usize,
     max_line: usize,
     cur_line: usize,
@@ -1691,7 +1654,7 @@ impl Navigation {
     }
 }
 
-struct TextView {
+pub(crate) struct TextView {
     height: usize,
     width: usize,
     scroll: usize, //当前页 第一行 行数
@@ -1703,11 +1666,11 @@ impl TextView {
         self.rect
     }
 
-    fn get_height(&self) -> usize {
+    pub(crate) fn get_height(&self) -> usize {
         self.height
     }
 
-    fn get_width(&self) -> usize {
+    pub(crate) fn get_width(&self) -> usize {
         self.width
     }
 
@@ -1750,7 +1713,7 @@ impl TextView {
     }
 }
 
-struct CmdInput {
+pub(crate) struct CmdInput {
     input: String,
     rect: Rect,
 }
@@ -1768,7 +1731,7 @@ impl CmdInput {
         self.input.push(c);
     }
 
-    fn push_str(&mut self, c: &str) {
+    pub(crate) fn push_str(&mut self, c: &str) {
         self.input.push_str(c);
     }
 
@@ -1851,7 +1814,7 @@ impl ChatText {
     }
 }
 
-struct ChatInput {
+pub(crate) struct ChatInput {
     input: String,
     rect: Rect,
 }
