@@ -816,6 +816,8 @@ impl Chunk {
     }
 }
 
+const CHUNK_NUM: usize = 5;
+
 pub(crate) struct HexText {
     chunks: RingVec<Chunk>,
     file: File,
@@ -827,11 +829,11 @@ impl HexText {
     pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<HexText> {
         let mut file = File::open(filename)?;
         let file_size = file.metadata()?.len() as usize;
-        let mut chunks = RingVec::new(3);
+        let mut chunks = RingVec::new(CHUNK_NUM);
 
         let mut buf = [0u8; 1024];
         let mut bytes_start = 0;
-        for _ in 0..3 {
+        for _ in 0..CHUNK_NUM {
             let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
             let mut bytes_read = 0;
             while bytes_read < CHUNK_SIZE {
@@ -869,11 +871,11 @@ impl HexText {
 
     pub(crate) fn read_chunks(&mut self, file_seek: usize) -> ChapResult<()> {
         self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
-        let mut chunks = RingVec::new(3);
+        let mut chunks = RingVec::new(CHUNK_NUM);
 
         let mut buf = [0u8; 1024];
         let mut bytes_start = file_seek;
-        for _ in 0..3 {
+        for _ in 0..CHUNK_NUM {
             let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
             let mut bytes_read = 0;
             while bytes_read < CHUNK_SIZE {
@@ -990,11 +992,9 @@ impl Text for HexText {
                         let remaining = with - buffer.len();
                         let buf1 = c1.text(line_file_start + buffer.len()..);
                         if remaining >= buf1.len() {
-                            // let buf2 = buf1.text(..need);
                             v.extend_from_slice(buf1.left());
                             v.extend_from_slice(buf1.right());
                             return LineStr {
-                                // line: buffer,
                                 line_data: LineData::Own(v),
                                 line_file_start: line_start,
                                 line_file_end: line_start + len + buf1.len(),
@@ -1004,7 +1004,6 @@ impl Text for HexText {
                             v.extend_from_slice(buf2.left());
                             v.extend_from_slice(buf2.right());
                             return LineStr {
-                                // line: buffer,
                                 line_data: LineData::Own(v),
                                 line_file_start: line_start,
                                 line_file_end: line_start + with,
@@ -1012,7 +1011,6 @@ impl Text for HexText {
                         }
                     } else {
                         return LineStr {
-                            // line: buffer,
                             line_data: LineData::GapBytes(buffer),
                             line_file_start: line_start,
                             line_file_end: line_file_end,
@@ -1020,7 +1018,6 @@ impl Text for HexText {
                     }
                 } else {
                     return LineStr {
-                        // line: buffer,
                         line_data: LineData::GapBytes(buffer),
                         line_file_start: line_start,
                         line_file_end: line_start + len,
@@ -1028,7 +1025,6 @@ impl Text for HexText {
                 }
             } else {
                 return LineStr {
-                    //line: buffer.text(..with),
                     line_data: LineData::GapBytes(buffer.text(..with)),
                     line_file_start: line_start,
                     line_file_end: line_start + with,

@@ -42,15 +42,27 @@ impl Handle for HandleImpl {
         }
     }
 
-    fn handle_right_shift(
+    fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         match self {
-            HandleImpl::Edit(h) => h.handle_right_shift(chap_tui, line_meta, td),
-            HandleImpl::Hex(h) => h.handle_right_shift(chap_tui, line_meta, td),
+            HandleImpl::Edit(h) => h.handle_shift_right(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_shift_right(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_shift_left(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_shift_left(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_shift_left(chap_tui, line_meta, td),
         }
     }
 
@@ -161,11 +173,18 @@ pub(crate) trait Handle {
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
-    fn handle_right_shift<'a>(
+    fn handle_shift_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_shift_left(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_down<'a>(
@@ -477,13 +496,22 @@ impl Handle for HandleEdit {
         Ok(())
     }
 
-    fn handle_right_shift(
+    fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
-        todo!()
+        Ok(())
+    }
+
+    fn handle_shift_left(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        Ok(())
     }
 }
 
@@ -502,7 +530,7 @@ impl Handle for HandleHex {
         p: P,
         td: &mut TextDisplay,
     ) -> ChapResult<()> {
-        todo!("Handle ctrl+s in hex mode");
+        Ok(())
     }
 
     fn handle_up<'a>(
@@ -517,9 +545,9 @@ impl Handle for HandleHex {
             line_meta = td.get_current_line_meta()?;
         }
         chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
-        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
-            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len();
-        }
+        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
+            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1;
+        };
         Ok(())
     }
 
@@ -536,8 +564,8 @@ impl Handle for HandleHex {
             td.scroll_next_one_line(line_meta.last().unwrap())?;
             line_meta = td.get_current_line_meta()?;
         }
-        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
-            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len();
+        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
+            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1;
         };
         Ok(())
     }
@@ -550,16 +578,28 @@ impl Handle for HandleHex {
     ) -> ChapResult<()> {
         if chap_tui.cursor_x == 0 {
             // 这个判断说明当前行已经读完了
-            if line_meta.get(chap_tui.cursor_y).unwrap().get_line_offset() == 0 {
+            if line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_line_file_start()
+                == 0
+            {
                 //无需操作
             } else {
-                chap_tui.cursor_x =
-                    line_meta.get(chap_tui.cursor_y - 1).unwrap().get_char_len() - 1;
+                chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y - 1).unwrap().get_txt_len() - 1;
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
             }
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
         }
+
+        chap_tui.txt_sel.set_pos(
+            line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_line_file_start()
+                + chap_tui.cursor_x,
+        );
         Ok(())
     }
 
@@ -569,8 +609,13 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() {
+        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
             chap_tui.cursor_x += 1;
+        } else {
+            chap_tui.cursor_x = 0;
+            if chap_tui.cursor_y < line_meta.len() - 1 {
+                chap_tui.cursor_y += 1;
+            }
         }
         chap_tui.txt_sel.set_pos(
             line_meta
@@ -588,25 +633,72 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        todo!("Handle enter in hex mode");
+        //todo!("Handle enter in hex mode");
+        Ok(())
     }
 
-    fn handle_right_shift(
+    fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
-        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
             chap_tui.cursor_x += 1;
+        } else {
+            chap_tui.cursor_x = 0;
+            if chap_tui.cursor_y < line_meta.len() - 1 {
+                chap_tui.cursor_y += 1;
+            }
         }
-        chap_tui.txt_sel.set_end(
-            line_meta
+
+        let pos = line_meta
+            .get(chap_tui.cursor_y)
+            .unwrap()
+            .get_line_file_start()
+            + chap_tui.cursor_x;
+        if pos > chap_tui.txt_sel.get_end() {
+            chap_tui.txt_sel.set_end(pos);
+        } else {
+            chap_tui.txt_sel.set_start(pos);
+        }
+        Ok(())
+    }
+
+    fn handle_shift_left(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        if chap_tui.cursor_x == 0 {
+            // 这个判断说明当前行已经读完了
+            if line_meta
                 .get(chap_tui.cursor_y)
                 .unwrap()
                 .get_line_file_start()
-                + chap_tui.cursor_x,
-        );
+                == 0
+            {
+                //无需操作
+                return Ok(());
+            } else {
+                chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y - 1).unwrap().get_txt_len() - 1;
+                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+            }
+        } else {
+            chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+        }
+        let pos = line_meta
+            .get(chap_tui.cursor_y)
+            .unwrap()
+            .get_line_file_start()
+            + chap_tui.cursor_x;
+        if pos < chap_tui.txt_sel.get_start() {
+            chap_tui.txt_sel.set_start(pos);
+        } else {
+            chap_tui.txt_sel.set_end(pos);
+        }
+
         Ok(())
     }
 
@@ -616,7 +708,8 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        todo!("Handle backspace in hex mode");
+        //todo!("Handle backspace in hex mode");
+        Ok(())
     }
 
     fn handle_char<'a>(
@@ -626,7 +719,7 @@ impl Handle for HandleHex {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
-        todo!("Handle char input in hex mode");
+        Ok(())
     }
 }
 

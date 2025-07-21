@@ -77,48 +77,17 @@ impl Chappie {
         let chap_ui = ChapTui::new(
             cli.get_chap_mod(),
             prompt_tx,
-            // vdb.clone(),
-            //  embed.clone(),
             llm_res_rx,
             cli.get_ui_type(),
             cli.get_que(),
         )?;
-        //  let vb_c = vdb.clone();
-        //Self::req_llm(prompt_rx, llm_res_tx, vb_c, schema, llm_client);
-        Ok(Self {
-            tui: chap_ui,
-            //  vdb: vdb,
-        })
-    }
 
-    // fn req_llm(
-    //     prompt_rx: mpsc::Receiver<String>,
-    // //    llm_res_tx: mpsc::Sender<String>,
-    //     vdb: Option<Collection>,
-    //     //  embed_model: Arc<TextEmbedding>,
-    //   //  schema: Schema,
-    //     llm_client: LlmClient,
-    // ) {
-    //     RUNTIME.spawn(async move {
-    //         request_llm(prompt_rx, llm_res_tx, vdb, schema, llm_client).await;
-    //     });
-    // }
+        Ok(Self { tui: chap_ui })
+    }
 
     pub(crate) fn run<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
         RUNTIME.block_on(async move { self.tui.render(p).await })
     }
-
-    // pub(crate) fn run_edit<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-    //     RUNTIME.block_on(async move { self.tui.render(p).await })
-    // }
-
-    // pub(crate) fn run_hex<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-    //     RUNTIME.block_on(async move { self.tui.render(p).await })
-    // }
-
-    // pub(crate) fn run_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
-    //     RUNTIME.block_on(async move { self.tui.render(bytes).await })
-    // }
 }
 
 // async fn request_llm(

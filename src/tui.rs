@@ -240,8 +240,12 @@ impl TextSelect {
         self.1 += 1;
     }
 
+    fn has_selected(&self) -> bool {
+        self.start() < self.end()
+    }
+
     fn is_selected(&self, pos: usize) -> bool {
-        pos >= self.start() && pos < self.end()
+        pos >= self.start() && pos <= self.end()
     }
 
     // 递减end
@@ -260,7 +264,15 @@ impl TextSelect {
         self.1 = pos;
     }
 
-    fn set_start(&mut self, start: usize) {
+    pub(crate) fn get_start(&self) -> usize {
+        self.0
+    }
+
+    pub(crate) fn get_end(&self) -> usize {
+        self.1
+    }
+
+    pub(crate) fn set_start(&mut self, start: usize) {
         self.0 = start;
     }
 
@@ -999,9 +1011,11 @@ impl ChapTui {
                                 hand.handle_esc(self)?;
                             }
                             (KeyCode::Right, KeyModifiers::SHIFT) => {
-                                hand.handle_right_shift(self, &line_meta, &td)?;
+                                hand.handle_shift_right(self, &line_meta, &td)?;
                             }
-                            (KeyCode::Left, KeyModifiers::SHIFT) => {}
+                            (KeyCode::Left, KeyModifiers::SHIFT) => {
+                                hand.handle_shift_left(self, &line_meta, &td)?;
+                            }
                             (KeyCode::Up, _) => {
                                 hand.handle_up(self, &line_meta, &td)?;
                             }
@@ -1014,7 +1028,6 @@ impl ChapTui {
                             (KeyCode::Right, _) => {
                                 hand.handle_right(self, &line_meta, &td)?;
                             }
-
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                                 hand.handle_ctrl_c(self)?
                             }
@@ -1935,6 +1948,7 @@ fn get_hex_content<'a>(
     cursor_x: usize,
 ) -> (Text<'a>, Text<'a>) {
     let mut lines = Vec::with_capacity(line_meta.len());
+    let mut buffer = Buffer::<1>::new();
     for (i, txt) in txts.iter().enumerate() {
         let (slice1, slice2) = txt.as_slice();
         let mut spans = Vec::with_capacity(slice1.len() + slice2.len());
@@ -1943,17 +1957,10 @@ fn get_hex_content<'a>(
             for b in slice1.iter() {
                 let category = Byte(*b).category();
                 let color = category.color();
-
-                let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
-                if j == cursor_x {
-                    spans.push(Span::styled(
-                        c.to_string().to_uppercase(),
-                        Style::default().fg(color).bg(Color::LightRed),
-                    ));
-                    spans.push(Span::raw(space));
-                } else {
+
+                if hex_sel.has_selected() {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
@@ -1967,7 +1974,40 @@ fn get_hex_content<'a>(
                         ));
                         spans.push(Span::raw(space));
                     }
+                } else {
+                    if j == cursor_x {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(Color::LightRed),
+                        ));
+                        spans.push(Span::raw(space));
+                    } else {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color),
+                        ));
+                        spans.push(Span::raw(space));
+                    }
                 }
+                // if j == cursor_x {
+                //     spans.push(Span::styled(
+                //         c.to_string().to_uppercase(),
+                //         Style::default().fg(color).bg(Color::LightRed),
+                //     ));
+                //     spans.push(Span::raw(space));
+                // } else if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
+                //     spans.push(Span::styled(
+                //         c.to_string().to_uppercase(),
+                //         Style::default().fg(color).bg(Color::LightRed),
+                //     ));
+                //     spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                // } else {
+                //     spans.push(Span::styled(
+                //         c.to_string().to_uppercase(),
+                //         Style::default().fg(color),
+                //     ));
+                //     spans.push(Span::raw(space));
+                // }
                 j += 1;
             }
 
@@ -1975,7 +2015,7 @@ fn get_hex_content<'a>(
                 let category = Byte(*b).category();
                 let color = category.color();
 
-                let mut buffer = Buffer::<1>::new();
+                // let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
                 if j == cursor_x {
@@ -1999,28 +2039,41 @@ fn get_hex_content<'a>(
                         spans.push(Span::raw(space));
                     }
                 }
-                //for x in space.chars() {
-                // spans.push(Span::raw(space));
-                //}
                 j += 1;
             }
-            // spans[cursor_x] = Span::styled(
-            //     spans[cursor_x].content.clone(),
-            //     Style::default().bg(Color::LightRed),
-            // );
         } else {
             for b in slice1.iter() {
                 let category = Byte(*b).category();
                 let color = category.color();
 
-                let mut buffer = Buffer::<1>::new();
+                // let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
-                spans.push(Span::styled(
-                    c.to_string().to_uppercase(),
-                    Style::default().fg(color),
-                ));
-                let white = if j != 0 && j % 8 == 0 { "  " } else { " " };
-                spans.push(Span::raw(white));
+
+                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+
+                if hex_sel.has_selected() {
+                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(Color::LightRed),
+                        ));
+                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                    } else {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color),
+                        ));
+                        spans.push(Span::raw(space));
+                    }
+                } else {
+                    spans.push(Span::styled(
+                        c.to_string().to_uppercase(),
+                        Style::default().fg(color),
+                    ));
+                    spans.push(Span::raw(space));
+                }
+
+                //  spans.push(Span::raw(white));
                 j += 1;
             }
 
@@ -2028,14 +2081,31 @@ fn get_hex_content<'a>(
                 let category = Byte(*b).category();
                 let color = category.color();
 
-                let mut buffer = Buffer::<1>::new();
+                //let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
-                spans.push(Span::styled(
-                    c.to_string().to_uppercase(),
-                    Style::default().fg(color),
-                ));
-                let white = if j != 0 && j % 8 == 0 { "  " } else { " " };
-                spans.push(Span::raw(white));
+                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+
+                if hex_sel.has_selected() {
+                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(Color::LightRed),
+                        ));
+                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                    } else {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color),
+                        ));
+                        spans.push(Span::raw(space));
+                    }
+                } else {
+                    spans.push(Span::styled(
+                        c.to_string().to_uppercase(),
+                        Style::default().fg(color),
+                    ));
+                    spans.push(Span::raw(space));
+                }
                 j += 1;
             }
         }
