@@ -74,7 +74,7 @@ impl Chappie {
         // } else {
         //     None
         // };
-        let chap_ui = ChapTui::new(
+        let chap_ui = ChapTui::new(  
             cli.get_chap_mod(),
             prompt_tx,
             llm_res_rx,

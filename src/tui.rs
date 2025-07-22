@@ -358,7 +358,7 @@ impl ChapTui {
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)].as_ref())
             .split(rect);
 
         let (nav_chk, tv_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
@@ -1980,6 +1980,12 @@ static FIELDS: &[(&str, ParserFn)] = &[
     }),
     ("| int24_t            | ", |bv| {
         format_data_inspector(bv.to_i24())
+    }),
+    ("| uint32_t           | ", |bv| {
+        format_data_inspector(bv.to_u32())
+    }),
+    ("| int32_t            | ", |bv| {
+        format_data_inspector(bv.to_i32())
     }),
 ];
 

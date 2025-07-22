@@ -53,6 +53,29 @@ impl ByteView {
         ])
     }
 
+    pub(crate) fn to_i32(&self) -> i32 {
+        i32::from_le_bytes([
+            *self.0.get(0).unwrap_or(&0),
+            *self.0.get(1).unwrap_or(&0),
+            *self.0.get(2).unwrap_or(&0),
+            *self.0.get(3).unwrap_or(&0),
+        ])
+    }
+
+    pub(crate) fn to_u48(&self) -> u64 {
+        let bytes = [
+            *self.0.get(0).unwrap_or(&0),
+            *self.0.get(1).unwrap_or(&0),
+            *self.0.get(2).unwrap_or(&0),
+            *self.0.get(3).unwrap_or(&0),
+            *self.0.get(4).unwrap_or(&0),
+            *self.0.get(5).unwrap_or(&0),
+        ];
+        u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], 0, 0,
+        ])
+    }
+
     pub(crate) fn to_f16(&self) -> f16 {
         let bytes = [*self.0.get(0).unwrap_or(&0), *self.0.get(1).unwrap_or(&0)];
         f16::from_le_bytes(bytes)
