@@ -59,5 +59,6 @@ inherit-methods-macro = "0.1.0"
 utf8_iter = "=1.0.2"
 const-hex = "1.14.0"
 num_cpus = "1.16.0"
+half = "2.6.0"
 
 

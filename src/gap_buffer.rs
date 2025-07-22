@@ -73,6 +73,13 @@ impl<'a> GapBytes<'a> {
         }
     }
 
+    pub(crate) fn to_vec(&self) -> Vec<u8> {
+        let mut vec = Vec::with_capacity(self.len());
+        vec.extend_from_slice(self.left());
+        vec.extend_from_slice(self.right());
+        vec
+    }
+
     pub(crate) fn char_indices(&self) -> GapBytesCharIter<'_> {
         GapBytesCharIter {
             left: self.left().char_indices(),
@@ -171,7 +178,7 @@ impl GapBuffer {
             std::ops::Bound::Unbounded => 0,
         };
         let end = match range.end_bound() {
-            std::ops::Bound::Included(&end) => end + 1,
+            std::ops::Bound::Included(&end) => (end + 1).min(self.text_len()),
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.text_len(),
         };

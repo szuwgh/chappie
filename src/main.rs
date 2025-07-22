@@ -7,6 +7,7 @@ mod error;
 mod fuzzy;
 mod vb;
 use std::io::{self, Read};
+mod byteutil;
 mod chap;
 mod cmd;
 mod editor;

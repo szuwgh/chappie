@@ -1,3 +1,4 @@
+use crate::byteutil::ByteView;
 use crate::cmd::UIType;
 use crate::editor::CacheStr;
 use crate::editor::EditLineMeta;
@@ -38,6 +39,7 @@ use ratatui::prelude::Layout;
 use ratatui::prelude::Position;
 use ratatui::prelude::Rect;
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::symbols::line;
 use ratatui::text::Line;
@@ -225,6 +227,10 @@ impl TextSelect {
         TextSelect(0, 0)
     }
 
+    pub(crate) fn from_select(start: usize, end: usize) -> Self {
+        TextSelect(start, end)
+    }
+
     fn start(&self) -> usize {
         self.0
     }
@@ -277,6 +283,11 @@ impl TextSelect {
     }
 
     pub(crate) fn set_end(&mut self, end: usize) {
+        self.1 = end;
+    }
+
+    pub(crate) fn set_select(&mut self, start: usize, end: usize) {
+        self.0 = start;
         self.1 = end;
     }
 }
@@ -338,16 +349,16 @@ impl ChapTui {
         // 文本框显示内容的高度
         let tv_heigth = (tui_height - 1) as usize;
         // 文本框显示内容的宽度
-        let tv_width = (tui_width as f32) as usize - 3;
+        let tv_width = (tui_width as f32 * 0.5) as usize - 3;
 
-        let assist_tv_width = 0; //(tui_width as f32 * 0.0) as usize - 3;
+        let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
 
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100), Constraint::Percentage(0)].as_ref())
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
             .split(rect);
 
         let (nav_chk, tv_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
@@ -458,6 +469,7 @@ impl ChapTui {
                     cursor_y,
                     cursor_x,
                 );
+
                 let text_para = Paragraph::new(visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
@@ -466,6 +478,12 @@ impl ChapTui {
                 let nav_paragraph = Paragraph::new(navi);
                 f.render_widget(nav_paragraph, self.navi.get_rect());
 
+                let sel_content = td.get_text_from_sel(&hex_sel);
+                let assist = get_data_inspector_content(sel_content);
+                let assist_para = Paragraph::new(assist)
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(assist_para, self.assist_tv.get_rect());
                 // let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
                 //     .block(
                 //         Block::default()
@@ -958,7 +976,7 @@ impl ChapTui {
                 )),
                 ChapMod::Hex => TextDisplay::Hex(TextWarp::new(
                     HexText::from_file_path(&p)?,
-                    self.tv.get_height(),
+                    self.tv.get_height() - 2,
                     self.tv.get_width(),
                     twy,
                 )),
@@ -1938,6 +1956,59 @@ fn format_hex_slice(slice: &[u8], j: &mut usize) -> String {
     line
 }
 
+type ParserFn = fn(&ByteView) -> String;
+
+fn format_data_inspector<T: std::fmt::Display>(data: T) -> String {
+    format!("{:<20}|", data)
+}
+
+static FIELDS: &[(&str, ParserFn)] = &[
+    ("| Binary (8bit)      | ", |bv| {
+        format_data_inspector(bv.to_binary_8bit())
+    }),
+    ("| uint8_t            | ", |bv| {
+        format_data_inspector(bv.to_u8())
+    }),
+    ("| uint16_t           | ", |bv| {
+        format_data_inspector(bv.to_u16())
+    }),
+    ("| int16_t            | ", |bv| {
+        format_data_inspector(bv.to_i16())
+    }),
+    ("| uint24_t           | ", |bv| {
+        format_data_inspector(bv.to_u24())
+    }),
+    ("| int24_t            | ", |bv| {
+        format_data_inspector(bv.to_i24())
+    }),
+];
+
+fn get_data_inspector_content<'a>(buf: Vec<u8>) -> Text<'a> {
+    let bv = ByteView::new(buf);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Data Inspector",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+    lines.extend(FIELDS.iter().map(|&(label, f)| {
+        let spans = vec![
+            Span::styled(label, Style::default().fg(Color::White)),
+            Span::raw(f(&bv)),
+        ];
+        Line::from(spans)
+    }));
+
+    let text = Text::from(lines);
+    text
+}
+
+const HEX_TOP: &'static str =
+    "00 01 02 03 04 05 06 07 08  09 0A 0B 0C 0D 0E 0F 10  11 12       ASCII";
+
 fn get_hex_content<'a>(
     txts: &'a RingVec<CacheStr>,
     line_meta: &'a RingVec<EditLineMeta>,
@@ -1947,11 +2018,21 @@ fn get_hex_content<'a>(
     cursor_y: usize,
     cursor_x: usize,
 ) -> (Text<'a>, Text<'a>) {
-    let mut lines = Vec::with_capacity(line_meta.len());
+    let mut lines = Vec::with_capacity(line_meta.len() + 1);
     let mut buffer = Buffer::<1>::new();
+
+    let top = Span::styled(
+        HEX_TOP,
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    );
+    lines.push(Line::from(top));
+    lines.push(Line::from(""));
     for (i, txt) in txts.iter().enumerate() {
         let (slice1, slice2) = txt.as_slice();
         let mut spans = Vec::with_capacity(slice1.len() + slice2.len());
+        let mut str_spans = Vec::with_capacity(slice1.len() + slice2.len());
         let mut j = 0;
         if cursor_y == i {
             for b in slice1.iter() {
@@ -1960,84 +2041,90 @@ fn get_hex_content<'a>(
                 let c = buffer.format(&[*b]);
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
 
+                let b1 = if b.is_ascii() && !b.is_ascii_control() {
+                    (*b as char).to_string()
+                } else {
+                    '.'.to_string()
+                };
+
                 if hex_sel.has_selected() {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::LightRed),
+                            Style::default().fg(color).bg(Color::DarkGray),
                         ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
+                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
                         spans.push(Span::raw(space));
+                        str_spans.push(Span::raw(b1));
                     }
                 } else {
                     if j == cursor_x {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::LightRed),
+                            Style::default().fg(color).bg(Color::DarkGray),
                         ));
-                        spans.push(Span::raw(space));
+                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
-                        spans.push(Span::raw(space));
+                        str_spans.push(Span::raw(b1));
                     }
+                    spans.push(Span::raw(space));
                 }
-                // if j == cursor_x {
-                //     spans.push(Span::styled(
-                //         c.to_string().to_uppercase(),
-                //         Style::default().fg(color).bg(Color::LightRed),
-                //     ));
-                //     spans.push(Span::raw(space));
-                // } else if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
-                //     spans.push(Span::styled(
-                //         c.to_string().to_uppercase(),
-                //         Style::default().fg(color).bg(Color::LightRed),
-                //     ));
-                //     spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
-                // } else {
-                //     spans.push(Span::styled(
-                //         c.to_string().to_uppercase(),
-                //         Style::default().fg(color),
-                //     ));
-                //     spans.push(Span::raw(space));
-                // }
                 j += 1;
             }
 
             for b in slice2.iter() {
                 let category = Byte(*b).category();
                 let color = category.color();
-
-                // let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
-                if j == cursor_x {
-                    spans.push(Span::styled(
-                        c.to_string().to_uppercase(),
-                        Style::default().fg(color).bg(Color::LightRed),
-                    ));
-                    spans.push(Span::raw(space));
+
+                let b1 = if b.is_ascii() && !b.is_ascii_control() {
+                    (*b as char).to_string()
                 } else {
+                    '.'.to_string()
+                };
+
+                if hex_sel.has_selected() {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::LightRed),
+                            Style::default().fg(color).bg(Color::DarkGray),
                         ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
+                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
                         spans.push(Span::raw(space));
+                        str_spans.push(Span::raw(b1));
                     }
+                } else {
+                    if j == cursor_x {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color).bg(Color::DarkGray),
+                        ));
+                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
+                    } else {
+                        spans.push(Span::styled(
+                            c.to_string().to_uppercase(),
+                            Style::default().fg(color),
+                        ));
+                        str_spans.push(Span::raw(b1));
+                    }
+                    spans.push(Span::raw(space));
                 }
                 j += 1;
             }
@@ -2045,25 +2132,29 @@ fn get_hex_content<'a>(
             for b in slice1.iter() {
                 let category = Byte(*b).category();
                 let color = category.color();
-
-                // let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
 
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
-
+                let b1 = if b.is_ascii() && !b.is_ascii_control() {
+                    (*b as char).to_string()
+                } else {
+                    '.'.to_string()
+                };
                 if hex_sel.has_selected() {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::LightRed),
+                            Style::default().fg(color).bg(Color::DarkGray),
                         ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
+                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
                         spans.push(Span::raw(space));
+                        str_spans.push(Span::raw(b1));
                     }
                 } else {
                     spans.push(Span::styled(
@@ -2071,33 +2162,36 @@ fn get_hex_content<'a>(
                         Style::default().fg(color),
                     ));
                     spans.push(Span::raw(space));
+                    str_spans.push(Span::raw(b1));
                 }
-
-                //  spans.push(Span::raw(white));
                 j += 1;
             }
 
             for b in slice2.iter() {
                 let category = Byte(*b).category();
                 let color = category.color();
-
-                //let mut buffer = Buffer::<1>::new();
                 let c = buffer.format(&[*b]);
                 let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
-
+                let b1 = if b.is_ascii() && !b.is_ascii_control() {
+                    (*b as char).to_string()
+                } else {
+                    '.'.to_string()
+                };
                 if hex_sel.has_selected() {
                     if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::LightRed),
+                            Style::default().fg(color).bg(Color::DarkGray),
                         ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::LightRed)));
+                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
+                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
                     } else {
                         spans.push(Span::styled(
                             c.to_string().to_uppercase(),
                             Style::default().fg(color),
                         ));
                         spans.push(Span::raw(space));
+                        str_spans.push(Span::raw(b1));
                     }
                 } else {
                     spans.push(Span::styled(
@@ -2105,15 +2199,20 @@ fn get_hex_content<'a>(
                         Style::default().fg(color),
                     ));
                     spans.push(Span::raw(space));
+                    str_spans.push(Span::raw(b1));
                 }
                 j += 1;
             }
         }
 
         spans.push(Span::raw("   ".repeat(20 - txt.len() + 1)));
-        //添加字符串
-        spans.push(Span::raw(bytes_to_string_with_dot(slice1)));
-        spans.push(Span::raw(bytes_to_string_with_dot(slice2)));
+        spans.extend_from_slice(&str_spans);
+        // if cursor_y == i {
+        // } else {
+        //     //添加字符串
+        //     spans.push(Span::raw(bytes_to_string_with_dot(slice1)));
+        //     spans.push(Span::raw(bytes_to_string_with_dot(slice2)));
+        // }
 
         lines.push(Line::from(spans));
     }
@@ -2134,11 +2233,20 @@ fn get_hex_content<'a>(
         (0..height)
             .enumerate()
             .map(|(i, _)| {
-                if i > line_meta.len() {
-                    return Line::raw("");
+                if i == 0 {
+                    return Line::from(Span::raw("Address"));
                 }
+                if i == 1 {
+                    return Line::from(Span::raw(""));
+                }
+                // if i > line_meta.len() {
+                //     return Line::raw("");
+                // }
                 Line::from(Span::styled(
-                    format!("{:07x}", line_meta.get(i).unwrap().get_line_file_start()),
+                    format!(
+                        "{:07x}",
+                        line_meta.get(i - 2).unwrap().get_line_file_start()
+                    ),
                     Style::default().fg(Color::White),
                 ))
             })

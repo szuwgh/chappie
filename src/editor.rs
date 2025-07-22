@@ -1,6 +1,7 @@
 use crate::gap_buffer::GapBytes;
 use crate::gap_buffer::GapBytesCharIter;
 use crate::mmap_file;
+use crate::tui::TextSelect;
 use crate::util;
 use crate::{error::ChapResult, gap_buffer::GapBuffer};
 use anyhow::Ok;
@@ -76,6 +77,8 @@ pub(crate) trait TextOper {
     fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>>;
 
     fn get_text_len_from_index(&self, line_index: usize) -> usize;
+
+    fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8>;
 }
 
 pub(crate) enum TextDisplay {
@@ -181,6 +184,14 @@ impl TextOper for TextDisplay {
             TextDisplay::Text(v) => v.get_one_page(line_num),
             TextDisplay::Hex(v) => v.get_one_page(line_num),
             TextDisplay::Edit(v) => v.get_one_page(line_num),
+        }
+    }
+
+    fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
+        match self {
+            TextDisplay::Text(v) => v.get_text_from_sel(sel),
+            TextDisplay::Hex(v) => v.get_text_from_sel(sel),
+            TextDisplay::Edit(v) => todo!("Not implement get_text_from_sel for EditTextWarp"),
         }
     }
 }
@@ -582,25 +593,6 @@ impl CacheStr {
             CacheStr::Bytes(v) => (v.as_slice(), &[]),
         }
     }
-
-    // // 从 CacheStr 获取 &str
-    // pub(crate) fn as_str(&self) -> (&str, &str) {
-    //     // 将指针转换为 &[u8]，然后转换为 &str
-    //     let slice1 = unsafe { std::slice::from_raw_parts(self.data.0.as_ptr(), self.len.0) };
-    //     let slice2 = unsafe { std::slice::from_raw_parts(self.data.1.as_ptr(), self.len.1) };
-    //     (
-    //         std::str::from_utf8(slice1).unwrap(),
-    //         std::str::from_utf8(slice2).unwrap(),
-    //     )
-    // }
-
-    // // 从 CacheStr 获取 &str
-    // pub(crate) fn as_slice(&self) -> (&[u8], &[u8]) {
-    //     // 将指针转换为 &[u8]，然后转换为 &str
-    //     let slice1 = unsafe { std::slice::from_raw_parts(self.data.0.as_ptr(), self.len.0) };
-    //     let slice2 = unsafe { std::slice::from_raw_parts(self.data.1.as_ptr(), self.len.1) };
-    //     (slice1, slice2)
-    // }
 }
 
 pub(crate) trait Line {
@@ -609,10 +601,10 @@ pub(crate) trait Line {
 }
 
 pub(crate) trait Text {
-    // type Item: Line;
     //是否有下一行
     fn has_next_line(&self, meta: &EditLineMeta) -> bool;
 
+    //获取一行
     fn get_line<'a>(
         &'a mut self,
         line_index: usize,
@@ -620,7 +612,10 @@ pub(crate) trait Text {
         line_end: usize,
     ) -> LineStr<'a>;
 
+    //获取行的文本长度
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize;
+
+    fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8>;
 
     fn iter<'a>(
         &'a mut self,
@@ -831,7 +826,7 @@ impl HexText {
         let file_size = file.metadata()?.len() as usize;
         let mut chunks = RingVec::new(CHUNK_NUM);
 
-        let mut buf = [0u8; 1024];
+        let mut buf = [0u8; CHUNK_SIZE];
         let mut bytes_start = 0;
         for _ in 0..CHUNK_NUM {
             let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
@@ -873,7 +868,7 @@ impl HexText {
         self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
         let mut chunks = RingVec::new(CHUNK_NUM);
 
-        let mut buf = [0u8; 1024];
+        let mut buf = [0u8; CHUNK_SIZE];
         let mut bytes_start = file_seek;
         for _ in 0..CHUNK_NUM {
             let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
@@ -969,6 +964,44 @@ impl HexText {
 }
 
 impl Text for HexText {
+    fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut start = sel.get_start();
+        let end = sel.get_end();
+        for s in self.chunks.iter() {
+            // 跳过选区起点位于此块之后的情况
+            if start >= s.file_end {
+                continue;
+            }
+            // 如果选区在此块之前结束，则无需继续
+            if end <= s.file_start {
+                break;
+            }
+            // 计算当前块与选区的重叠范围
+            let from = (start.max(s.file_start) - s.file_start) as usize;
+            let to = (end.min(s.file_end) - s.file_start) as usize;
+            // 提取并追加子片段
+            buf.extend_from_slice(&s.buffer.text(from..=to).to_vec());
+            // 如果选区在此块内完全结束，则跳出循环
+            if end <= s.file_end {
+                break;
+            }
+            // 更新起点为当前块末尾，继续下一块
+            start = s.file_end;
+            // if start >= s.file_start && end <= s.file_end {
+            //     buf.extend_from_slice(
+            //         &s.buffer
+            //             .text(start - s.file_start..=end - s.file_start)
+            //             .to_vec(),
+            //     );
+            // } else if start >= s.file_start && end > s.file_end && start < s.file_end {
+            //     buf.extend_from_slice(&s.buffer.text(start - s.file_start..).to_vec());
+            //     start = s.file_end;
+            // }
+        }
+        buf
+    }
+
     fn get_line<'a>(
         &'a mut self,
         line_index: usize,
@@ -1303,6 +1336,10 @@ impl<'a> MmapTextIter<'a> {
 }
 
 impl Text for MmapText {
+    fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
+        todo!("Not implement text_from_sel for MmapText");
+    }
+
     fn get_line<'a>(
         &'a mut self,
         line_index: usize,
@@ -1428,7 +1465,10 @@ impl GapText {
 }
 
 impl Text for GapText {
-    // type Item = LineStr<'a>;
+    fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
+        todo!("Not implement text_from_sel for GapText");
+    }
+
     fn has_next_line(&self, meta: &EditLineMeta) -> bool {
         let mut line_index = meta.get_line_index();
         let mut line_end = meta.get_line_end();
@@ -2139,6 +2179,10 @@ impl<T: Text> TextWarp<T> {
             }
         }
     }
+
+    fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
+        self.borrow_lines().text_from_sel(sel)
+    }
 }
 
 pub(crate) struct EditTextWarp<T: Text + EditText> {
@@ -2641,8 +2685,47 @@ struct PageOffset {
 #[cfg(test)]
 mod tests {
 
+    use ratatui::text;
+
     use super::*;
     use std::fs::File;
+
+    #[test]
+    fn text_hex_sel() {
+        let mut hex = HexText::from_file_path("/root/20250704120009_481.jpg").unwrap();
+
+        let sel = TextSelect::from_select(100, 1000);
+        for s in hex.chunks.iter() {
+            println!("chunk: {:?}", s.buffer.text(..).to_vec());
+        }
+        let text = hex.text_from_sel(&sel);
+        println!("text1 len  {:?}", text.len());
+        println!("text1  {:?}\n", text);
+
+        let sel = TextSelect::from_select(0, 3);
+        for s in hex.chunks.iter() {
+            println!("chunk: {:?}", s.buffer.text(..).to_vec());
+        }
+        let text = hex.text_from_sel(&sel);
+        println!("text2 len  {:?}", text.len());
+        println!("text2  {:?}\n", text);
+
+        let sel = TextSelect::from_select(2, 6);
+        for s in hex.chunks.iter() {
+            println!("chunk: {:?}", s.buffer.text(..).to_vec());
+        }
+        let text = hex.text_from_sel(&sel);
+        println!("text3 len  {:?}", text.len());
+        println!("text3  {:?}\n", text);
+
+        let sel = TextSelect::from_select(8, 9);
+        for s in hex.chunks.iter() {
+            println!("chunk: {:?}", s.buffer.text(..).to_vec());
+        }
+        let text = hex.text_from_sel(&sel);
+        println!("text4 len  {:?}", text.len());
+        println!("text4  {:?}\n", text);
+    }
 
     #[test]
     fn text_hex() {

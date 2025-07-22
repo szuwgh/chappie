@@ -548,6 +548,14 @@ impl Handle for HandleHex {
         if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
             chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1;
         };
+
+        chap_tui.txt_sel.set_pos(
+            line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_line_file_start()
+                + chap_tui.cursor_x,
+        );
         Ok(())
     }
 
@@ -567,6 +575,14 @@ impl Handle for HandleHex {
         if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
             chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1;
         };
+
+        chap_tui.txt_sel.set_pos(
+            line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_line_file_start()
+                + chap_tui.cursor_x,
+        );
         Ok(())
     }
 
