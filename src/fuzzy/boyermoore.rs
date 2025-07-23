@@ -70,9 +70,16 @@ impl<'a> BoyerMoore<'a> {
         })
     }
 
+    // pub(crate) fn stream2<I>(&self, mut text: I) -> impl Iterator<Item = usize> + '_
+    // where
+    //     I: Iterator<Item = u8>,
+    // {
+    //     self.stream(text).map(|pos| pos) // 或者直接把逻辑归并到 stream 中
+    // }
+
     pub(crate) fn stream<'b, I>(&'a self, mut text: I) -> impl Iterator<Item = usize> + 'b
     where
-        I: Iterator<Item = &'b u8> + 'b,
+        I: Iterator<Item = u8> + 'b,
         'a: 'b,
     {
         let pattern_bytes = self.pattern;
@@ -90,7 +97,7 @@ impl<'a> BoyerMoore<'a> {
             while window.len() == m {
                 // Compare from end
                 let mut j = (m - 1) as isize;
-                while j >= 0 && *window[j as usize] == pattern_bytes[j as usize] {
+                while j >= 0 && window[j as usize] == pattern_bytes[j as usize] {
                     j -= 1;
                 }
                 if j < 0 {
@@ -107,7 +114,7 @@ impl<'a> BoyerMoore<'a> {
                     return Some(match_pos);
                 } else {
                     // Compute shift
-                    let bad = self.bad_char_skip[*window[j as usize] as usize];
+                    let bad = self.bad_char_skip[window[j as usize] as usize];
                     let good = self.good_suffix_skip[j as usize];
                     let shift = bad.max(good);
                     // Slide window by shift
@@ -177,7 +184,7 @@ mod tests {
         let pattern = "英文";
         let bm = BoyerMoore::new(pattern.as_bytes());
         let text = "12396874,这是中文文本，包含一些特殊字符：@#%&*()，以及英文文字: Hello World! <>/。阿拉伯文: السلام عليكم。英文,韩文: 안녕하세요。日文: こんにちは。#RustExample 英文";
-        for i in bm.stream(text.as_bytes().iter()) {
+        for i in bm.stream(text.as_bytes().iter().copied()) {
             println!(
                 "{},{:?}",
                 i,

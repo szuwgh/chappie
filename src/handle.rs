@@ -611,7 +611,7 @@ impl Handle for HandleHex {
     fn handle_left<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if chap_tui.cursor_x == 0 {
@@ -624,12 +624,23 @@ impl Handle for HandleHex {
             {
                 //无需操作
             } else {
-                chap_tui.cursor_x = line_meta
-                    .get(chap_tui.cursor_y - 1)
-                    .unwrap()
-                    .get_txt_len()
-                    .saturating_sub(1);
-                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                if chap_tui.cursor_y == 0 {
+                    //滚动上一行
+                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                    line_meta = td.get_current_line_meta()?;
+                    chap_tui.cursor_x = line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_txt_len()
+                        .saturating_sub(1);
+                } else {
+                    chap_tui.cursor_x = line_meta
+                        .get(chap_tui.cursor_y - 1)
+                        .unwrap()
+                        .get_txt_len()
+                        .saturating_sub(1);
+                    chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                }
             }
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);

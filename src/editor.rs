@@ -632,6 +632,13 @@ pub(crate) trait Text {
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>>;
+
+    fn iter_u8<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = u8>;
 }
 
 pub(crate) trait EditText {
@@ -1156,6 +1163,98 @@ impl Text for HexText {
             line_file_start,
         );
     }
+
+    fn iter_u8<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = u8> {
+        let mut j = None;
+        for (i, chunk) in self.chunks.iter().enumerate() {
+            if line_file_start >= chunk.file_start && line_file_start < chunk.file_end {
+                j = Some(i);
+                break;
+            }
+        }
+        if let Some(j) = j {
+            return HexTextU8Iter::new(
+                self,
+                j,
+                line_file_start - self.chunks.get(j).unwrap().file_start,
+            );
+        }
+        //如果没有找到块 从新重读chunks
+        //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
+        let chunk_start = line_file_start / CHUNK_SIZE * CHUNK_SIZE;
+        self.read_chunks(chunk_start).unwrap();
+        return HexTextU8Iter::new(
+            self,
+            0,
+            line_file_start - self.chunks.get(0).unwrap().file_start,
+        );
+    }
+}
+
+struct HexTextU8Iter<'a> {
+    hex_text: &'a mut HexText,
+    chunk_index: usize,
+    i: usize,
+}
+
+impl<'a> HexTextU8Iter<'a> {
+    fn new(hex_text: &'a mut HexText, chunk_index: usize, i: usize) -> HexTextU8Iter<'a> {
+        HexTextU8Iter {
+            hex_text,
+            chunk_index: chunk_index,
+            i: i,
+        }
+    }
+}
+
+impl<'a> Iterator for HexTextU8Iter<'a> {
+    type Item = u8;
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut chunk_len = self.hex_text.chunks.len();
+
+        loop {
+            // 如果当前 chunk_index 无效，尝试加载更多或直接结束
+            if self.chunk_index >= chunk_len {
+                let seek = if chunk_len > 0 {
+                    let prev = &self.hex_text.chunks.get(chunk_len - 1)?;
+                    prev.file_end
+                } else {
+                    0
+                };
+                if seek >= self.hex_text.file_size {
+                    return None;
+                }
+                self.hex_text.read_next_chunk(seek).unwrap();
+                chunk_len = self.hex_text.chunks.len();
+                self.chunk_index = chunk_len - 1; // 重置到最后一个 chunk
+            }
+
+            // 获取当前 chunk 并从中读取一字节
+            let chunk = &self.hex_text.chunks.get(self.chunk_index)?;
+            let buffer = chunk.buffer.text(..);
+            let (a, b) = buffer.as_slice();
+            let total = a.len() + b.len();
+
+            if self.i < total {
+                let byte = if self.i < a.len() {
+                    a[self.i]
+                } else {
+                    b[self.i - a.len()]
+                };
+                self.i += 1;
+                return Some(byte);
+            }
+
+            // 当前 chunk 读完，移动到下一个
+            self.chunk_index += 1;
+            self.i = 0;
+        }
+    }
 }
 
 struct HexTextIter<'a> {
@@ -1370,6 +1469,15 @@ impl Text for MmapText {
     ) -> impl Iterator<Item = LineStr<'a>> {
         MmapTextIter::new(&self.mmap, line_index, line_start, self.mmap.len())
     }
+
+    fn iter_u8<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = u8> {
+        Vec::new().into_iter() // MmapText 不支持 u8 迭代
+    }
 }
 
 pub(crate) struct GapText {
@@ -1494,6 +1602,15 @@ impl Text for GapText {
         line_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
         self.get_iter(line_index)
+    }
+
+    fn iter_u8<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = u8> {
+        Vec::new().into_iter() // GapText 不支持 u8 迭代
     }
 }
 

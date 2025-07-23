@@ -24,10 +24,8 @@ impl<'a> GapBytes<'a> {
         (str1, str2)
     }
 
-    pub(crate) fn as_slice(&self) -> (&[u8], &[u8]) {
-        match self {
-            GapBytes(left, right) => (left, right),
-        }
+    pub(crate) fn as_slice(&'a self) -> (&'a [u8], &'a [u8]) {
+        (self.left(), self.right())
     }
 
     pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
@@ -63,11 +61,11 @@ impl<'a> GapBytes<'a> {
         self.0.len() + self.1.len()
     }
 
-    pub(crate) fn left(&self) -> &[u8] {
+    pub(crate) fn left(&self) -> &'a [u8] {
         self.0
     }
 
-    pub(crate) fn right(&self) -> &[u8] {
+    pub(crate) fn right(&self) -> &'a [u8] {
         self.1
     }
 
@@ -158,7 +156,7 @@ impl Line for GapBuffer {
         self.buffer.len() - (self.gap_end - self.gap_start)
     }
 
-    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'_> {
+    fn text<'a>(&'a self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
         self.get_text(range)
     }
 }
