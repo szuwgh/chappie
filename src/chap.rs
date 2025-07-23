@@ -1,5 +1,5 @@
 use crate::chatapi::LlmClient;
-use crate::cmd::Cli;
+use crate::cli::Cli;
 use crate::ChapResult;
 use crate::ChapTui;
 use once_cell::sync::Lazy;
@@ -10,14 +10,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
-// use vectorbase::ann::AnnType;
-// use vectorbase::collection::Collection;
-// use vectorbase::config::ConfigBuilder;
-// use vectorbase::schema::FieldEntry;
-// use vectorbase::schema::Schema;
-// use vectorbase::schema::TensorEntry;
-// use vectorbase::schema::VectorEntry;
-// use vectorbase::schema::VectorType;
 
 const LLM_MODEL_DIR: &'static str = "/etc/chappie/model";
 const CHAP_VB_DIR: &'static str = "/etc/chappie/data";
@@ -74,7 +66,7 @@ impl Chappie {
         // } else {
         //     None
         // };
-        let chap_ui = ChapTui::new(  
+        let chap_ui = ChapTui::new(
             cli.get_chap_mod(),
             prompt_tx,
             llm_res_rx,

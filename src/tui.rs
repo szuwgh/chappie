@@ -1,5 +1,6 @@
 use crate::byteutil::ByteView;
-use crate::cmd::UIType;
+use crate::byteutil::Endian;
+use crate::cli::UIType;
 use crate::editor::CacheStr;
 use crate::editor::EditLineMeta;
 use crate::editor::EditTextWarp;
@@ -115,7 +116,8 @@ pub(crate) struct ChapTui {
     pub(crate) terminal: Terminal<CrosstermBackend<io::Stdout>>,
     pub(crate) navi: Navigation,
     pub(crate) tv: TextView,
-    pub(crate) fuzzy_inp: CmdInput,
+    pub(crate) cmd_title: Rect,
+    pub(crate) cmd_inp: CmdInput,
     pub(crate) assist_tv: TextView,
     pub(crate) assist_inp: ChatInput,
     focus: Focus,
@@ -125,12 +127,15 @@ pub(crate) struct ChapTui {
     ui_type: UIType,
     que: bool,
 
+    pub(crate) back_linenum: Vec<usize>, // 上一行号
+
     pub(crate) txt_sel: TextSelect,   // 文本选择
     pub(crate) cursor_x: usize,       // 光标x坐标
     pub(crate) cursor_y: usize,       // 光标y坐标
     pub(crate) offset: usize,         // 偏移量
     pub(crate) start_line_num: usize, // 起始行号
     pub(crate) is_last_line: bool,    // 是否是最后一行
+    pub(crate) endian: Endian,        // 字节序
 }
 
 // 文本编辑器大文件浏览 窗口
@@ -361,7 +366,7 @@ impl ChapTui {
             .constraints([Constraint::Percentage(65), Constraint::Percentage(35)].as_ref())
             .split(rect);
 
-        let (nav_chk, tv_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
+        let (nav_chk, tv_chk, inp_title_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
             //文本框和输入框
             let left_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -382,11 +387,12 @@ impl ChapTui {
 
             let search_chunks = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(1), Constraint::Percentage(100)].as_ref())
+                .constraints([Constraint::Length(4), Constraint::Percentage(100)].as_ref())
                 .split(left_chunks[1]); // chunks[1] 是左侧区域
             (
                 nav_text_chunks[0],
                 nav_text_chunks[1],
+                search_chunks[0],
                 search_chunks[1],
                 right_chunks[0],
                 right_chunks[1],
@@ -408,10 +414,7 @@ impl ChapTui {
             rect: tv_chk,
         };
 
-        let fuzzy_inp = CmdInput {
-            input: String::new(),
-            rect: seach_chk,
-        };
+        let cmd_inp = CmdInput::new(seach_chk);
 
         let assist_tv = TextView {
             height: tv_heigth,
@@ -431,7 +434,8 @@ impl ChapTui {
             terminal: terminal,
             navi: navi,
             tv: tv,
-            fuzzy_inp: fuzzy_inp,
+            cmd_title: inp_title_chk,
+            cmd_inp: cmd_inp,
             assist_tv: assist_tv,
             assist_inp: assist_inp,
             focus: Focus::new(),
@@ -440,14 +444,19 @@ impl ChapTui {
             llm_res_rx: llm_res_rx,
             ui_type: ui_type,
             que: que,
-
+            back_linenum: Vec::with_capacity(10), // 初始化上一行号
             txt_sel: TextSelect::new(),
             cursor_x: 0,
             cursor_y: 0,
             offset: 0,
             start_line_num: 0,
             is_last_line: false,
+            endian: Endian::Big, // 默认字节序为小端
         })
+    }
+
+    pub(crate) fn set_endian(&mut self, endian: Endian) {
+        self.endian = endian;
     }
 
     fn render_hex<'a>(
@@ -469,7 +478,6 @@ impl ChapTui {
                     cursor_y,
                     cursor_x,
                 );
-
                 let text_para = Paragraph::new(visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
@@ -479,23 +487,26 @@ impl ChapTui {
                 f.render_widget(nav_paragraph, self.navi.get_rect());
 
                 let sel_content = td.get_text_from_sel(&hex_sel);
-                let assist = get_data_inspector_content(sel_content);
+                let assist = get_data_inspector_content(
+                    hex_sel.get_start(),
+                    sel_content,
+                    self.endian.clone(),
+                );
                 let assist_para = Paragraph::new(assist)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(assist_para, self.assist_tv.get_rect());
-                // let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
-                //     .block(
-                //         Block::default()
-                //             .title("cmd")
-                //             .borders(Borders::TOP | Borders::LEFT),
-                //     )
-                //     .style(Style::default().fg(Color::White)); // 设置输入框样式
-                // f.render_widget(input_box, self.fuzzy_inp.get_rect());
+
+                let input_title_box = Paragraph::new(Text::raw(" >:"))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White)); // 设置输入框样式
+                f.render_widget(input_title_box, self.cmd_title);
+
+                let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White)); // 设置输入框样式
+                f.render_widget(input_box, self.cmd_inp.get_rect());
             })?;
-            // if let Some(start_line_meta) = meta.get(0) {
-            //     start_line_num = start_line_meta.get_line_num();
-            // }
 
             meta
         };
@@ -519,12 +530,12 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.fuzzy_inp.clear();
+                self.cmd_inp.clear();
                 //保存
                 if let Ok(_) = td.save(&p) {
-                    self.fuzzy_inp.push_str("saved");
+                    self.cmd_inp.push_str("saved");
                 } else {
-                    self.fuzzy_inp.push_str("save fail");
+                    self.cmd_inp.push_str("save fail");
                 }
             }
             ChapMod::Text => {
@@ -552,7 +563,7 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.fuzzy_inp.clear();
+                self.cmd_inp.clear();
                 if *cursor_x == 0 && *is_last {
                     td.insert(
                         *cursor_y - 1,
@@ -597,7 +608,7 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.fuzzy_inp.clear();
+                self.cmd_inp.clear();
                 if *cursor_y == 0 && *cursor_x == 0 {
                     return Ok(());
                 }
@@ -632,7 +643,7 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.fuzzy_inp.clear();
+                self.cmd_inp.clear();
                 td.insert_newline(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
                 if *cursor_y < self.tv.get_height() - 1 {
                     *cursor_y += 1;
@@ -984,7 +995,7 @@ impl ChapTui {
                     todo!()
                 }
             };
-
+            log::info!("TextDisplay height: {:?}", self.tv.get_height() - 2);
             let hand = match self.chap_mod {
                 ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
                 ChapMod::Text => todo!(),
@@ -1095,10 +1106,10 @@ impl ChapTui {
                 let nav_paragraph = Paragraph::new(navi);
                 f.render_widget(nav_paragraph, self.navi.get_rect());
 
-                let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
                     .block(Block::default().title(":"))
                     .style(Style::default().fg(Color::White)); // 设置输入框样式
-                f.render_widget(input_box, self.fuzzy_inp.get_rect());
+                f.render_widget(input_box, self.cmd_inp.get_rect());
             })?;
             meta
         };
@@ -1117,19 +1128,19 @@ impl ChapTui {
         let chat_type = ChatType::default();
         loop {
             let line_meta = {
-                let (inp, is_exact) = self.fuzzy_inp.get_inp_exact();
+                let (inp, is_exact) = self.cmd_inp.get_inp_exact();
                 let (txt, line_meta) = eg.get_line(self.tv.get_scroll(), inp, is_exact);
                 self.terminal.draw(|f| {
                     let (txt_clr, inp_clr, chat_clr_, assist_inp_clr) = self.focus.get_colors();
                     // 左下输入框区
-                    let input_box = Paragraph::new(Text::raw(self.fuzzy_inp.get_inp()))
+                    let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
                         .block(
                             Block::default()
                                 .title("search")
                                 .borders(Borders::TOP | Borders::LEFT),
                         )
                         .style(Style::default().fg(inp_clr)); // 设置输入框样式
-                    f.render_widget(input_box, self.fuzzy_inp.get_rect());
+                    f.render_widget(input_box, self.cmd_inp.get_rect());
                     let block = Block::default().borders(Borders::LEFT);
                     if let Some(c) = &txt {
                         let (navi, visible_content) = get_content(
@@ -1189,14 +1200,14 @@ impl ChapTui {
                     match self.focus.current() {
                         FocusType::TxtFuzzy => {
                             // 将光标移动到输入框中合适的位置
-                            let inp_len = self.fuzzy_inp.get_inp().width();
+                            let inp_len = self.cmd_inp.get_inp().width();
                             let x = if inp_len == 0 {
-                                self.fuzzy_inp.get_rect().x + 2
+                                self.cmd_inp.get_rect().x + 2
                             } else {
-                                self.fuzzy_inp.get_rect().x + inp_len as u16 + 1
+                                self.cmd_inp.get_rect().x + inp_len as u16 + 1
                             };
 
-                            let y = self.fuzzy_inp.get_rect().y + 1; // 输入框的 Y 起点
+                            let y = self.cmd_inp.get_rect().y + 1; // 输入框的 Y 起点
                             f.set_cursor_position(Position { x, y });
                         }
                         FocusType::Chat => {
@@ -1239,7 +1250,7 @@ impl ChapTui {
                     {
                         match (code, modifiers) {
                             (KeyCode::Esc, _) => {
-                                self.fuzzy_inp.clear();
+                                self.cmd_inp.clear();
                                 self.assist_inp.clear();
                                 self.navi.select_line = None;
 
@@ -1331,7 +1342,7 @@ impl ChapTui {
                                     if let Some((_, _)) = self.navi.select_line {
                                         self.focus.next();
                                     } else {
-                                        self.fuzzy_inp.clear();
+                                        self.cmd_inp.clear();
                                         let cur_line = self.navi.get_cur_line();
                                         if cur_line < line_meta.len() {
                                             self.tv.set_scroll(line_meta[cur_line].get_line_num());
@@ -1590,10 +1601,10 @@ impl ChapTui {
                             (KeyCode::Char(c), _) => {
                                 match self.focus.current() {
                                     FocusType::TxtFuzzy => {
-                                        if self.fuzzy_inp.get_inp().len() >= 10 {
+                                        if self.cmd_inp.get_inp().len() >= 10 {
                                             break;
                                         }
-                                        self.fuzzy_inp.push(c); // 添加字符到输入缓冲区
+                                        self.cmd_inp.push(c); // 添加字符到输入缓冲区
                                         self.tv.set_scroll(1);
                                         break;
                                     }
@@ -1609,7 +1620,7 @@ impl ChapTui {
                             (KeyCode::Backspace, _) => {
                                 match self.focus.current() {
                                     FocusType::TxtFuzzy => {
-                                        self.fuzzy_inp.pop();
+                                        self.cmd_inp.pop();
                                         self.tv.set_scroll(1);
                                         break;
                                     }
@@ -1750,6 +1761,13 @@ pub(crate) struct CmdInput {
 }
 
 impl CmdInput {
+    pub(crate) fn new(rect: Rect) -> Self {
+        CmdInput {
+            input: String::new(),
+            rect,
+        }
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1758,7 +1776,7 @@ impl CmdInput {
         self.input.clear();
     }
 
-    fn push(&mut self, c: char) {
+    pub(crate) fn push(&mut self, c: char) {
         self.input.push(c);
     }
 
@@ -1766,11 +1784,15 @@ impl CmdInput {
         self.input.push_str(c);
     }
 
-    fn pop(&mut self) {
+    pub(crate) fn pop(&mut self) {
         self.input.pop();
     }
 
-    fn get_inp(&self) -> &str {
+    pub(crate) fn len(&mut self) -> usize {
+        self.input.len()
+    }
+
+    pub(crate) fn get_inp(&self) -> &str {
         &self.input
     }
 
@@ -1950,7 +1972,7 @@ fn format_hex_slice(slice: &[u8], j: &mut usize) -> String {
         let mut buffer = Buffer::<1>::new();
         let c = buffer.format(&[*b]);
         line.push_str(c);
-        line.push_str(if *j % 8 == 0 { "  " } else { " " });
+        line.push_str(if (*j + 1) % 8 == 0 { "  " } else { " " });
         *j += 1;
     }
     line
@@ -1959,7 +1981,7 @@ fn format_hex_slice(slice: &[u8], j: &mut usize) -> String {
 type ParserFn = fn(&ByteView) -> String;
 
 fn format_data_inspector<T: std::fmt::Display>(data: T) -> String {
-    format!("{:<20}|", data)
+    format!("{:<20.10}|", data)
 }
 
 static FIELDS: &[(&str, ParserFn)] = &[
@@ -1987,10 +2009,28 @@ static FIELDS: &[(&str, ParserFn)] = &[
     ("| int32_t            | ", |bv| {
         format_data_inspector(bv.to_i32())
     }),
+    ("| uint64_t           | ", |bv| {
+        format_data_inspector(bv.to_u64())
+    }),
+    ("| int64_t            | ", |bv| {
+        format_data_inspector(bv.to_i64())
+    }),
+    ("| half float(f16)    | ", |bv| {
+        format_data_inspector(bv.to_f16())
+    }),
+    ("| float              | ", |bv| {
+        format_data_inspector(bv.to_f32())
+    }),
+    ("| double             | ", |bv| {
+        format_data_inspector(bv.to_f64())
+    }),
+    ("| String             | ", |bv| {
+        format_data_inspector(bv.to_str())
+    }),
 ];
 
-fn get_data_inspector_content<'a>(buf: Vec<u8>) -> Text<'a> {
-    let bv = ByteView::new(buf);
+fn get_data_inspector_content<'a>(seek: usize, buf: Vec<u8>, endian: Endian) -> Text<'a> {
+    let bv = ByteView::new(buf, endian);
     let mut lines = vec![
         Line::from(Span::styled(
             "Data Inspector",
@@ -1999,6 +2039,10 @@ fn get_data_inspector_content<'a>(buf: Vec<u8>) -> Text<'a> {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
+        Line::from(vec![
+            Span::styled("| address            | ", Style::default().fg(Color::White)),
+            Span::raw(seek.to_string()),
+        ]),
     ];
     lines.extend(FIELDS.iter().map(|&(label, f)| {
         let spans = vec![
@@ -2013,7 +2057,7 @@ fn get_data_inspector_content<'a>(buf: Vec<u8>) -> Text<'a> {
 }
 
 const HEX_TOP: &'static str =
-    "00 01 02 03 04 05 06 07 08  09 0A 0B 0C 0D 0E 0F 10  11 12       ASCII";
+    "00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  10 11 12       ASCII";
 
 fn get_hex_content<'a>(
     txts: &'a RingVec<CacheStr>,
@@ -2045,7 +2089,11 @@ fn get_hex_content<'a>(
                 let category = Byte(*b).category();
                 let color = category.color();
                 let c = buffer.format(&[*b]);
-                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+                let space = if j != 0 && (j + 1) % 8 == 0 {
+                    "  "
+                } else {
+                    " "
+                };
 
                 let b1 = if b.is_ascii() && !b.is_ascii_control() {
                     (*b as char).to_string()
@@ -2092,7 +2140,11 @@ fn get_hex_content<'a>(
                 let category = Byte(*b).category();
                 let color = category.color();
                 let c = buffer.format(&[*b]);
-                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+                let space = if j != 0 && (j + 1) % 8 == 0 {
+                    "  "
+                } else {
+                    " "
+                };
 
                 let b1 = if b.is_ascii() && !b.is_ascii_control() {
                     (*b as char).to_string()
@@ -2140,7 +2192,11 @@ fn get_hex_content<'a>(
                 let color = category.color();
                 let c = buffer.format(&[*b]);
 
-                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+                let space = if j != 0 && (j + 1) % 8 == 0 {
+                    "  "
+                } else {
+                    " "
+                };
                 let b1 = if b.is_ascii() && !b.is_ascii_control() {
                     (*b as char).to_string()
                 } else {
@@ -2177,7 +2233,11 @@ fn get_hex_content<'a>(
                 let category = Byte(*b).category();
                 let color = category.color();
                 let c = buffer.format(&[*b]);
-                let space = if j != 0 && j % 8 == 0 { "  " } else { " " };
+                let space = if j != 0 && (j + 1) % 8 == 0 {
+                    "  "
+                } else {
+                    " "
+                };
                 let b1 = if b.is_ascii() && !b.is_ascii_control() {
                     (*b as char).to_string()
                 } else {
@@ -2213,13 +2273,6 @@ fn get_hex_content<'a>(
 
         spans.push(Span::raw("   ".repeat(20 - txt.len() + 1)));
         spans.extend_from_slice(&str_spans);
-        // if cursor_y == i {
-        // } else {
-        //     //添加字符串
-        //     spans.push(Span::raw(bytes_to_string_with_dot(slice1)));
-        //     spans.push(Span::raw(bytes_to_string_with_dot(slice2)));
-        // }
-
         lines.push(Line::from(spans));
     }
     if cursor_y >= line_meta.len() {
@@ -2245,9 +2298,6 @@ fn get_hex_content<'a>(
                 if i == 1 {
                     return Line::from(Span::raw(""));
                 }
-                // if i > line_meta.len() {
-                //     return Line::raw("");
-                // }
                 Line::from(Span::styled(
                     format!(
                         "{:07x}",

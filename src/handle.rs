@@ -1,8 +1,10 @@
+use crate::command::Command;
 use crate::editor::EditLineMeta;
 use crate::editor::RingVec;
 use crate::editor::TextDisplay;
 use crate::editor::TextOper;
 use crate::editor::TextWarpType;
+use crate::editor::HEX_WITH;
 use crate::error::ChapResult;
 use crate::ChapTui;
 use crossterm::cursor;
@@ -142,7 +144,7 @@ impl Handle for HandleImpl {
 
 pub(crate) trait Handle {
     fn handle_esc(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
-        chap_tui.fuzzy_inp.clear();
+        chap_tui.cmd_inp.clear();
         chap_tui.assist_inp.clear();
         chap_tui.navi.clear();
         chap_tui.txt_sel.reset_to_start();
@@ -246,12 +248,12 @@ impl Handle for HandleEdit {
         p: P,
         td: &mut TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.fuzzy_inp.clear();
+        chap_tui.cmd_inp.clear();
         //保存
         if let Ok(_) = td.save(&p) {
-            chap_tui.fuzzy_inp.push_str("saved");
+            chap_tui.cmd_inp.push_str("saved");
         } else {
-            chap_tui.fuzzy_inp.push_str("save fail");
+            chap_tui.cmd_inp.push_str("save fail");
         }
         Ok(())
     }
@@ -418,7 +420,7 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.fuzzy_inp.clear();
+        chap_tui.cmd_inp.clear();
         td.insert_newline(
             chap_tui.cursor_y,
             chap_tui.cursor_x,
@@ -438,7 +440,7 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.fuzzy_inp.clear();
+        chap_tui.cmd_inp.clear();
         if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
             return Ok(());
         }
@@ -464,7 +466,7 @@ impl Handle for HandleEdit {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
-        chap_tui.fuzzy_inp.clear();
+        chap_tui.cmd_inp.clear();
         if chap_tui.cursor_x == 0 && chap_tui.is_last_line {
             td.insert(
                 chap_tui.cursor_y - 1,
@@ -545,8 +547,18 @@ impl Handle for HandleHex {
             line_meta = td.get_current_line_meta()?;
         }
         chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
-        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
-            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1;
+        if chap_tui.cursor_x
+            >= line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1)
+        {
+            chap_tui.cursor_x = line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1);
         };
 
         chap_tui.txt_sel.set_pos(
@@ -565,15 +577,25 @@ impl Handle for HandleHex {
         mut line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        if chap_tui.cursor_y < line_meta.len() - 1 {
+        if chap_tui.cursor_y < line_meta.len().saturating_sub(1) {
             chap_tui.cursor_y += 1;
         } else {
             //滚动下一行
             td.scroll_next_one_line(line_meta.last().unwrap())?;
             line_meta = td.get_current_line_meta()?;
         }
-        if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
-            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1;
+        if chap_tui.cursor_x
+            >= line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1)
+        {
+            chap_tui.cursor_x = line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1);
         };
 
         chap_tui.txt_sel.set_pos(
@@ -602,7 +624,11 @@ impl Handle for HandleHex {
             {
                 //无需操作
             } else {
-                chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y - 1).unwrap().get_txt_len() - 1;
+                chap_tui.cursor_x = line_meta
+                    .get(chap_tui.cursor_y - 1)
+                    .unwrap()
+                    .get_txt_len()
+                    .saturating_sub(1);
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
             }
         } else {
@@ -625,11 +651,17 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
+        if chap_tui.cursor_x
+            < line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1)
+        {
             chap_tui.cursor_x += 1;
         } else {
             chap_tui.cursor_x = 0;
-            if chap_tui.cursor_y < line_meta.len() - 1 {
+            if chap_tui.cursor_y < line_meta.len().saturating_sub(1) {
                 chap_tui.cursor_y += 1;
             }
         }
@@ -650,6 +682,34 @@ impl Handle for HandleHex {
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         //todo!("Handle enter in hex mode");
+        let cmd_inp = chap_tui.cmd_inp.get_inp();
+        let cmd = Command::parse(cmd_inp);
+        match cmd {
+            Command::Back => {
+                if let Some(line_num) = chap_tui.back_linenum.pop() {
+                    chap_tui.cursor_y = 0;
+                    chap_tui.cursor_x = 0;
+                    td.get_one_page(line_num)?;
+                }
+            }
+            Command::SetEndian(endian) => {
+                chap_tui.set_endian(endian);
+            }
+            Command::Jump(addr) => {
+                chap_tui
+                    .back_linenum
+                    .push(line_meta.get(0).unwrap().get_line_num());
+                let with = HEX_WITH;
+                let line_num = (addr / with) + 1;
+                chap_tui.cursor_x = addr % with;
+                chap_tui.cursor_y = 0;
+                log::debug!("Jump to line number:{}, {}", addr, line_num);
+                chap_tui.txt_sel.set_pos(addr);
+                td.get_one_page(line_num)?;
+            }
+            Command::Find(value) => {}
+            Command::Unknown(cmd) => {}
+        }
         Ok(())
     }
 
@@ -659,11 +719,17 @@ impl Handle for HandleHex {
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
-        if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() - 1 {
+        if chap_tui.cursor_x
+            < line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1)
+        {
             chap_tui.cursor_x += 1;
         } else {
             chap_tui.cursor_x = 0;
-            if chap_tui.cursor_y < line_meta.len() - 1 {
+            if chap_tui.cursor_y < line_meta.len().saturating_sub(1) {
                 chap_tui.cursor_y += 1;
             }
         }
@@ -698,7 +764,11 @@ impl Handle for HandleHex {
                 //无需操作
                 return Ok(());
             } else {
-                chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y - 1).unwrap().get_txt_len() - 1;
+                chap_tui.cursor_x = line_meta
+                    .get(chap_tui.cursor_y - 1)
+                    .unwrap()
+                    .get_txt_len()
+                    .saturating_sub(1);
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
             }
         } else {
@@ -724,7 +794,7 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        //todo!("Handle backspace in hex mode");
+        chap_tui.cmd_inp.pop();
         Ok(())
     }
 
@@ -735,6 +805,10 @@ impl Handle for HandleHex {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
+        if chap_tui.cmd_inp.len() >= 50 {
+            return Ok(()); // 限制输入长度为16
+        }
+        chap_tui.cmd_inp.push(c);
         Ok(())
     }
 }

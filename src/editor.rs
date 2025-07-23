@@ -7,6 +7,7 @@ use crate::{error::ChapResult, gap_buffer::GapBuffer};
 use anyhow::Ok;
 use inherit_methods_macro::inherit_methods;
 use memmap2::Mmap;
+use ratatui::symbols::line;
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
@@ -31,7 +32,7 @@ const PAGE_GROUP: usize = 1;
 const CHUNK_SIZE: usize = 4 * 1024;
 const CHAR_GAP_SIZE: usize = 128;
 const HEX_GAP_SIZE: usize = 5;
-const HEX_WITH: usize = 19;
+pub(crate) const HEX_WITH: usize = 19;
 
 pub(crate) trait TextOper {
     //滑动上一行
@@ -95,6 +96,14 @@ impl TextOper for TextDisplay {
             TextDisplay::Edit(v) => v.get_current_page(),
         }
     }
+
+    // fn jump_to(&self, line_num: usize) -> ChapResult<()> {
+    //     match self {
+    //         TextDisplay::Text(v) => v.jump_to(line_index),
+    //         TextDisplay::Hex(v) => v.jump_to(line_index),
+    //         TextDisplay::Edit(v) => v.jump_to(line_index),
+    //     }
+    // }
 
     fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>> {
         match self {
@@ -685,6 +694,14 @@ impl<'a> LineData<'a> {
         }
     }
 
+    fn as_slice(&self) -> (&[u8], &[u8]) {
+        match self {
+            LineData::Bytes(v) => (v, &[]),
+            LineData::GapBytes(v) => v.as_slice(),
+            LineData::Own(v) => (v.as_slice(), &[]),
+        }
+    }
+
     fn len(&self) -> usize {
         match self {
             LineData::Bytes(v) => v.len(),
@@ -712,7 +729,7 @@ impl<'a> LineData<'a> {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.len(),
         };
-        log::debug!("text start: {} end: {} len: {}", start, end, self.len());
+        //log::debug!("text start: {} end: {} len: {}", start, end, self.len());
         assert!(start <= end);
 
         match self {
@@ -759,28 +776,6 @@ pub struct FileIoTextIter<'a> {
     line_file_start: usize,
     line_file_end: usize,
 }
-
-// impl<'a> Iterator for FileIoTextIter<'a> {
-//     type Item = LineStr<'a>;
-//     fn next(&mut self) -> Option<LineStr<'a>> {
-//         if self.line_file_start >= self.line_file_end {
-//             return None;
-//         }
-//         self.file
-//             .seek(std::io::SeekFrom::Current(self.line_file_start as i64))
-//             .unwrap();
-//         // let start = 0;
-//         self.file.read_line(buf)
-//         let line = &mmap[..end];
-//         let line_start = self.line_file_start;
-//         self.line_file_start += end + 1;
-//         Some(LineStr {
-//             line: std::str::from_utf8(line).unwrap(),
-//             line_file_start: line_start,
-//             line_file_end: line_start + end,
-//         })
-//     }
-// }
 
 pub(crate) struct Chunk {
     buffer: GapBuffer,
@@ -974,7 +969,7 @@ impl Text for HexText {
                 continue;
             }
             // 如果选区在此块之前结束，则无需继续
-            if end <= s.file_start {
+            if end < s.file_start {
                 break;
             }
             // 计算当前块与选区的重叠范围
@@ -1830,6 +1825,8 @@ impl<T: Text> TextWarp<T> {
         assert!(line_num >= start_page_num * self.height);
         //跳过的行数
         let skip_line = line_num;
+        // println!("skip_line:{}", skip_line);
+        // println!("page_offset:{:?}", page_offset);
         self.get_char_text_fn(
             &page_offset,
             line_count,
@@ -1920,6 +1917,7 @@ impl<T: Text> TextWarp<T> {
     {
         //空行
         let line_txt = line_str.text(line_start..);
+
         if line_txt.len() == 0 {
             *line_num += 1; //行数加1
             if *line_num >= skip_line {
@@ -2042,7 +2040,7 @@ impl<T: Text> TextWarp<T> {
                 page_offset_list.push(PageOffset {
                     line_index,
                     line_offset: line_start + 0,
-                    line_file_start: line_str.line_file_start,
+                    line_file_start: line_str.line_file_end,
                 });
             }
         }
@@ -2691,6 +2689,26 @@ mod tests {
     use std::fs::File;
 
     #[test]
+    fn text_hex_get() {
+        let hex_text = TextWarp::new(
+            HexText::from_file_path("/root/20250704120009_481.jpg").unwrap(),
+            48,
+            0,
+            TextWarpType::NoWrap,
+        );
+        let line = hex_text.get_one_page(1).unwrap();
+        let line = hex_text.get_one_page(93).unwrap();
+        println!("=======================================");
+        for s in line.0.iter() {
+            let (a, b) = s.as_slice();
+            for c in a.iter() {
+                print!("{:02x} ", c);
+            }
+            print!("\n");
+        }
+    }
+
+    #[test]
     fn text_hex_sel() {
         let mut hex = HexText::from_file_path("/root/20250704120009_481.jpg").unwrap();
 
@@ -2725,6 +2743,14 @@ mod tests {
         let text = hex.text_from_sel(&sel);
         println!("text4 len  {:?}", text.len());
         println!("text4  {:?}\n", text);
+
+        let sel = TextSelect::from_select(0, 0);
+        for s in hex.chunks.iter() {
+            println!("chunk: {:?}", s.buffer.text(..).to_vec());
+        }
+        let text = hex.text_from_sel(&sel);
+        println!("text5 len  {:?}", text.len());
+        println!("text5  {:?}\n", text);
     }
 
     #[test]

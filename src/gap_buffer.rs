@@ -21,8 +21,13 @@ impl<'a> GapBytes<'a> {
     pub(crate) fn as_str(&self) -> (Cow<str>, Cow<str>) {
         let str1 = String::from_utf8_lossy(self.left());
         let str2 = String::from_utf8_lossy(self.right());
-
         (str1, str2)
+    }
+
+    pub(crate) fn as_slice(&self) -> (&[u8], &[u8]) {
+        match self {
+            GapBytes(left, right) => (left, right),
+        }
     }
 
     pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
