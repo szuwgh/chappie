@@ -12,6 +12,9 @@ pub(crate) struct BoyerMoore<'a> {
 
 impl<'a> BoyerMoore<'a> {
     pub(crate) fn new(pattern: &[u8]) -> BoyerMoore {
+        if pattern.is_empty() {
+            panic!("Pattern must not be empty");
+        }
         let pattern_bytes = pattern;
         let mut good_suffix_skip = vec![pattern_bytes.len(); pattern_bytes.len()];
 

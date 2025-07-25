@@ -1,10 +1,11 @@
+use crate::error::ChapError;
+use crate::fuzzy::boyermoore::BoyerMoore;
 use crate::gap_buffer::GapBytes;
 use crate::gap_buffer::GapBytesCharIter;
 use crate::mmap_file;
 use crate::tui::TextSelect;
 use crate::util;
 use crate::{error::ChapResult, gap_buffer::GapBuffer};
-use anyhow::Ok;
 use inherit_methods_macro::inherit_methods;
 use memmap2::Mmap;
 use ratatui::symbols::line;
@@ -80,6 +81,10 @@ pub(crate) trait TextOper {
     fn get_text_len_from_index(&self, line_index: usize) -> usize;
 
     fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8>;
+
+    fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize>;
+
+    fn get_file_size(&self) -> usize;
 }
 
 pub(crate) enum TextDisplay {
@@ -97,13 +102,21 @@ impl TextOper for TextDisplay {
         }
     }
 
-    // fn jump_to(&self, line_num: usize) -> ChapResult<()> {
-    //     match self {
-    //         TextDisplay::Text(v) => v.jump_to(line_index),
-    //         TextDisplay::Hex(v) => v.jump_to(line_index),
-    //         TextDisplay::Edit(v) => v.jump_to(line_index),
-    //     }
-    // }
+    fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize> {
+        match self {
+            TextDisplay::Text(v) => v.find(pattern, line_file_start),
+            TextDisplay::Hex(v) => v.find(pattern, line_file_start),
+            TextDisplay::Edit(v) => todo!(),
+        }
+    }
+
+    fn get_file_size(&self) -> usize {
+        match self {
+            TextDisplay::Text(v) => v.get_file_size(),
+            TextDisplay::Hex(v) => v.get_file_size(),
+            TextDisplay::Edit(v) => todo!(),
+        }
+    }
 
     fn get_current_line_meta(&self) -> ChapResult<&RingVec<EditLineMeta>> {
         match self {
@@ -610,6 +623,8 @@ pub(crate) trait Line {
 }
 
 pub(crate) trait Text {
+    fn get_file_size(&self) -> usize;
+
     //是否有下一行
     fn has_next_line(&self, meta: &EditLineMeta) -> bool;
 
@@ -639,6 +654,11 @@ pub(crate) trait Text {
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = u8>;
+}
+
+trait TextIndex {
+    fn get_page_offset(&self, line_num: usize) -> PageOffset;
+    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset);
 }
 
 pub(crate) trait EditText {
@@ -736,7 +756,6 @@ impl<'a> LineData<'a> {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.len(),
         };
-        //log::debug!("text start: {} end: {} len: {}", start, end, self.len());
         assert!(start <= end);
 
         match self {
@@ -784,6 +803,7 @@ pub struct FileIoTextIter<'a> {
     line_file_end: usize,
 }
 
+#[derive(Clone)]
 pub(crate) struct Chunk {
     buffer: GapBuffer,
     file_start: usize,
@@ -817,13 +837,18 @@ const CHUNK_NUM: usize = 5;
 
 pub(crate) struct HexText {
     chunks: RingVec<Chunk>,
+    chk_iter: Chunk,
     file: File,
     cache: HashMap<usize, Chunk>,
     file_size: usize,
+    height: usize,
 }
 
 impl HexText {
-    pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<HexText> {
+    pub(crate) fn from_file_path<P: AsRef<Path>>(
+        filename: P,
+        height: usize,
+    ) -> ChapResult<HexText> {
         let mut file = File::open(filename)?;
         let file_size = file.metadata()?.len() as usize;
         let mut chunks = RingVec::new(CHUNK_NUM);
@@ -853,12 +878,14 @@ impl HexText {
             });
             bytes_start += bytes_read;
         }
-
+        let chk_iter = chunks.get(0).unwrap().clone();
         Ok(HexText {
             chunks: chunks,
+            chk_iter: chk_iter,
             file,
             cache: HashMap::new(),
             file_size,
+            height: height, // 初始高度为0，可以根据需要设置
         })
     }
 
@@ -866,12 +893,49 @@ impl HexText {
         self.file_size
     }
 
-    pub(crate) fn read_chunks(&mut self, file_seek: usize) -> ChapResult<()> {
-        self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
+    pub(crate) fn reset_chunks(&mut self, line_file_start: usize) {
+        let n = (self.file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let last_chunk_address = (n - CHUNK_NUM) * CHUNK_SIZE;
+        //如果没有找到块 从新重读chunks
+        //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
+        let chunk_start = (line_file_start / CHUNK_SIZE * CHUNK_SIZE).min(last_chunk_address);
+        self.read_chunks(chunk_start).unwrap();
+    }
+
+    pub(crate) fn read_one_chunk(&mut self, chunk_seek: usize) -> ChapResult<Chunk> {
+        self.file
+            .seek(std::io::SeekFrom::Start(chunk_seek as u64))?;
+        let mut buf = [0u8; CHUNK_SIZE];
+        let bytes_start = chunk_seek;
+        let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+        let mut bytes_read = 0;
+        while bytes_read < CHUNK_SIZE {
+            let n = self.file.read(&mut buf)?;
+            if n == 0 {
+                //跳出 for 循环
+                break;
+            }
+            bytes_read += n;
+            buffer.insert(buffer.text_len(), &buf[..n]);
+        }
+        if bytes_read == 0 {
+            return Err(ChapError::Unexpected("No data read from file".to_string()).into());
+        }
+        return Ok(Chunk {
+            buffer: buffer,
+            file_start: bytes_start,
+            file_end: bytes_start + bytes_read,
+            is_modified: false,
+        });
+    }
+
+    pub(crate) fn read_chunks(&mut self, chunk_seek: usize) -> ChapResult<()> {
+        self.file
+            .seek(std::io::SeekFrom::Start(chunk_seek as u64))?;
         let mut chunks = RingVec::new(CHUNK_NUM);
 
         let mut buf = [0u8; CHUNK_SIZE];
-        let mut bytes_start = file_seek;
+        let mut bytes_start = chunk_seek;
         for _ in 0..CHUNK_NUM {
             let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
             let mut bytes_read = 0;
@@ -895,6 +959,7 @@ impl HexText {
             });
             bytes_start += bytes_read;
         }
+        self.chunks = chunks;
         return Ok(());
     }
 
@@ -965,7 +1030,31 @@ impl HexText {
     }
 }
 
+impl TextIndex for HexText {
+    fn get_page_offset(&self, line_num: usize) -> PageOffset {
+        let start_page_num = line_num / self.height;
+        let start_line_num = (start_page_num * self.height).saturating_sub(1);
+        let line_file_start = start_line_num * HEX_WITH;
+        PageOffset {
+            line_index: 0,                    //第多少行
+            line_offset: 0,                   //行在总行的起始位置
+            line_file_start: line_file_start, //这一行在整个文件的起始位置
+            start_line_num: start_line_num,
+            start_page_num: start_page_num, //这一行在第几页开始
+        }
+    }
+
+    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset) {
+        // 这里可以实现设置页偏移的逻辑
+        // 目前没有具体实现
+    }
+}
+
 impl Text for HexText {
+    fn get_file_size(&self) -> usize {
+        self.file_size
+    }
+
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut start = sel.get_start();
@@ -1066,7 +1155,7 @@ impl Text for HexText {
                 };
             }
         }
-        assert!(false, "not found line");
+        //assert!(false, "not found line");
         return LineStr {
             // line: buffer,
             line_data: LineData::Bytes(&[]),
@@ -1093,75 +1182,72 @@ impl Text for HexText {
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
         let mut j = None;
-        for (i, chunk) in self.chunks.iter().enumerate() {
-            if line_file_start >= chunk.file_start && line_file_start < chunk.file_end {
-                j = Some(i);
-                break;
+        loop {
+            if line_file_start >= self.file_size {
+                return HexTextIter::new([None, None], HEX_WITH, line_file_start);
             }
-        }
-        if let Some(j) = j {
-            if j == 0 {
-                //读取上一个块 把最后一个块弹出
-                let mut last_chunk = self.chunks.get(0).unwrap().file_start;
-                if last_chunk == 0 {
-                    return HexTextIter::new(
-                        [self.chunks.get(0), self.chunks.get(1)],
-                        HEX_WITH,
-                        line_file_start,
-                    );
-                } else {
-                    last_chunk = last_chunk.saturating_sub(CHUNK_SIZE);
-                    log::debug!(
-                        "last_chunk: {},line_file_start:{}",
-                        last_chunk,
-                        line_file_start
-                    );
-                    self.read_last_chunk(last_chunk).unwrap();
-                    for c in self.chunks.iter() {
-                        log::debug!(
-                            "chunk.file_start: {} chunk.file_end: {}",
-                            c.file_start,
-                            c.file_end
+            for (i, chunk) in self.chunks.iter().enumerate() {
+                if line_file_start >= chunk.file_start && line_file_start < chunk.file_end {
+                    j = Some(i);
+                    break;
+                }
+            }
+            if let Some(j) = j {
+                if j == 0 {
+                    //读取上一个块 把最后一个块弹出
+                    let mut last_chunk = self.chunks.get(0).unwrap().file_start;
+                    if last_chunk == 0 {
+                        return HexTextIter::new(
+                            [self.chunks.get(0), self.chunks.get(1)],
+                            HEX_WITH,
+                            line_file_start,
+                        );
+                    } else {
+                        last_chunk = last_chunk.saturating_sub(CHUNK_SIZE);
+
+                        self.read_last_chunk(last_chunk).unwrap();
+                        // for c in self.chunks.iter() {}
+                        return HexTextIter::new(
+                            [self.chunks.get(1), self.chunks.get(2)],
+                            HEX_WITH,
+                            line_file_start,
                         );
                     }
-                    return HexTextIter::new(
-                        [self.chunks.get(1), self.chunks.get(2)],
-                        HEX_WITH,
-                        line_file_start,
-                    );
-                }
-            } else if j == self.chunks.len() - 1 {
-                //最后一个块
-                //读取下一个块 把第一个块弹出
-                let next_file_seek = self.chunks.get(j).unwrap().file_end;
-                if next_file_seek >= self.file_size {
-                    return HexTextIter::new([self.chunks.get(j), None], HEX_WITH, line_file_start);
+                } else if j == self.chunks.len() - 1 {
+                    //最后一个块
+                    //读取下一个块 把第一个块弹出
+                    let next_file_seek = self.chunks.get(j).unwrap().file_end;
+                    if next_file_seek >= self.file_size {
+                        return HexTextIter::new(
+                            [self.chunks.get(j), None],
+                            HEX_WITH,
+                            line_file_start,
+                        );
+                    } else {
+                        self.read_next_chunk(next_file_seek).unwrap();
+                        return HexTextIter::new(
+                            [self.chunks.get(j - 1), self.chunks.get(j)],
+                            HEX_WITH,
+                            line_file_start,
+                        );
+                    }
                 } else {
-                    self.read_next_chunk(next_file_seek).unwrap();
+                    //不是最后一个块
                     return HexTextIter::new(
-                        [self.chunks.get(j - 1), self.chunks.get(j)],
+                        [self.chunks.get(j), self.chunks.get(j + 1)],
                         HEX_WITH,
                         line_file_start,
                     );
                 }
-            } else {
-                //不是最后一个块
-                return HexTextIter::new(
-                    [self.chunks.get(j), self.chunks.get(j + 1)],
-                    HEX_WITH,
-                    line_file_start,
-                );
             }
+            self.reset_chunks(line_file_start);
+            // let n = (self.file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+            // let last_chunk_address = (n - CHUNK_NUM) * CHUNK_SIZE;
+            // //如果没有找到块 从新重读chunks
+            // //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
+            // let chunk_start = (line_file_start / CHUNK_SIZE * CHUNK_SIZE).min(last_chunk_address);
+            // self.read_chunks(chunk_start).unwrap();
         }
-        //如果没有找到块 从新重读chunks
-        //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
-        let chunk_start = line_file_start / CHUNK_SIZE * CHUNK_SIZE;
-        self.read_chunks(chunk_start).unwrap();
-        return HexTextIter::new(
-            [self.chunks.get(0), self.chunks.get(1)],
-            HEX_WITH,
-            line_file_start,
-        );
     }
 
     fn iter_u8<'a>(
@@ -1178,64 +1264,60 @@ impl Text for HexText {
             }
         }
         if let Some(j) = j {
+            self.chk_iter = self.chunks.get(j).unwrap().clone();
             return HexTextU8Iter::new(
                 self,
-                j,
                 line_file_start - self.chunks.get(j).unwrap().file_start,
             );
         }
-        //如果没有找到块 从新重读chunks
-        //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
+        // self.reset_chunks(line_file_start);
+        // let n = (self.file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        // let last_chunk_address = (n - CHUNK_NUM) * CHUNK_SIZE;
+        // //如果没有找到块 从新重读chunks
+        // //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
         let chunk_start = line_file_start / CHUNK_SIZE * CHUNK_SIZE;
-        self.read_chunks(chunk_start).unwrap();
-        return HexTextU8Iter::new(
-            self,
-            0,
-            line_file_start - self.chunks.get(0).unwrap().file_start,
-        );
+        let chk_iter = self.read_one_chunk(chunk_start).unwrap();
+        self.chk_iter = chk_iter;
+        return HexTextU8Iter::new(self, line_file_start - self.chk_iter.file_start);
     }
 }
 
 struct HexTextU8Iter<'a> {
     hex_text: &'a mut HexText,
-    chunk_index: usize,
+    //chunk_index: usize,
     i: usize,
 }
 
 impl<'a> HexTextU8Iter<'a> {
-    fn new(hex_text: &'a mut HexText, chunk_index: usize, i: usize) -> HexTextU8Iter<'a> {
-        HexTextU8Iter {
-            hex_text,
-            chunk_index: chunk_index,
-            i: i,
-        }
+    fn new(hex_text: &'a mut HexText, i: usize) -> HexTextU8Iter<'a> {
+        HexTextU8Iter { hex_text, i: i }
     }
 }
 
 impl<'a> Iterator for HexTextU8Iter<'a> {
     type Item = u8;
     fn next(&mut self) -> Option<Self::Item> {
-        let mut chunk_len = self.hex_text.chunks.len();
+        //let mut chunk_len = self.hex_text.chunks.len();
 
         loop {
             // 如果当前 chunk_index 无效，尝试加载更多或直接结束
-            if self.chunk_index >= chunk_len {
-                let seek = if chunk_len > 0 {
-                    let prev = &self.hex_text.chunks.get(chunk_len - 1)?;
-                    prev.file_end
-                } else {
-                    0
-                };
-                if seek >= self.hex_text.file_size {
-                    return None;
-                }
-                self.hex_text.read_next_chunk(seek).unwrap();
-                chunk_len = self.hex_text.chunks.len();
-                self.chunk_index = chunk_len - 1; // 重置到最后一个 chunk
-            }
+            // if self.chunk_index >= chunk_len {
+            //     let seek = if chunk_len > 0 {
+            //         let prev = &self.hex_text.chunks.get(chunk_len - 1)?;
+            //         prev.file_end
+            //     } else {
+            //         0
+            //     };
+            //     if seek >= self.hex_text.file_size {
+            //         return None;
+            //     }
+            //     self.hex_text.read_next_chunk(seek).unwrap();
+            //     chunk_len = self.hex_text.chunks.len();
+            //     self.chunk_index = chunk_len - 1; // 重置到最后一个 chunk
+            // }
 
             // 获取当前 chunk 并从中读取一字节
-            let chunk = &self.hex_text.chunks.get(self.chunk_index)?;
+            let chunk = &self.hex_text.chk_iter;
             let buffer = chunk.buffer.text(..);
             let (a, b) = buffer.as_slice();
             let total = a.len() + b.len();
@@ -1249,11 +1331,26 @@ impl<'a> Iterator for HexTextU8Iter<'a> {
                 self.i += 1;
                 return Some(byte);
             }
-
-            // 当前 chunk 读完，移动到下一个
-            self.chunk_index += 1;
+            if let Ok(chk) = self
+                .hex_text
+                .read_one_chunk(self.hex_text.chk_iter.file_end)
+            {
+                self.hex_text.chk_iter = chk;
+            } else {
+                return None; // 如果没有更多数据，返回 None
+            }
             self.i = 0;
         }
+    }
+}
+
+struct HexTextEmptyIter;
+
+impl Iterator for HexTextEmptyIter {
+    type Item = LineStr<'static>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        None
     }
 }
 
@@ -1283,17 +1380,11 @@ impl<'a> Iterator for HexTextIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         for (i, chunk) in self.hex_chunk.iter().enumerate() {
             if let Some(c) = chunk {
-                if self.line_file_start > c.file_end || self.line_file_start < c.file_start {
+                if self.line_file_start >= c.file_end || self.line_file_start < c.file_start {
                     continue;
                 }
                 let buffer = c.text(self.line_file_start..);
                 let line_start = self.line_file_start;
-                // log::debug!(
-                //     "next line_file_start: {} chunk.file_end: {} chunk.file_start: {}",
-                //     self.line_file_start,
-                //     c.file_end,
-                //     c.file_start
-                // );
                 //长度大于 buffer 说明当前chunk 不足以显示一行
                 if self.with > buffer.len() {
                     let len = buffer.len();
@@ -1429,7 +1520,21 @@ impl<'a> MmapTextIter<'a> {
     }
 }
 
+impl TextIndex for MmapText {
+    fn get_page_offset(&self, line_num: usize) -> PageOffset {
+        PageOffset::new()
+    }
+
+    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset) {
+        // MmapText 不支持分页偏移
+    }
+}
+
 impl Text for MmapText {
+    fn get_file_size(&self) -> usize {
+        self.mmap.len()
+    }
+
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
         todo!("Not implement text_from_sel for MmapText");
     }
@@ -1482,6 +1587,7 @@ impl Text for MmapText {
 
 pub(crate) struct GapText {
     lines: Vec<GapBuffer>, //每行使用 GapBuffer 存储
+    file_size: usize,      //文件大小
 }
 
 impl GapText {
@@ -1501,13 +1607,15 @@ impl GapText {
             }
 
             let mut gap_buffer = GapBuffer::new(buffer.len() + CHAR_GAP_SIZE);
-            log::debug!("buffer: len: {:?},{:?}", buffer.len(), buffer);
             gap_buffer.insert(0, &buffer);
             gap_buffers.push(gap_buffer);
             buffer.clear(); // 清空缓冲区，准备读取下一行
         }
 
-        Ok(GapText { lines: gap_buffers })
+        Ok(GapText {
+            lines: gap_buffers,
+            file_size: 0,
+        })
     }
 
     fn borrow_lines(&self) -> &Vec<GapBuffer> {
@@ -1567,7 +1675,21 @@ impl GapText {
     }
 }
 
+impl TextIndex for GapText {
+    fn get_page_offset(&self, line_num: usize) -> PageOffset {
+        PageOffset::new()
+    }
+
+    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset) {
+        // GapText 不支持分页偏移
+    }
+}
+
 impl Text for GapText {
+    fn get_file_size(&self) -> usize {
+        self.file_size
+    }
+
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
         todo!("Not implement text_from_sel for GapText");
     }
@@ -1703,17 +1825,17 @@ impl EditText for GapText {
     }
 }
 
-pub(crate) struct TextWarp<T: Text> {
+pub(crate) struct TextWarp<T: Text + TextIndex> {
     lines: UnsafeCell<T>,                               // 文本
     cache_lines: UnsafeCell<RingVec<CacheStr>>,         // 缓存行
     cache_line_meta: UnsafeCell<RingVec<EditLineMeta>>, // 缓存行
-    page_offset_list: UnsafeCell<Vec<PageOffset>>,      // 每页的偏移量
-    height: usize,                                      //最大行数
+    //page_offset_list: UnsafeCell<Vec<PageOffset>>,      // 每页的偏移量
+    height: usize, //最大行数
     with: usize,
     text_warp_type: TextWarpType,
 }
 
-impl<T: Text> TextWarp<T> {
+impl<T: Text + TextIndex> TextWarp<T> {
     pub(crate) fn new(
         lines: T,
         height: usize,
@@ -1724,11 +1846,11 @@ impl<T: Text> TextWarp<T> {
             lines: UnsafeCell::new(lines),
             cache_lines: UnsafeCell::new(RingVec::new(height)),
             cache_line_meta: UnsafeCell::new(RingVec::new(height)),
-            page_offset_list: UnsafeCell::new(vec![PageOffset {
-                line_index: 0,
-                line_offset: 0,
-                line_file_start: 0,
-            }]),
+            // page_offset_list: UnsafeCell::new(vec![PageOffset {
+            //     line_index: 0,
+            //     line_offset: 0,
+            //     line_file_start: 0,
+            // }]),
             height,
             with,
             text_warp_type: text_warp_type,
@@ -1743,13 +1865,13 @@ impl<T: Text> TextWarp<T> {
         unsafe { &mut *self.lines.get() }
     }
 
-    fn borrow_page_offset_list(&self) -> &Vec<PageOffset> {
-        unsafe { &*self.page_offset_list.get() }
-    }
+    // fn borrow_page_offset_list(&self) -> &Vec<PageOffset> {
+    //     unsafe { &*self.page_offset_list.get() }
+    // }
 
-    fn borrow_page_offset_list_mut(&self) -> &mut Vec<PageOffset> {
-        unsafe { &mut *self.page_offset_list.get() }
-    }
+    // fn borrow_page_offset_list_mut(&self) -> &mut Vec<PageOffset> {
+    //     unsafe { &mut *self.page_offset_list.get() }
+    // }
 
     fn borrow_cache_lines(&self) -> &RingVec<CacheStr> {
         unsafe { &*self.cache_lines.get() }
@@ -1771,6 +1893,10 @@ impl<T: Text> TextWarp<T> {
         self.borrow_lines().get_line_text_len(index, 0, 0)
     }
 
+    fn get_file_size(&self) -> usize {
+        self.borrow_lines().get_file_size()
+    }
+
     // 计算页码，等同于向上取整
     fn get_page_num(&self, num: usize) -> usize {
         (num + self.height - 1) / self.height
@@ -1784,13 +1910,23 @@ impl<T: Text> TextWarp<T> {
         (text_len as f64 / with as f64).ceil() as usize
     }
 
-    //从当前行开始获取后面n行
+    pub(crate) fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize> {
+        let hex_u8_iter = self.borrow_lines_mut().iter_u8(0, 0, line_file_start);
+        let bm = BoyerMoore::new(pattern);
+        let mut j = None;
+        for i in bm.stream(hex_u8_iter) {
+            j = Some(i);
+            break;
+        }
+        j
+    }
+
+    //从当前行开始获取前面n行
     pub(crate) fn get_pre_line<'a>(
         &'a self,
         meta: &EditLineMeta,
         line_count: usize,
     ) -> (Option<CacheStr>, EditLineMeta) {
-        // log::debug!("get_pre_line: {}", meta.get_line_num());
         assert!(meta.get_line_num() >= 1);
         if meta.get_line_num() == 1 {
             return (None, EditLineMeta::default());
@@ -1832,6 +1968,8 @@ impl<T: Text> TextWarp<T> {
             line_index: line_index,
             line_offset: line_end,
             line_file_start: line_file_start,
+            start_line_num: 0,
+            start_page_num: 0,
         };
         let mut s = LineData::empty();
         let mut m = EditLineMeta::default();
@@ -1927,19 +2065,22 @@ impl<T: Text> TextWarp<T> {
         F: FnMut(LineData<'a>, EditLineMeta),
     {
         assert!(line_num >= 1);
-        // 计算页码
-        let page_num = self.get_page_num(line_num);
-        // 计算页码
-        let mut index = (page_num - 1) / PAGE_GROUP;
-        let page_offset_list = self.borrow_page_offset_list();
-        let page_offset = if index >= page_offset_list.len() {
-            index = page_offset_list.len() - 1;
-            page_offset_list.last().unwrap()
-        } else {
-            &page_offset_list[index]
-        };
-        let start_page_num = index * PAGE_GROUP;
-        assert!(line_num >= start_page_num * self.height);
+        // // 计算页码
+        // let page_num = self.get_page_num(line_num);
+        // // 计算页码
+        // let mut index = (page_num - 1) / PAGE_GROUP;
+        // let page_offset_list = self.borrow_page_offset_list();
+        // let page_offset = if index >= page_offset_list.len() {
+        //     index = page_offset_list.len() - 1;
+        //     page_offset_list.last().unwrap()
+        // } else {
+        //     &page_offset_list[index]
+        // };
+        // let start_page_num = index * PAGE_GROUP;
+
+        let page_offset = self.borrow_lines().get_page_offset(line_num);
+
+        assert!(line_num >= page_offset.start_line_num);
         //跳过的行数
         let skip_line = line_num;
         // println!("skip_line:{}", skip_line);
@@ -1947,8 +2088,8 @@ impl<T: Text> TextWarp<T> {
         self.get_char_text_fn(
             &page_offset,
             line_count,
-            start_page_num * self.height,
-            start_page_num,
+            page_offset.start_line_num,
+            page_offset.start_page_num,
             skip_line,
             &mut f,
         );
@@ -1999,7 +2140,7 @@ impl<T: Text> TextWarp<T> {
                 line_offset,
                 self.with,
                 self.height,
-                self.borrow_page_offset_list_mut(),
+                self.borrow_lines_mut(),
                 &mut line_num,
                 line_count,
                 &mut page_num,
@@ -2014,13 +2155,13 @@ impl<T: Text> TextWarp<T> {
         }
     }
 
-    fn set_line_char_txt<'a, F>(
+    fn set_line_char_txt<'a, F, I: TextIndex>(
         line_str: LineStr<'a>,
         line_index: usize,
         line_start: usize,
         with: usize,
         height: usize,
-        page_offset_list: &mut Vec<PageOffset>,
+        text_index: &mut I,
         line_num: &mut usize,
         line_count: usize,
         page_num: &mut usize,
@@ -2056,16 +2197,28 @@ impl<T: Text> TextWarp<T> {
             if *line_num % height == 0 {
                 //到达一页
                 *page_num += 1; //页数加1
-                let m = *page_num / PAGE_GROUP;
-                let n = *page_num % PAGE_GROUP;
-                if n == 0 && m > page_offset_list.len() - 1 {
-                    //保存页数的偏移量
-                    page_offset_list.push(PageOffset {
+                                //let m = *page_num / PAGE_GROUP;
+                                // let n = *page_num % PAGE_GROUP;
+                text_index.set_page_offset(
+                    *page_num,
+                    PageOffset {
                         line_index: line_index + 1,
                         line_offset: 0,
                         line_file_start: line_str.line_file_end,
-                    });
-                }
+                        start_line_num: 0,
+                        start_page_num: 0,
+                    },
+                );
+                // if n == 0 && m > page_offset_list.len() - 1 {
+                //     //保存页数的偏移量
+                //     page_offset_list.push(PageOffset {
+                //         line_index: line_index + 1,
+                //         line_offset: 0,
+                //         line_file_start: line_str.line_file_end,
+                //         start_line_num: 0,
+                //         start_page_num: 0,
+                //     });
+                // }
             }
 
             if *cur_line_count >= line_count {
@@ -2083,7 +2236,7 @@ impl<T: Text> TextWarp<T> {
                     line_start,
                     with,
                     height,
-                    page_offset_list,
+                    text_index,
                     line_num,
                     line_count,
                     page_num,
@@ -2099,7 +2252,7 @@ impl<T: Text> TextWarp<T> {
                     line_start,
                     with,
                     height,
-                    page_offset_list,
+                    text_index,
                     line_num,
                     line_count,
                     page_num,
@@ -2111,13 +2264,13 @@ impl<T: Text> TextWarp<T> {
         }
     }
 
-    fn no_warp<'a, F>(
+    fn no_warp<'a, F, I: TextIndex>(
         line_str: LineStr<'a>,
         line_index: usize,
         line_start: usize,
         with: usize,
         height: usize,
-        page_offset_list: &mut Vec<PageOffset>,
+        text_index: &mut I,
         line_num: &mut usize,
         line_count: usize,
         page_num: &mut usize,
@@ -2150,29 +2303,37 @@ impl<T: Text> TextWarp<T> {
         if *line_num % height == 0 {
             //到达一页
             *page_num += 1; //页数加1
-            let m = *page_num / PAGE_GROUP;
-            let n = *page_num % PAGE_GROUP;
-            if n == 0 && m > page_offset_list.len() - 1 {
-                //保存页数的偏移量
-                page_offset_list.push(PageOffset {
+
+            text_index.set_page_offset(
+                *page_num,
+                PageOffset {
                     line_index,
                     line_offset: line_start + 0,
                     line_file_start: line_str.line_file_end,
-                });
-            }
+                    start_line_num: 0,
+                    start_page_num: 0,
+                },
+            );
+
+            // let m = *page_num / PAGE_GROUP;
+            // let n = *page_num % PAGE_GROUP;
+            // if n == 0 && m > page_offset_list.len() - 1 {
+            //     //保存页数的偏移量
+            //     page_offset_list.push();
+            // }
         }
         if *cur_line_count >= line_count {
             return;
         }
     }
 
-    fn sort_warp<'a, F>(
+    fn sort_warp<'a, F, I: TextIndex>(
         line_str: LineStr<'a>,
         line_index: usize,
         line_start: usize,
         with: usize,
         height: usize,
-        page_offset_list: &mut Vec<PageOffset>,
+        text_index: &mut I,
         line_num: &mut usize,
         line_count: usize,
         page_num: &mut usize,
@@ -2195,17 +2356,6 @@ impl<T: Text> TextWarp<T> {
             let ch_width = ch.width().unwrap_or(0);
             // let byte_size = byte_index - cur_byte_index;
             // cur_byte_index = byte_index;
-            log::debug!(
-                "ch: {} ,ch1: {:?} ch_width: {},line_offset:{},current_bytes:{},current_width:{},with:{},byte_index:{},u8:{:?}",
-                ch,
-                ch,
-                ch_width,
-                line_offset,
-                current_bytes,
-                current_width,
-                with,byte_index,
-                ch.to_string().into_bytes()
-            );
             //检查是否超过屏幕宽度
             if current_width + ch_width > with {
                 let end = (line_offset + current_bytes).min(line_txt.len());
@@ -2231,16 +2381,28 @@ impl<T: Text> TextWarp<T> {
                 if *line_num % height == 0 {
                     //到达一页
                     *page_num += 1; //页数加1
-                    let m = *page_num / PAGE_GROUP;
-                    let n = *page_num % PAGE_GROUP;
-                    if n == 0 && m > page_offset_list.len() - 1 {
-                        //保存页数的偏移量
-                        page_offset_list.push(PageOffset {
+                    text_index.set_page_offset(
+                        *page_num,
+                        PageOffset {
                             line_index,
                             line_offset: line_start + byte_index,
                             line_file_start: line_str.line_file_start,
-                        });
-                    }
+                            start_line_num: 0,
+                            start_page_num: 0,
+                        },
+                    );
+                    // let m = *page_num / PAGE_GROUP;
+                    // let n = *page_num % PAGE_GROUP;
+                    // if n == 0 && m > page_offset_list.len() - 1 {
+                    //     //保存页数的偏移量
+                    //     page_offset_list.push(PageOffset {
+                    //         line_index,
+                    //         line_offset: line_start + byte_index,
+                    //         line_file_start: line_str.line_file_start,
+                    //         start_line_num: 0,
+                    //         start_page_num: 0,
+                    //     });
+                    // }
                 }
                 if *cur_line_count >= line_count {
                     return;
@@ -2278,16 +2440,29 @@ impl<T: Text> TextWarp<T> {
             }
             if *line_num % height == 0 {
                 *page_num += 1; //页数加1
-                let m = *page_num / PAGE_GROUP;
-                let n = *page_num % PAGE_GROUP;
-                if n == 0 && m > page_offset_list.len() - 1 {
-                    //保存页数的偏移量
-                    page_offset_list.push(PageOffset {
+                text_index.set_page_offset(
+                    *page_num,
+                    PageOffset {
                         line_index: line_index + 1,
                         line_offset: 0,
                         line_file_start: line_str.line_file_end,
-                    });
-                }
+                        start_line_num: 0,
+                        start_page_num: 0,
+                    },
+                );
+
+                // let m = *page_num / PAGE_GROUP;
+                // let n = *page_num % PAGE_GROUP;
+                // if n == 0 && m > page_offset_list.len() - 1 {
+                //     //保存页数的偏移量
+                //     page_offset_list.push(PageOffset {
+                //         line_index: line_index + 1,
+                //         line_offset: 0,
+                //         line_file_start: line_str.line_file_end,
+                //         start_line_num: 0,
+                //         start_page_num: 0,
+                //     });
+                // }
             }
             if *cur_line_count >= line_count {
                 return;
@@ -2300,12 +2475,12 @@ impl<T: Text> TextWarp<T> {
     }
 }
 
-pub(crate) struct EditTextWarp<T: Text + EditText> {
+pub(crate) struct EditTextWarp<T: Text + TextIndex + EditText> {
     edit_text: TextWarp<T>,
 }
 
 #[inherit_methods(from = "self.edit_text")]
-impl<T: Text + EditText> EditTextWarp<T> {
+impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     pub(crate) fn new(
         lines: T,
         height: usize,
@@ -2354,8 +2529,9 @@ impl<T: Text + EditText> EditTextWarp<T> {
             .borrow_lines_mut()
             .insert(cursor_y, cursor_x, line_meta, c);
         //切断page_offset_list 索引
-        let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
-        unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
+        // todo
+        // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
+        // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
         Ok(())
@@ -2371,8 +2547,9 @@ impl<T: Text + EditText> EditTextWarp<T> {
         self.edit_text
             .borrow_lines_mut()
             .insert_newline(cursor_y, cursor_x, line_meta);
-        let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
-        unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
+        // todo
+        // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
+        // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
         Ok(())
@@ -2388,8 +2565,9 @@ impl<T: Text + EditText> EditTextWarp<T> {
         self.edit_text
             .borrow_lines_mut()
             .backspace(cursor_y, cursor_x, line_meta);
-        let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
-        unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
+        // todo
+        //let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
+        //unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
         Ok(())
@@ -2795,20 +2973,59 @@ struct PageOffset {
     line_index: usize,      //第多少行
     line_offset: usize,     //行在总行的起始位置
     line_file_start: usize, //这一行在整个文件的起始位置
+    start_line_num: usize,
+    start_page_num: usize, //这一行在第几页开始
+}
+
+impl PageOffset {
+    pub(crate) fn new() -> Self {
+        PageOffset {
+            line_index: 0,
+            line_offset: 0,
+            line_file_start: 0,
+            start_line_num: 0,
+            start_page_num: 0,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
 
-    use ratatui::text;
-
     use super::*;
-    use std::fs::File;
+    use crate::fuzzy::boyermoore::BoyerMoore;
+    use ratatui::text;
+    #[test]
+    fn text_hex_u8_iter() {
+        let mut hex_text = HexText::from_file_path("/root/20250704120009_481.jpg", 48).unwrap();
+        let hex_u8_iter = hex_text.iter_u8(0, 0, 0);
+        for (i, u8) in hex_u8_iter.enumerate() {
+            println!("u8: {:x},i: {}", u8, i);
+        }
+    }
+
+    #[test]
+    fn text_hex_u8_iter_search() {
+        let mut hex_text = HexText::from_file_path("/root/20250704120009_481.jpg", 48).unwrap();
+        // let hex_u8_iter = hex_text.iter_u8(0, 0, 0);
+        // let pattern: Vec<u8> = vec![0x27, 0x96, 0xA7];
+        // let bm = BoyerMoore::new(pattern.as_slice());
+        // for i in bm.stream(hex_u8_iter) {
+        //     println!("{}", i);
+        // }
+
+        let hex_u8_iter = hex_text.iter_u8(0, 0, 0);
+        let pattern = "46546767676713454464654";
+        let bm = BoyerMoore::new(pattern.as_bytes());
+        for i in bm.stream(hex_u8_iter) {
+            println!("{}", i);
+        }
+    }
 
     #[test]
     fn text_hex_get() {
         let hex_text = TextWarp::new(
-            HexText::from_file_path("/root/20250704120009_481.jpg").unwrap(),
+            HexText::from_file_path("/root/20250704120009_481.jpg", 48).unwrap(),
             48,
             0,
             TextWarpType::NoWrap,
@@ -2827,7 +3044,7 @@ mod tests {
 
     #[test]
     fn text_hex_sel() {
-        let mut hex = HexText::from_file_path("/root/20250704120009_481.jpg").unwrap();
+        let mut hex = HexText::from_file_path("/root/20250704120009_481.jpg", 48).unwrap();
 
         let sel = TextSelect::from_select(100, 1000);
         for s in hex.chunks.iter() {
@@ -2872,7 +3089,7 @@ mod tests {
 
     #[test]
     fn text_hex() {
-        let mut hex = HexText::from_file_path("/root/aa.txt").unwrap();
+        let mut hex = HexText::from_file_path("/root/aa.txt", 48).unwrap();
         println!("hex len: {:?}", hex.chunks.get(0).unwrap().buffer.text(..));
         let iter = hex.iter(0, 10, 0);
         for i in iter {
@@ -2893,37 +3110,37 @@ mod tests {
             println!("l: {:?},{:?}", l.as_str(), c.get(i));
         }
 
-        for p in text.borrow_page_offset_list().iter() {
-            println!("p:{:?}", p)
-        }
+        // for p in text.borrow_page_offset_list().iter() {
+        //     println!("p:{:?}", p)
+        // }
 
-        let (s, c) = text.get_next_line(c.last().unwrap(), 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(c.last().unwrap(), 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
 
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
-        let (s, c) = text.get_next_line(&c, 1);
-        println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
+        // let (s, c) = text.get_next_line(&c, 1);
+        // println!("s:{:?},c:{:?}", s.unwrap().as_str(), c);
     }
 
     #[test]

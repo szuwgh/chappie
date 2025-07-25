@@ -1,6 +1,5 @@
-use std::borrow::Cow;
-
 use half::f16;
+use std::ascii::escape_default;
 
 macro_rules! convert_be {
     ($data:expr, $t:ty) => {{
@@ -123,8 +122,14 @@ impl ByteView {
         convert!(&self.data, f64, self.endian)
     }
 
-    pub(crate) fn to_str(&self) -> Cow<str> {
-        String::from_utf8_lossy(&self.data)
+    pub(crate) fn to_str(&self) -> String {
+        let mut s = String::new();
+        for &b in &self.data {
+            for byte in escape_default(b) {
+                s.push(byte as char);
+            }
+        }
+        s
     }
 }
 #[cfg(test)]

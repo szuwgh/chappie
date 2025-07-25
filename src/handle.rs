@@ -1,4 +1,5 @@
 use crate::command::Command;
+use crate::command::FindValue;
 use crate::editor::EditLineMeta;
 use crate::editor::RingVec;
 use crate::editor::TextDisplay;
@@ -11,6 +12,7 @@ use crossterm::cursor;
 use crossterm::execute;
 use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::ExecutableCommand;
+use ratatui::symbols::line;
 use std::io;
 use std::path::Path;
 use std::process::exit;
@@ -523,6 +525,47 @@ impl HandleHex {
     pub(crate) fn new() -> Self {
         HandleHex {}
     }
+
+    fn jump_to_address(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        addr: usize,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        let addr = addr.min(td.get_file_size() - 1);
+        chap_tui
+            .back_linenum
+            .push(line_meta.get(0).unwrap().get_line_num());
+        let with = HEX_WITH;
+        let line_num = (addr / with) + 1;
+        chap_tui.cursor_x = addr % with;
+        chap_tui.cursor_y = 0;
+        chap_tui.txt_sel.set_pos(addr);
+        td.get_one_page(line_num)?;
+        Ok(())
+    }
+
+    fn find_jump(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+        seek_start: usize,
+        pattern: &[u8],
+    ) -> ChapResult<()> {
+        if pattern.is_empty() {
+            return Ok(());
+        }
+        let seek_start = seek_start + pattern.len();
+        if let Some(addr) = td.find(pattern, seek_start) {
+            self.jump_to_address(chap_tui, line_meta, addr + seek_start, td)?;
+            chap_tui
+                .txt_sel
+                .set_select(addr + seek_start, addr + seek_start + pattern.len() - 1);
+        }
+        Ok(())
+    }
 }
 
 impl Handle for HandleHex {
@@ -703,24 +746,36 @@ impl Handle for HandleHex {
                     td.get_one_page(line_num)?;
                 }
             }
+            Command::GTop => {
+                self.jump_to_address(chap_tui, line_meta, 0, td)?;
+            }
+            Command::GBottom => {
+                self.jump_to_address(chap_tui, line_meta, td.get_file_size(), td)?
+            }
             Command::SetEndian(endian) => {
                 chap_tui.set_endian(endian);
             }
             Command::Jump(addr) => {
-                chap_tui
-                    .back_linenum
-                    .push(line_meta.get(0).unwrap().get_line_num());
-                let with = HEX_WITH;
-                let line_num = (addr / with) + 1;
-                chap_tui.cursor_x = addr % with;
-                chap_tui.cursor_y = 0;
-                log::debug!("Jump to line number:{}, {}", addr, line_num);
-                chap_tui.txt_sel.set_pos(addr);
-                td.get_one_page(line_num)?;
+                self.jump_to_address(chap_tui, line_meta, addr, td)?;
             }
-            Command::Find(value) => {}
+            Command::Find(value) => {
+                let seek_start = line_meta
+                    .get(chap_tui.cursor_y)
+                    .unwrap()
+                    .get_line_file_start()
+                    + chap_tui.cursor_x;
+                match value {
+                    FindValue::Hex(pattern) => {
+                        self.find_jump(chap_tui, line_meta, td, seek_start, pattern.as_slice())?;
+                    }
+                    FindValue::Ascii(pattern) => {
+                        self.find_jump(chap_tui, line_meta, td, seek_start, pattern.as_bytes())?;
+                    }
+                }
+            }
             Command::Unknown(cmd) => {}
         }
+
         Ok(())
     }
 

@@ -225,6 +225,7 @@ dependencies = [
  "crossterm",
  "groq-api-rs",
  "half",
+ "hex",
  "inherit-methods-macro",
  "llmapi",
  "log",

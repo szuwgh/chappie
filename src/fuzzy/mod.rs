@@ -5,7 +5,7 @@ use bitap::{remove_overlapping, Bitap};
 use boyermoore::BoyerMoore;
 use smithwaterman::SmithWaterman;
 mod bitap;
-mod boyermoore;
+pub(crate) mod boyermoore;
 mod levenshtein;
 mod smithwaterman;
 #[derive(Debug)]

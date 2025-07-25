@@ -986,7 +986,7 @@ impl ChapTui {
                     twy,
                 )),
                 ChapMod::Hex => TextDisplay::Hex(TextWarp::new(
-                    HexText::from_file_path(&p)?,
+                    HexText::from_file_path(&p, self.tv.get_height() - 2)?,
                     self.tv.get_height() - 2,
                     self.tv.get_width(),
                     twy,
@@ -2287,7 +2287,6 @@ fn get_hex_content<'a>(
         spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
         lines.push(Line::from(spans));
     }
-
     let nav_text = Text::from(
         (0..height)
             .enumerate()
@@ -2297,6 +2296,9 @@ fn get_hex_content<'a>(
                 }
                 if i == 1 {
                     return Line::from(Span::raw(""));
+                }
+                if i - 2 >= line_meta.len() {
+                    return Line::raw(" ");
                 }
                 Line::from(Span::styled(
                     format!(

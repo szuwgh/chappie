@@ -145,6 +145,7 @@ impl<'a> Display for GapBytes<'a> {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct GapBuffer {
     buffer: Vec<u8>,
     gap_start: usize,
