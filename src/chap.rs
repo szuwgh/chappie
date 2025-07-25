@@ -1,4 +1,4 @@
-use crate::chatapi::LlmClient;
+//use crate::chatapi::LlmClient;
 use crate::cli::Cli;
 use crate::ChapResult;
 use crate::ChapTui;
@@ -47,7 +47,7 @@ impl Chappie {
         //         .with_show_download_progress(true)
         //         .with_cache_dir(PathBuf::from(LLM_MODEL_DIR)),
         // )?);
-        let llm_client = LlmClient::new(cli.get_llm(), cli.get_api_key(), cli.get_model())?;
+        // let llm_client = LlmClient::new(cli.get_llm(), cli.get_api_key(), cli.get_model())?;
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
         let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
         // let mut schema = Schema::with_vector(VectorEntry::new(

@@ -22,6 +22,8 @@ use crate::textwarp::LineMeta;
 use crate::textwarp::SimpleText;
 use crate::textwarp::SimpleTextEngine;
 use const_hex::Buffer;
+use crossterm::event::DisableFocusChange;
+use crossterm::event::DisableMouseCapture;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use crossterm::execute;
@@ -32,6 +34,7 @@ use crossterm::{
     event::{self, KeyCode},
     ExecutableCommand,
 };
+use ratatui::init;
 use ratatui::prelude::Backend;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
@@ -39,6 +42,7 @@ use ratatui::prelude::Direction;
 use ratatui::prelude::Layout;
 use ratatui::prelude::Position;
 use ratatui::prelude::Rect;
+use ratatui::restore;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -52,6 +56,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::fmt::format;
 use std::io;
+use std::io::stdout;
 use std::mem;
 use std::path::Path;
 use std::process::exit;
@@ -315,11 +320,12 @@ impl ChapTui {
         ui_type: UIType,
         que: bool,
     ) -> ChapResult<ChapTui> {
-        enable_raw_mode()?;
-        io::stdout().execute(cursor::Show)?;
+        // enable_raw_mode()?;
+        // io::stdout().execute(cursor::Show)?;
         let (_, row) = cursor::position()?; // (x, y) 返回的是光标的 (列号, 行号)
-        let backend = CrosstermBackend::new(std::io::stdout());
-        let mut terminal: Terminal<CrosstermBackend<io::Stdout>> = Terminal::new(backend)?;
+                                            //let backend = CrosstermBackend::new(std::io::stdout());
+        let mut terminal: Terminal<CrosstermBackend<io::Stdout>> = init();
+
         let size = terminal.size()?;
         let (tui_height, tui_width, start_row) = match ui_type {
             UIType::Full => {

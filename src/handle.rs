@@ -8,12 +8,7 @@ use crate::editor::TextWarpType;
 use crate::editor::HEX_WITH;
 use crate::error::ChapResult;
 use crate::ChapTui;
-use crossterm::cursor;
-use crossterm::execute;
-use crossterm::terminal::LeaveAlternateScreen;
-use crossterm::ExecutableCommand;
-use ratatui::symbols::line;
-use std::io;
+use ratatui::restore;
 use std::path::Path;
 use std::process::exit;
 pub(crate) enum HandleImpl {
@@ -154,12 +149,7 @@ pub(crate) trait Handle {
     }
 
     fn handle_ctrl_c(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
-        crossterm::terminal::disable_raw_mode()?;
-        execute!(
-            chap_tui.terminal.backend_mut(),
-            LeaveAlternateScreen // 离开备用屏幕
-        )?;
-        io::stdout().execute(cursor::Show)?;
+        restore();
         exit(0);
     }
 
