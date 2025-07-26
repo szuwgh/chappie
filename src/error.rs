@@ -12,6 +12,8 @@ pub enum ChapError {
     UnexpectIO(IOError),
     #[error("Please enter a file name, example: `chap file.txt`")]
     NoFilePath,
+    #[error("File not found: {0}")]
+    FileNotFound(String),
     //#[error("vectorbase error: {0}")]
     //VectorBaseError(GyError),
     #[error("LLM api not registered: {0}")]

@@ -36,6 +36,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }));
     let cli = Cli::parse();
     let filename = cli.get_filepath()?;
+    //校验文件是否存在
+    if !std::path::Path::new(filename).exists() {
+        return Err(error::ChapError::FileNotFound(filename.to_string()).into());
+    }
     if atty::is(atty::Stream::Stdin) {
         if let Ok(mut chap) = Chappie::new(&cli) {
             let _ = chap.run(filename);
