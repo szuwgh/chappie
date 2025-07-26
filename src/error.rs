@@ -10,7 +10,7 @@ pub enum ChapError {
     Unexpected(String),
     #[error("Unexpected IO: {0}")]
     UnexpectIO(IOError),
-    #[error("Please enter a file name: ex `chap file.txt`")]
+    #[error("Please enter a file name, example: `chap file.txt`")]
     NoFilePath,
     //#[error("vectorbase error: {0}")]
     //VectorBaseError(GyError),

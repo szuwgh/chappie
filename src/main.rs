@@ -25,13 +25,21 @@ use error::ChapResult;
 use ratatui::init;
 use ratatui::restore;
 use std::error::Error;
+use std::panic;
 use tui::ChapTui;
 fn main() -> Result<(), Box<dyn Error>> {
-    color_eyre::install()?; // 安装 color_eyre 错误处理
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        // 你的自定义 panic 处理逻辑
+        restore();
+        original_hook(info);
+    }));
     let cli = Cli::parse();
+    let filename = cli.get_filepath()?;
     if atty::is(atty::Stream::Stdin) {
-        let mut chap = Chappie::new(&cli)?;
-        chap.run(cli.get_filepath()?)?;
+        if let Ok(mut chap) = Chappie::new(&cli) {
+            let _ = chap.run(filename);
+        }
     }
     restore();
     Ok(())
