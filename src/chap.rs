@@ -42,30 +42,8 @@ impl Chappie {
             Config::default(),                                           // 使用默认日志配置
             File::create(PathBuf::from(CHAP_LOG_DIR).join("chap.log"))?, // 创建日志文件
         )?;
-        // let embed = Arc::new(TextEmbedding::try_new(
-        //     InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-        //         .with_show_download_progress(true)
-        //         .with_cache_dir(PathBuf::from(LLM_MODEL_DIR)),
-        // )?);
-        // let llm_client = LlmClient::new(cli.get_llm(), cli.get_api_key(), cli.get_model())?;
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
         let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
-        // let mut schema = Schema::with_vector(VectorEntry::new(
-        //     "vector",
-        //     AnnType::HNSW,
-        //     TensorEntry::new(1, [384], VectorType::F32),
-        // ));
-        // schema.add_field(FieldEntry::str("prompt"));
-        // schema.add_field(FieldEntry::str("answer"));
-        // let config = ConfigBuilder::default()
-        //     .data_path(PathBuf::from(CHAP_VB_DIR))
-        //     .collect_name("chap")
-        //     .build();
-        // let vdb = if cli.get_vb() {
-        //     Some(Collection::new(schema.clone(), config)?)
-        // } else {
-        //     None
-        // };
         let chap_ui = ChapTui::new(
             cli.get_chap_mod(),
             prompt_tx,

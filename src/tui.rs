@@ -365,11 +365,12 @@ impl ChapTui {
         let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
-
+        let hex_with = 100;
+        let p = ((hex_with as f32 / tui_width as f32) * 100.0) as u16;
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(65), Constraint::Percentage(35)].as_ref())
+            .constraints([Constraint::Percentage(p), Constraint::Percentage(100 - p)].as_ref())
             .split(rect);
 
         let (nav_chk, tv_chk, inp_title_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
@@ -979,18 +980,24 @@ impl ChapTui {
         loop {
             let twy = TextWarpType::NoWrap;
             let mut td: TextDisplay = match self.chap_mod {
-                ChapMod::Edit => TextDisplay::Edit(EditTextWarp::new(
-                    GapText::from_file_path(&p)?,
-                    self.tv.get_height(),
-                    self.tv.get_width(),
-                    twy,
-                )),
-                ChapMod::Text => TextDisplay::Text(TextWarp::new(
-                    MmapText::from_file_path(&p)?,
-                    self.tv.get_height(),
-                    self.tv.get_width(),
-                    twy,
-                )),
+                ChapMod::Edit => {
+                    return Ok(());
+                    TextDisplay::Edit(EditTextWarp::new(
+                        GapText::from_file_path(&p)?,
+                        self.tv.get_height(),
+                        self.tv.get_width(),
+                        twy,
+                    ))
+                }
+                ChapMod::Text => {
+                    return Ok(());
+                    TextDisplay::Text(TextWarp::new(
+                        MmapText::from_file_path(&p)?,
+                        self.tv.get_height(),
+                        self.tv.get_width(),
+                        twy,
+                    ))
+                }
                 ChapMod::Hex => TextDisplay::Hex(TextWarp::new(
                     HexText::from_file_path(&p, self.tv.get_height() - 2)?,
                     self.tv.get_height() - 2,
@@ -1001,7 +1008,6 @@ impl ChapTui {
                     todo!()
                 }
             };
-            log::info!("TextDisplay height: {:?}", self.tv.get_height() - 2);
             let hand = match self.chap_mod {
                 ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
                 ChapMod::Text => todo!(),

@@ -95,7 +95,7 @@ impl Cli {
         } else if self.vector {
             return ChapMod::Vector;
         } else {
-            return ChapMod::Text;
+            return ChapMod::Hex;
         }
     }
 }
