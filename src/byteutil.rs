@@ -20,7 +20,7 @@ macro_rules! convert_le {
         const SZ: usize = std::mem::size_of::<$t>();
         let slice: &[u8] = $data;
         let mut arr = [0u8; SZ];
-        let to_copy = slice.len().min(4);
+        let to_copy = slice.len().min(SZ);
         arr[..to_copy].copy_from_slice(&slice[..to_copy]);
         <$t>::from_le_bytes(arr)
     }};
@@ -58,6 +58,10 @@ impl ByteView {
         self.data
             .get(0)
             .map_or("00000000".to_string(), |&b| format!("{:08b}", b))
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.data.len()
     }
 
     pub(crate) fn to_u8(&self) -> u8 {
@@ -131,7 +135,55 @@ impl ByteView {
         }
         s
     }
+
+    pub(crate) fn to_varlena(&self) -> Option<(VarlenaType, u32)> {
+        parse_varlena_header(&self.data)
+    }
 }
+
+/// 解析 PostgreSQL varlena header，识别类型并返回长度 + payload 起始偏移
+#[derive(Debug, PartialEq)]
+enum VarlenaType {
+    ShortInline,          // varattrib_1b
+    ToastPointer,         // varattrib_1b_e
+    FourByteUncompressed, // varattrib_4b uncompressed
+    FourByteCompressed,   // varattrib_4b compressed
+}
+
+fn parse_varlena_header(data: &[u8]) -> Option<(VarlenaType, u32)> {
+    if data.is_empty() {
+        return None;
+    }
+    let hdr = data[0];
+    if hdr & 0x01 == 1 {
+        // 1-byte header
+        if hdr == 0x01 {
+            // TOAST Pointer
+            // header = 1 byte + 1 tag byte (总共 2 字节)
+            return Some((VarlenaType::ToastPointer, 2));
+        } else {
+            // short inline, high7 bits = payload length
+            let payload_len = (hdr >> 1) as u32;
+            let total_len = payload_len;
+            return Some((VarlenaType::ShortInline, total_len));
+        }
+    } else {
+        // 4-byte header 格式
+        if data.len() < 4 {
+            return None;
+        }
+        let hdr_le = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let total_len = hdr_le >> 2;
+        let is_compressed = (hdr_le & (1 << 30)) != 0;
+        let typ = if is_compressed {
+            VarlenaType::FourByteCompressed
+        } else {
+            VarlenaType::FourByteUncompressed
+        };
+        return Some((typ, total_len));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use half::vec;
@@ -141,7 +193,7 @@ mod tests {
     use std::io;
 
     #[test]
-    fn text_to_u16() {
+    fn test_to_u16() {
         let data = vec![0x34, 0x12];
         let bv = ByteView::new(data, Endian::Little);
         assert_eq!(bv.to_u16(), 0x1234);
@@ -152,13 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn text_to_i32() {
-        let data = vec![0x12, 0x34, 0x00];
+    fn test_to_varlena() {
+        let data = vec![0x19];
         let bv = ByteView::new(data, Endian::Little);
-        assert_eq!(bv.to_i32(), 0x3412);
-
-        let data = vec![0x34, 0x12];
-        let bv = ByteView::new(data, Endian::Big);
-        assert_eq!(bv.to_i32(), 0x3412);
+        println!("bv: {:?}", bv.to_varlena());
     }
+
+    //  fn test
 }

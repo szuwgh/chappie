@@ -12,6 +12,7 @@ mod chap;
 mod cli;
 mod command;
 mod editor;
+mod function;
 mod gap_buffer;
 mod handle;
 mod textwarp;
@@ -27,12 +28,6 @@ use error::ChapResult;
 use std::error::Error;
 use tui::ChapTui;
 fn main() -> Result<(), Box<dyn Error>> {
-    //let original_hook = panic::take_hook();
-    // panic::set_hook(Box::new(move |info| {
-    //     // 你的自定义 panic 处理逻辑
-    //     restore();
-    //     original_hook(info);
-    // }));
     let cli = Cli::parse();
     let filename = cli.get_filepath()?;
     //校验文件是否存在

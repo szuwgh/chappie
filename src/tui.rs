@@ -19,51 +19,36 @@ use crate::handle::HandleEdit;
 use crate::handle::HandleHex;
 use crate::handle::HandleImpl;
 use crate::textwarp::LineMeta;
-use crate::textwarp::SimpleText;
-use crate::textwarp::SimpleTextEngine;
 use const_hex::Buffer;
-use crossterm::event::DisableFocusChange;
-use crossterm::event::DisableMouseCapture;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use crossterm::execute;
-use crossterm::terminal::enable_raw_mode;
 use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::{
-    cursor::{self, MoveTo},
+    cursor,
     event::{self, KeyCode},
     ExecutableCommand,
 };
 use ratatui::init;
-use ratatui::prelude::Backend;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::prelude::Direction;
 use ratatui::prelude::Layout;
-use ratatui::prelude::Position;
 use ratatui::prelude::Rect;
-use ratatui::restore;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use ratatui::symbols::line;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Block;
-use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
-use std::fmt::format;
 use std::io;
-use std::io::stdout;
 use std::mem;
 use std::path::Path;
 use std::process::exit;
-use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::Duration;
-use unicode_width::UnicodeWidthStr;
 //use vectorbase::collection::Collection;
 
 pub(crate) enum ChapMod {
@@ -454,7 +439,7 @@ impl ChapTui {
             offset: 0,
             start_line_num: 0,
             is_last_line: false,
-            endian: Endian::Big, // 默认字节序为小端
+            endian: Endian::Little, // 默认字节序为小端
         })
     }
 
@@ -500,7 +485,7 @@ impl ChapTui {
                     .style(Style::default().fg(Color::White));
                 f.render_widget(assist_para, self.assist_tv.get_rect());
 
-                let input_title_box = Paragraph::new(Text::raw(" >:"))
+                let input_title_box = Paragraph::new(Text::raw(" >: "))
                     .block(Block::default())
                     .style(Style::default().fg(Color::White)); // 设置输入框样式
                 f.render_widget(input_title_box, self.cmd_title);
@@ -1047,10 +1032,10 @@ impl ChapTui {
                             (KeyCode::Esc, _) => {
                                 hand.handle_esc(self)?;
                             }
-                            (KeyCode::Right, KeyModifiers::SHIFT) => {
+                            (KeyCode::Right, KeyModifiers::CONTROL) => {
                                 hand.handle_shift_right(self, &line_meta, &td)?;
                             }
-                            (KeyCode::Left, KeyModifiers::SHIFT) => {
+                            (KeyCode::Left, KeyModifiers::CONTROL) => {
                                 hand.handle_shift_left(self, &line_meta, &td)?;
                             }
                             (KeyCode::Up, _) => {
@@ -1995,6 +1980,9 @@ fn format_data_inspector<T: std::fmt::Display>(data: T) -> String {
 static FIELDS: &[(&str, ParserFn)] = &[
     ("| Binary (8bit)      | ", |bv| {
         format_data_inspector(bv.to_binary_8bit())
+    }),
+    ("| Binary Len         | ", |bv| {
+        format_data_inspector(bv.len())
     }),
     ("| uint8_t            | ", |bv| {
         format_data_inspector(bv.to_u8())

@@ -3007,8 +3007,25 @@ mod tests {
     use super::*;
     use crate::fuzzy::boyermoore::BoyerMoore;
     use ratatui::text;
+
     #[test]
-    fn text_hex_u8_iter() {
+    fn test_item_parser() {
+        let word: u32 = 0x005A9F10;
+
+        // lp_len 是最低 15 位
+        let lp_len = (word & 0x7FFF) as u16;
+        // lp_flags 接着的 2 位
+        let lp_flags = ((word >> 15) & 0x3) as u8;
+        // lp_off 再上面的 15 位
+        let lp_off = ((word >> 17) & 0x7FFF) as u16;
+        println!(
+            "lp_len: {}, lp_flags: {}, lp_off: {}",
+            lp_len, lp_flags, lp_off
+        );
+    }
+
+    #[test]
+    fn test_hex_u8_iter() {
         let mut hex_text = HexText::from_file_path("/root/20250704120009_481.jpg", 48).unwrap();
         let hex_u8_iter = hex_text.iter_u8(0, 0, 0);
         for (i, u8) in hex_u8_iter.enumerate() {
@@ -3017,7 +3034,7 @@ mod tests {
     }
 
     #[test]
-    fn text_hex_u8_iter_search() {
+    fn test_hex_u8_iter_search() {
         let mut hex_text = HexText::from_file_path("/root/20250704120009_481.jpg", 48).unwrap();
         // let hex_u8_iter = hex_text.iter_u8(0, 0, 0);
         // let pattern: Vec<u8> = vec![0x27, 0x96, 0xA7];

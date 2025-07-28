@@ -780,7 +780,6 @@ impl Handle for HandleHex {
             }
             Command::Find(value) => {
                 if line_meta.is_empty() {
-                    //  chap_tui.cmd_inp.push_str("No data to search");
                     return Ok(());
                 }
                 let seek_start = line_meta
@@ -870,6 +869,7 @@ impl Handle for HandleHex {
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
         }
+        
         let pos = line_meta
             .get(chap_tui.cursor_y)
             .unwrap()
