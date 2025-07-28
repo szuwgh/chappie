@@ -1,4 +1,3 @@
-//use crate::chatapi::LlmClient;
 use crate::cli::Cli;
 use crate::ChapResult;
 use crate::ChapTui;
@@ -7,13 +6,12 @@ use simplelog::*;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
-use std::path::PathBuf;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 
-const LLM_MODEL_DIR: &'static str = "/etc/chappie/model";
-const CHAP_VB_DIR: &'static str = "/etc/chappie/data";
-const CHAP_LOG_DIR: &'static str = "/var/log/chap";
+// const LLM_MODEL_DIR: &'static str = "~/.chap/model";
+// const CHAP_VB_DIR: &'static str = "~/.chap/data";
+// const CHAP_LOG_DIR: &'static str = "~/.chap/log";
 
 // 单例的 Tokio runtime
 pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
@@ -28,20 +26,22 @@ pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 //app
 pub(crate) struct Chappie {
     tui: ChapTui,
-    //vdb: Option<Collection>,
 }
 //
 impl Chappie {
-    pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
-        fs::create_dir_all(LLM_MODEL_DIR)?;
-        fs::create_dir_all(CHAP_VB_DIR)?;
-        fs::create_dir_all(CHAP_LOG_DIR)?;
+    pub(crate) fn init(&self) -> ChapResult<()> {
+        let home = dirs::home_dir().expect("Failed to get home directory");
+        let chap_log_dir = home.join(".chap/log");
+        fs::create_dir_all(&chap_log_dir)?;
         // 配置日志输出到文件
         WriteLogger::init(
-            LevelFilter::Debug,                                          // 设置日志级别
-            Config::default(),                                           // 使用默认日志配置
-            File::create(PathBuf::from(CHAP_LOG_DIR).join("chap.log"))?, // 创建日志文件
+            LevelFilter::Debug,                           // 设置日志级别
+            Config::default(),                            // 使用默认日志配置
+            File::create(chap_log_dir.join("chap.log"))?, // 创建日志文件
         )?;
+        Ok(())
+    }
+    pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
         let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
         let chap_ui = ChapTui::new(
@@ -56,6 +56,7 @@ impl Chappie {
     }
 
     pub(crate) fn run<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        self.init()?;
         RUNTIME.block_on(async move { self.tui.render(p).await })
     }
 }

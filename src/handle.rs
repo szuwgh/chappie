@@ -7,8 +7,14 @@ use crate::editor::TextOper;
 use crate::editor::TextWarpType;
 use crate::editor::HEX_WITH;
 use crate::error::ChapResult;
+use crate::execute;
 use crate::ChapTui;
+use crossterm::cursor::Show;
+
 use ratatui::restore;
+
+use std::error::Error;
+use std::io::stdout;
 use std::path::Path;
 use std::process::exit;
 pub(crate) enum HandleImpl {
@@ -139,6 +145,15 @@ impl Handle for HandleImpl {
     }
 }
 
+pub(crate) fn tui_retore() -> ChapResult<()> {
+    restore();
+    execute!(
+        stdout(),
+        Show // 显示光标
+    )?;
+    Ok(())
+}
+
 pub(crate) trait Handle {
     fn handle_esc(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
         chap_tui.cmd_inp.clear();
@@ -149,7 +164,7 @@ pub(crate) trait Handle {
     }
 
     fn handle_ctrl_c(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
-        restore();
+        tui_retore()?;
         exit(0);
     }
 
@@ -523,6 +538,9 @@ impl HandleHex {
         addr: usize,
         td: &TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         let addr = addr.min(td.get_file_size() - 1);
         chap_tui
             .back_linenum
@@ -574,6 +592,9 @@ impl Handle for HandleHex {
         mut line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         if chap_tui.cursor_y == 0 {
             //滚动上一行
             td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
@@ -610,6 +631,9 @@ impl Handle for HandleHex {
         mut line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         if chap_tui.cursor_y < line_meta.len().saturating_sub(1) {
             chap_tui.cursor_y += 1;
         } else {
@@ -647,6 +671,9 @@ impl Handle for HandleHex {
         mut line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         if chap_tui.cursor_x == 0 {
             // 这个判断说明当前行已经读完了
             if line_meta
@@ -695,6 +722,9 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         if chap_tui.cursor_x
             < line_meta
                 .get(chap_tui.cursor_y)
@@ -749,6 +779,10 @@ impl Handle for HandleHex {
                 self.jump_to_address(chap_tui, line_meta, addr, td)?;
             }
             Command::Find(value) => {
+                if line_meta.is_empty() {
+                    //  chap_tui.cmd_inp.push_str("No data to search");
+                    return Ok(());
+                }
                 let seek_start = line_meta
                     .get(chap_tui.cursor_y)
                     .unwrap()
@@ -775,6 +809,9 @@ impl Handle for HandleHex {
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         if chap_tui.cursor_x
             < line_meta
                 .get(chap_tui.cursor_y)
@@ -809,6 +846,9 @@ impl Handle for HandleHex {
         line_meta: &RingVec<EditLineMeta>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
         if chap_tui.cursor_x == 0 {
             // 这个判断说明当前行已经读完了
             if line_meta

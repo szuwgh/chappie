@@ -58,6 +58,9 @@ num_cpus = "1.16.0"
 half = "2.6.0"
 hex = "0.4.3"
 color-eyre = "0.6.5"
+dirs = "5.0"
+
+
 #ask_gemini = {path = "rust-lib/ask_gemini", version = "0.1.4"}  
 #llmapi = {path = "crates/llmapi", version = "0.0.1"}  
 #groq-api-rs = "0.2.0"

@@ -309,6 +309,10 @@ impl<T> RingVec<T> {
         }
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+
     //删除第最后元素 并返回这个元素
     pub(crate) fn remove_last(&mut self) -> Option<T> {
         self.remove(self.cache.len() - 1)
@@ -878,7 +882,15 @@ impl HexText {
             });
             bytes_start += bytes_read;
         }
-        let chk_iter = chunks.get(0).unwrap().clone();
+        let chk_iter = chunks
+            .get(0)
+            .unwrap_or(&Chunk {
+                buffer: GapBuffer::new(0),
+                file_start: 0,
+                file_end: 0,
+                is_modified: false,
+            })
+            .clone();
         Ok(HexText {
             chunks: chunks,
             chk_iter: chk_iter,
