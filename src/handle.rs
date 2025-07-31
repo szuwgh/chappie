@@ -1,3 +1,4 @@
+use crate::byteutil::ByteView;
 use crate::command::Command;
 use crate::command::FindValue;
 use crate::editor::EditLineMeta;
@@ -8,13 +9,14 @@ use crate::editor::TextWarpType;
 use crate::editor::HEX_WITH;
 use crate::error::ChapResult;
 use crate::execute;
+use crate::function::format_function_list;
+use crate::tui::TextSelect;
 use crate::ChapTui;
 use crossterm::cursor::Show;
-
 use ratatui::restore;
-
-use std::error::Error;
+use std::fs::File;
 use std::io::stdout;
+use std::io::Write;
 use std::path::Path;
 use std::process::exit;
 pub(crate) enum HandleImpl {
@@ -44,6 +46,30 @@ impl Handle for HandleImpl {
         match self {
             HandleImpl::Edit(h) => h.handle_up(chap_tui, line_meta, td),
             HandleImpl::Hex(h) => h.handle_up(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_shift_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_shift_up(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_shift_up(chap_tui, line_meta, td),
+        }
+    }
+
+    fn handle_shift_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_shift_down(chap_tui, line_meta, td),
+            HandleImpl::Hex(h) => h.handle_shift_down(chap_tui, line_meta, td),
         }
     }
 
@@ -157,8 +183,8 @@ pub(crate) fn tui_retore() -> ChapResult<()> {
 pub(crate) trait Handle {
     fn handle_esc(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
         chap_tui.cmd_inp.clear();
-        chap_tui.assist_inp.clear();
         chap_tui.navi.clear();
+        chap_tui.assist_tv2_data.clear();
         chap_tui.txt_sel.reset_to_start();
         Ok(())
     }
@@ -176,6 +202,20 @@ pub(crate) trait Handle {
     ) -> ChapResult<()>;
 
     fn handle_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_shift_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()>;
+
+    fn handle_shift_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &'a RingVec<EditLineMeta>,
@@ -505,6 +545,24 @@ impl Handle for HandleEdit {
         Ok(())
     }
 
+    fn handle_shift_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        Ok(())
+    }
+
+    fn handle_shift_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        Ok(())
+    }
+
     fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
@@ -796,9 +854,144 @@ impl Handle for HandleHex {
                     }
                 }
             }
+            Command::Cut(c) => {
+                let seek_start = line_meta
+                    .get(chap_tui.cursor_y)
+                    .unwrap()
+                    .get_line_file_start()
+                    + chap_tui.cursor_x;
+                let bytes = td.get_text_from_sel(&TextSelect::from_select(
+                    seek_start,
+                    seek_start + c.get_count(),
+                ));
+                // 新建一个文件 把bytes 保存到文件
+                let mut file = File::create(c.get_filepath())?;
+                // 写入字节数组
+                chap_tui.cmd_inp.clear();
+                if let Ok(_) = file.write_all(&bytes) {
+                    chap_tui.cmd_inp.push_str("save file success");
+                } else {
+                    chap_tui.cmd_inp.push_str("save file failed");
+                }
+            }
+
+            Command::CutSel(c) => {
+                let bytes =
+                    td.get_text_from_sel(&TextSelect::from_select(c.get_start(), c.get_end()));
+                // 新建一个文件 把bytes 保存到文件
+                let mut file = File::create(c.get_filepath())?;
+                // 写入字节数组
+                chap_tui.cmd_inp.clear();
+                if let Ok(_) = file.write_all(&bytes) {
+                    chap_tui.cmd_inp.push_str("save file success");
+                } else {
+                    chap_tui.cmd_inp.push_str("save file failed");
+                }
+            }
+            Command::Call(function) => {
+                let b = td.get_text_from_sel(&chap_tui.txt_sel);
+                let a = function.call(ByteView::new(b, chap_tui.endian.clone()));
+                chap_tui.assist_tv2_data = a;
+            }
+            Command::ListFunc => {
+                chap_tui.assist_tv2_data = format_function_list();
+            }
             Command::Unknown(cmd) => {}
         }
 
+        Ok(())
+    }
+
+    fn handle_shift_up<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
+        if chap_tui.cursor_y == 0 {
+            //滚动上一行
+            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+            line_meta = td.get_current_line_meta()?;
+        }
+        chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+        if chap_tui.cursor_x
+            >= line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1)
+        {
+            chap_tui.cursor_x = line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1);
+        };
+
+        // chap_tui.txt_sel.set_pos(
+        //     line_meta
+        //         .get(chap_tui.cursor_y)
+        //         .unwrap()
+        //         .get_line_file_start()
+        //         + chap_tui.cursor_x,
+        // );
+
+        let pos = line_meta
+            .get(chap_tui.cursor_y)
+            .unwrap()
+            .get_line_file_start()
+            + chap_tui.cursor_x;
+        if pos < chap_tui.txt_sel.get_start() {
+            chap_tui.txt_sel.set_start(pos);
+        } else {
+            chap_tui.txt_sel.set_end(pos);
+        }
+        Ok(())
+    }
+
+    fn handle_shift_down<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        if line_meta.is_empty() {
+            return Ok(());
+        }
+        if chap_tui.cursor_y < line_meta.len().saturating_sub(1) {
+            chap_tui.cursor_y += 1;
+        } else {
+            //滚动下一行
+            td.scroll_next_one_line(line_meta.last().unwrap())?;
+            line_meta = td.get_current_line_meta()?;
+        }
+        if chap_tui.cursor_x
+            >= line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1)
+        {
+            chap_tui.cursor_x = line_meta
+                .get(chap_tui.cursor_y)
+                .unwrap()
+                .get_txt_len()
+                .saturating_sub(1);
+        };
+
+        let pos = line_meta
+            .get(chap_tui.cursor_y)
+            .unwrap()
+            .get_line_file_start()
+            + chap_tui.cursor_x;
+        if pos > chap_tui.txt_sel.get_end() {
+            chap_tui.txt_sel.set_end(pos);
+        } else {
+            chap_tui.txt_sel.set_start(pos);
+        }
         Ok(())
     }
 
@@ -869,7 +1062,7 @@ impl Handle for HandleHex {
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
         }
-        
+
         let pos = line_meta
             .get(chap_tui.cursor_y)
             .unwrap()

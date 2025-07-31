@@ -15,6 +15,7 @@ mod editor;
 mod function;
 mod gap_buffer;
 mod handle;
+mod pg;
 mod textwarp;
 mod tui;
 mod util;

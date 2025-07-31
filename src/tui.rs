@@ -108,8 +108,8 @@ pub(crate) struct ChapTui {
     pub(crate) tv: TextView,
     pub(crate) cmd_title: Rect,
     pub(crate) cmd_inp: CmdInput,
-    pub(crate) assist_tv: TextView,
-    pub(crate) assist_inp: ChatInput,
+    pub(crate) assist_tv1: TextView,
+    pub(crate) assist_tv2: TextView,
     // focus: Focus,
     // prompt_tx: mpsc::Sender<String>,
     // start_row: u16,
@@ -124,6 +124,7 @@ pub(crate) struct ChapTui {
     pub(crate) start_line_num: usize,    // 起始行号
     pub(crate) is_last_line: bool,       // 是否是最后一行
     pub(crate) endian: Endian,           // 字节序
+    pub(crate) assist_tv2_data: String,
 }
 
 // 文本编辑器大文件浏览 窗口
@@ -346,7 +347,7 @@ impl ChapTui {
         let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
-        let hex_with = 100;
+        let hex_with = 82;
         let p = ((hex_with as f32 / tui_width as f32) * 100.0) as u16;
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
@@ -354,7 +355,7 @@ impl ChapTui {
             .constraints([Constraint::Percentage(p), Constraint::Percentage(100 - p)].as_ref())
             .split(rect);
 
-        let (nav_chk, tv_chk, inp_title_chk, seach_chk, assist_tv_chk, assist_inp_chk) = {
+        let (nav_chk, tv_chk, inp_title_chk, seach_chk, assist_tv_chk1, assist_tv_chk2) = {
             //文本框和输入框
             let left_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -364,7 +365,7 @@ impl ChapTui {
             //LLM聊天和输入框
             let right_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(2)].as_ref())
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                 .split(chunks[1]); // chunks[1] 是左侧区域
 
             //导航栏和文本框
@@ -404,16 +405,23 @@ impl ChapTui {
 
         let cmd_inp = CmdInput::new(seach_chk);
 
-        let assist_tv = TextView {
+        let assist_tv1 = TextView {
             height: tv_heigth,
             width: assist_tv_width,
             scroll: 1,
-            rect: assist_tv_chk,
+            rect: assist_tv_chk1,
         };
 
-        let assist_inp = ChatInput {
-            input: String::new(),
-            rect: assist_inp_chk,
+        // let assist_inp = ChatInput {
+        //     input: String::new(),
+        //     rect: assist_inp_chk,
+        // };
+
+        let assist_tv2 = TextView {
+            height: tv_heigth,
+            width: assist_tv_width,
+            scroll: 1,
+            rect: assist_tv_chk2,
         };
 
         Ok(ChapTui {
@@ -424,8 +432,8 @@ impl ChapTui {
             tv: tv,
             cmd_title: inp_title_chk,
             cmd_inp: cmd_inp,
-            assist_tv: assist_tv,
-            assist_inp: assist_inp,
+            assist_tv1: assist_tv1,
+            assist_tv2: assist_tv2,
             // focus: Focus::new(),
             // prompt_tx: prompt_tx,
             // start_row: start_row,
@@ -440,6 +448,7 @@ impl ChapTui {
             start_line_num: 0,
             is_last_line: false,
             endian: Endian::Little, // 默认字节序为小端
+            assist_tv2_data: String::new(),
         })
     }
 
@@ -480,10 +489,15 @@ impl ChapTui {
                     sel_content,
                     self.endian.clone(),
                 );
-                let assist_para = Paragraph::new(assist)
+                let assist_para1 = Paragraph::new(assist)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(assist_para, self.assist_tv.get_rect());
+                f.render_widget(assist_para1, self.assist_tv1.get_rect());
+
+                let assist_para2 = Paragraph::new(Text::raw(&self.assist_tv2_data))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(assist_para2, self.assist_tv2.get_rect());
 
                 let input_title_box = Paragraph::new(Text::raw(" >: "))
                     .block(Block::default())
@@ -492,7 +506,7 @@ impl ChapTui {
 
                 let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
                     .block(Block::default())
-                    .style(Style::default().fg(Color::White)); // 设置输入框样式
+                    .style(Style::default().fg(Color::White));
                 f.render_widget(input_box, self.cmd_inp.get_rect());
             })?;
 
@@ -1031,6 +1045,12 @@ impl ChapTui {
                         match (code, modifiers) {
                             (KeyCode::Esc, _) => {
                                 hand.handle_esc(self)?;
+                            }
+                            (KeyCode::Up, KeyModifiers::CONTROL) => {
+                                hand.handle_shift_up(self, &line_meta, &td)?;
+                            }
+                            (KeyCode::Down, KeyModifiers::CONTROL) => {
+                                hand.handle_shift_down(self, &line_meta, &td)?;
                             }
                             (KeyCode::Right, KeyModifiers::CONTROL) => {
                                 hand.handle_shift_right(self, &line_meta, &td)?;
@@ -1974,7 +1994,7 @@ fn format_hex_slice(slice: &[u8], j: &mut usize) -> String {
 type ParserFn = fn(&ByteView) -> String;
 
 fn format_data_inspector<T: std::fmt::Display>(data: T) -> String {
-    format!("{:<20.10}|", data)
+    format!("{:<40}|", data)
 }
 
 static FIELDS: &[(&str, ParserFn)] = &[
@@ -1992,12 +2012,6 @@ static FIELDS: &[(&str, ParserFn)] = &[
     }),
     ("| int16_t            | ", |bv| {
         format_data_inspector(bv.to_i16())
-    }),
-    ("| uint24_t           | ", |bv| {
-        format_data_inspector(bv.to_u24())
-    }),
-    ("| int24_t            | ", |bv| {
-        format_data_inspector(bv.to_i24())
     }),
     ("| uint32_t           | ", |bv| {
         format_data_inspector(bv.to_u32())
@@ -2022,6 +2036,9 @@ static FIELDS: &[(&str, ParserFn)] = &[
     }),
     ("| String             | ", |bv| {
         format_data_inspector(bv.to_str())
+    }),
+    ("| pgvarint           | ", |bv| {
+        format_data_inspector(bv.to_varlena())
     }),
 ];
 
@@ -2052,8 +2069,7 @@ fn get_data_inspector_content<'a>(seek: usize, buf: Vec<u8>, endian: Endian) -> 
     text
 }
 
-const HEX_TOP: &'static str =
-    "00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  10 11 12       ASCII";
+const HEX_TOP: &'static str = "00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F     ASCII";
 
 fn get_hex_content<'a>(
     txts: &'a RingVec<CacheStr>,
@@ -2267,7 +2283,9 @@ fn get_hex_content<'a>(
             }
         }
 
-        spans.push(Span::raw("   ".repeat(20 - txt.len() + 1)));
+        spans.push(Span::raw(
+            "   ".repeat(16_usize.saturating_sub(txt.len()) + 1),
+        ));
         spans.extend_from_slice(&str_spans);
         lines.push(Line::from(spans));
     }

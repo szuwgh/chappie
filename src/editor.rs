@@ -33,7 +33,7 @@ const PAGE_GROUP: usize = 1;
 const CHUNK_SIZE: usize = 4 * 1024;
 const CHAR_GAP_SIZE: usize = 128;
 const HEX_GAP_SIZE: usize = 5;
-pub(crate) const HEX_WITH: usize = 19;
+pub(crate) const HEX_WITH: usize = 16;
 
 pub(crate) trait TextOper {
     //滑动上一行

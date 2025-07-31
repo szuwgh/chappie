@@ -1,4 +1,5 @@
 use crate::cli::Cli;
+use crate::function::init_function_registry;
 use crate::ChapResult;
 use crate::ChapTui;
 use once_cell::sync::Lazy;
@@ -41,9 +42,11 @@ impl Chappie {
         )?;
         Ok(())
     }
+
     pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
         let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
+        init_function_registry();
         let chap_ui = ChapTui::new(
             cli.get_chap_mod(),
             prompt_tx,

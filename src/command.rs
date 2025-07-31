@@ -1,5 +1,5 @@
 use crate::byteutil::Endian;
-
+use crate::function::Function;
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
     Back,
@@ -9,6 +9,44 @@ pub(crate) enum Command {
     GTop,              // value to find
     GBottom,           // value to find
     Unknown(String),   // unknown command
+    Cut(CutFile),
+    CutSel(CutSelFile),
+    Call(Function),
+    ListFunc,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct CutFile {
+    count: usize,
+    filepath: String,
+}
+
+impl CutFile {
+    pub(crate) fn get_count(&self) -> usize {
+        self.count
+    }
+    pub(crate) fn get_filepath(&self) -> &str {
+        &self.filepath
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct CutSelFile {
+    start: usize,
+    end: usize,
+    filepath: String,
+}
+
+impl CutSelFile {
+    pub(crate) fn get_start(&self) -> usize {
+        self.start
+    }
+    pub(crate) fn get_end(&self) -> usize {
+        self.end
+    }
+    pub(crate) fn get_filepath(&self) -> &str {
+        &self.filepath
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -24,6 +62,7 @@ impl Command {
             ["b"] => Command::Back,
             ["g"] => Command::GTop,
             ["G"] => Command::GBottom,
+            ["lf"] => Command::ListFunc,
             ["set", value] => {
                 let value_parts: Vec<&str> = value.split('=').collect();
                 match value_parts.as_slice() {
@@ -50,6 +89,22 @@ impl Command {
                     Command::Find(FindValue::Ascii(value.to_string()))
                 }
             }
+            ["cut", count, filepath] if count.parse::<usize>().is_ok() => Command::Cut(CutFile {
+                count: count.parse().unwrap(),
+                filepath: filepath.to_string(),
+            }),
+            ["cut", start, end, filepath] => {
+                if let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) {
+                    Command::CutSel(CutSelFile {
+                        start: start,
+                        end: end,
+                        filepath: filepath.to_string(),
+                    })
+                } else {
+                    Command::Unknown(input.to_string())
+                }
+            }
+            ["call", function] => Command::Call(Function(function.to_string())),
             _ => Command::Unknown(input.to_string()),
         }
     }
@@ -77,5 +132,21 @@ mod test {
             Command::parse("unknown command"),
             Command::Unknown(_)
         ));
+
+        assert_eq!(
+            Command::parse("cut 0 10 xxx"),
+            Command::CutSel(CutSelFile {
+                start: 0,
+                end: 10,
+                filepath: "xxx".to_string()
+            })
+        );
+        assert_eq!(
+            Command::parse("cut 11 xxx"),
+            Command::Cut(CutFile {
+                count: 11,
+                filepath: "xxx".to_string()
+            })
+        );
     }
 }

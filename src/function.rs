@@ -1,47 +1,76 @@
-// static FUNCTION: &[(&str, ParserFn)] = &[
-//     ("| Binary (8bit)      | ", |bv| {
-//         format_data_inspector(bv.to_binary_8bit())
-//     }),
-//     ("| Binary Len         | ", |bv| {
-//         format_data_inspector(bv.len())
-//     }),
-//     ("| uint8_t            | ", |bv| {
-//         format_data_inspector(bv.to_u8())
-//     }),
-//     ("| uint16_t           | ", |bv| {
-//         format_data_inspector(bv.to_u16())
-//     }),
-//     ("| int16_t            | ", |bv| {
-//         format_data_inspector(bv.to_i16())
-//     }),
-//     ("| uint24_t           | ", |bv| {
-//         format_data_inspector(bv.to_u24())
-//     }),
-//     ("| int24_t            | ", |bv| {
-//         format_data_inspector(bv.to_i24())
-//     }),
-//     ("| uint32_t           | ", |bv| {
-//         format_data_inspector(bv.to_u32())
-//     }),
-//     ("| int32_t            | ", |bv| {
-//         format_data_inspector(bv.to_i32())
-//     }),
-//     ("| uint64_t           | ", |bv| {
-//         format_data_inspector(bv.to_u64())
-//     }),
-//     ("| int64_t            | ", |bv| {
-//         format_data_inspector(bv.to_i64())
-//     }),
-//     ("| half float(f16)    | ", |bv| {
-//         format_data_inspector(bv.to_f16())
-//     }),
-//     ("| float              | ", |bv| {
-//         format_data_inspector(bv.to_f32())
-//     }),
-//     ("| double             | ", |bv| {
-//         format_data_inspector(bv.to_f64())
-//     }),
-//     ("| String             | ", |bv| {
-//         format_data_inspector(bv.to_str())
-//     }),
-// ];
+use crate::byteutil::ByteView;
+use crate::pg::format_item_ids;
+use crate::pg::format_va_extinfo;
+use crate::pg::format_varatt_external;
+use crate::pg::parse_heap_tuple_header;
+use crate::pg::parse_pg_page_header;
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+#[derive(Debug, PartialEq)]
+pub(crate) struct Function(pub(crate) String);
+
+impl Function {
+    pub(crate) fn call(&self, b: ByteView) -> String {
+        // 从全局 registry 查找函数
+        if let Some(func) = FUNCTION_REGISTRY.lock().unwrap().get(&self.0) {
+            return func(&b);
+        }
+        "no function call".to_string()
+    }
+}
+
+/// 打印注册表中所有已注册函数名
+pub(crate) fn list_registered_functions() -> Vec<String> {
+    let map = FUNCTION_REGISTRY.lock().unwrap();
+    map.keys().cloned().collect()
+}
+
+/// 格式化输出为字符串（每行一个函数名）
+pub(crate) fn format_function_list() -> String {
+    let mut names = list_registered_functions();
+    if names.is_empty() {
+        "No functions registered.".to_string()
+    } else {
+        // 原地按字母升序排序
+        names.sort();
+        names
+            .iter()
+            .map(|name| format!("* {}", name))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+// 定义全局函数注册表
+static FUNCTION_REGISTRY: Lazy<Mutex<HashMap<String, FunctionFn>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+// 注册函数到全局 map
+pub fn register(name: &str, f: FunctionFn) {
+    let mut map = FUNCTION_REGISTRY.lock().unwrap();
+    map.insert(name.to_string(), f);
+}
+
+// 检索函数（可选）
+pub fn lookup(name: &str) -> Option<FunctionFn> {
+    FUNCTION_REGISTRY.lock().unwrap().get(name).cloned()
+}
+
+// 示例函数实现
+fn hello(b: &ByteView) -> String {
+    format!("hello")
+}
+
+// 初始化（可在模块初始化时注册）
+pub fn init_function_registry() {
+    register("hello", hello);
+    register("pg_page_header", parse_pg_page_header);
+    register("item_data", format_item_ids);
+    register("pg_heap_tuple", parse_heap_tuple_header);
+    register("format_va_extinfo", format_va_extinfo);
+    register("format_varatt_external", format_varatt_external);
+}
+
+type FunctionFn = fn(&ByteView) -> String;

@@ -1,6 +1,6 @@
 use half::f16;
 use std::ascii::escape_default;
-
+use std::fmt::Display;
 macro_rules! convert_be {
     ($data:expr, $t:ty) => {{
         const SZ: usize = std::mem::size_of::<$t>();
@@ -51,6 +51,10 @@ impl ByteView {
             data,
             endian: endian,
         }
+    }
+
+    pub(crate) fn get_data(&self) -> &[u8] {
+        &self.data
     }
 
     pub(crate) fn to_binary_8bit(&self) -> String {
@@ -118,12 +122,12 @@ impl ByteView {
         convert!(&self.data, f16, self.endian)
     }
 
-    pub(crate) fn to_f32(&self) -> f32 {
-        convert!(&self.data, f32, self.endian)
+    pub(crate) fn to_f32(&self) -> SmartF32 {
+        SmartF32(convert!(&self.data, f32, self.endian))
     }
 
-    pub(crate) fn to_f64(&self) -> f64 {
-        convert!(&self.data, f64, self.endian)
+    pub(crate) fn to_f64(&self) -> SmartF64 {
+        SmartF64(convert!(&self.data, f64, self.endian))
     }
 
     pub(crate) fn to_str(&self) -> String {
@@ -136,10 +140,95 @@ impl ByteView {
         s
     }
 
-    pub(crate) fn to_varlena(&self) -> Option<(VarlenaType, u32)> {
-        parse_varlena_header(&self.data)
+    pub(crate) fn to_varlena(&self) -> VarlenaData {
+        parse_varlena_header(&self.data).unwrap_or(VarlenaData(VarlenaType::Unknown, 0))
     }
 }
+
+pub(crate) struct SmartF32(f32);
+
+impl Display for SmartF32 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 优先获取 formatter 的宽度参数
+        let width = f.width().unwrap_or(40);
+
+        // 使用默认格式生成字符串
+        let s = format!("{}", self.0);
+
+        let out = if s.len() > width {
+            // 超过 width，使用科学计数法（LowerExp）
+            if let Some(prec) = f.precision() {
+                format!("{:.*e}", prec, self.0)
+            } else {
+                format!("{:e}", self.0)
+            }
+        } else {
+            // 未超过宽度，直接用默认格式（或带 precision）
+            if let Some(prec) = f.precision() {
+                format!("{:.*}", prec, self.0)
+            } else {
+                s
+            }
+        };
+
+        // 使用 pad 结合宽度和对齐方式输出
+        f.pad(&out)
+    }
+}
+
+/// 包装浮点数，提供条件科学计数法输出的 Display 实现。
+pub(crate) struct SmartF64(f64);
+
+impl Display for SmartF64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 优先获取 formatter 的宽度参数
+        let width = f.width().unwrap_or(40);
+
+        // 使用默认格式生成字符串
+        let s = format!("{}", self.0);
+
+        let out = if s.len() > width {
+            // 超过 width，使用科学计数法（LowerExp）
+            if let Some(prec) = f.precision() {
+                format!("{:.*e}", prec, self.0)
+            } else {
+                format!("{:e}", self.0)
+            }
+        } else {
+            // 未超过宽度，直接用默认格式（或带 precision）
+            if let Some(prec) = f.precision() {
+                format!("{:.*}", prec, self.0)
+            } else {
+                s
+            }
+        };
+
+        // 使用 pad 结合宽度和对齐方式输出
+        f.pad(&out)
+    }
+}
+
+impl Display for VarlenaData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 首先构造基础字符串
+        let s = format!("{:?},{}", self.0, self.1);
+        // 截断 precision
+        let truncated = if let Some(max) = f.precision() {
+            if s.len() > max {
+                &s[..max]
+            } else {
+                &s
+            }
+        } else {
+            &s[..]
+        };
+        // 使用 pad 添加对齐和填充
+        f.pad(truncated)
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct VarlenaData(VarlenaType, u32);
 
 /// 解析 PostgreSQL varlena header，识别类型并返回长度 + payload 起始偏移
 #[derive(Debug, PartialEq)]
@@ -148,9 +237,10 @@ enum VarlenaType {
     ToastPointer,         // varattrib_1b_e
     FourByteUncompressed, // varattrib_4b uncompressed
     FourByteCompressed,   // varattrib_4b compressed
+    Unknown,
 }
 
-fn parse_varlena_header(data: &[u8]) -> Option<(VarlenaType, u32)> {
+fn parse_varlena_header(data: &[u8]) -> Option<VarlenaData> {
     if data.is_empty() {
         return None;
     }
@@ -160,12 +250,12 @@ fn parse_varlena_header(data: &[u8]) -> Option<(VarlenaType, u32)> {
         if hdr == 0x01 {
             // TOAST Pointer
             // header = 1 byte + 1 tag byte (总共 2 字节)
-            return Some((VarlenaType::ToastPointer, 2));
+            return Some(VarlenaData(VarlenaType::ToastPointer, 2));
         } else {
             // short inline, high7 bits = payload length
             let payload_len = (hdr >> 1) as u32;
             let total_len = payload_len;
-            return Some((VarlenaType::ShortInline, total_len));
+            return Some(VarlenaData(VarlenaType::ShortInline, total_len));
         }
     } else {
         // 4-byte header 格式
@@ -174,14 +264,37 @@ fn parse_varlena_header(data: &[u8]) -> Option<(VarlenaType, u32)> {
         }
         let hdr_le = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         let total_len = hdr_le >> 2;
-        let is_compressed = (hdr_le & (1 << 30)) != 0;
+        let is_compressed = (data[0] & 0x0010) != 0;
         let typ = if is_compressed {
             VarlenaType::FourByteCompressed
         } else {
             VarlenaType::FourByteUncompressed
         };
-        return Some((typ, total_len));
+        return Some(VarlenaData(typ, total_len));
     }
+}
+
+pub fn format_va_extinfo(buf: &[u8]) -> String {
+    // 确保至少能读取 va_extinfo （4 bytes）在 offset 4，从 va_rawsize 后
+    if buf.len() < 8 {
+        return "buf < 8".to_string();
+    }
+    // va_rawsize = first 4 bytes, little endian
+    let va_rawsize = i32::from_le_bytes(buf[0..4].try_into().unwrap());
+    // va_extinfo = next 4 bytes
+    let extinfo = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+    const MASK: u32 = (1u32 << 30) - 1; // VARLENA_EXTSIZE_MASK
+    let extsize = extinfo & MASK;
+    let method = extinfo >> 30;
+    let comp = match method {
+        0 => "PGLZ",
+        1 => "LZ4",
+        _ => "unknown",
+    };
+    format!(
+        "va_rawsize = {}\nva_extinfo raw = 0x{:08X}\nextsize = {}\ncompression method = {} (id={})",
+        va_rawsize, extinfo, extsize, comp, method
+    )
 }
 
 #[cfg(test)]
