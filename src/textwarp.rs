@@ -350,22 +350,22 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                         }
                         if line_num >= skip_line {
                             let txt = &line_txt[line_offset..end];
-                            if let Some(fuzzy) = fuzzy.as_deref_mut()
-                                && pattern.len() > 0
-                            {
-                                let m = fuzzy.find(pattern, txt, is_exact);
-                                if m.is_match() {
-                                    cur_line_count += 1;
-                                    let end_offset = page_offset + start + end;
-                                    f(
-                                        txt,
-                                        LineMeta::new(
-                                            txt.len(),
-                                            start_line_num + line_num,
-                                            end_offset,
-                                            Some(m),
-                                        ),
-                                    );
+                            if let Some(fuzzy) = fuzzy.as_deref_mut() {
+                                if pattern.len() > 0 {
+                                    let m = fuzzy.find(pattern, txt, is_exact);
+                                    if m.is_match() {
+                                        cur_line_count += 1;
+                                        let end_offset = page_offset + start + end;
+                                        f(
+                                            txt,
+                                            LineMeta::new(
+                                                txt.len(),
+                                                start_line_num + line_num,
+                                                end_offset,
+                                                Some(m),
+                                            ),
+                                        );
+                                    }
                                 }
                             } else {
                                 cur_line_count += 1;
@@ -408,22 +408,22 @@ impl<T: SimpleText> SimpleTextEngine<T> {
                     }
                     if line_num >= skip_line {
                         let txt = &line_txt[line_offset..];
-                        if let Some(fuzzy) = fuzzy.as_deref_mut()
-                            && pattern.len() > 0
-                        {
-                            let m = fuzzy.find(pattern, txt, is_exact);
-                            if m.is_match() {
-                                cur_line_count += 1;
-                                let end_offset = page_offset + i + 1;
-                                f(
-                                    txt,
-                                    LineMeta::new(
-                                        txt.len(),
-                                        start_line_num + line_num,
-                                        end_offset,
-                                        Some(m),
-                                    ),
-                                );
+                        if let Some(fuzzy) = fuzzy.as_deref_mut() {
+                            if pattern.len() > 0 {
+                                let m = fuzzy.find(pattern, txt, is_exact);
+                                if m.is_match() {
+                                    cur_line_count += 1;
+                                    let end_offset = page_offset + i + 1;
+                                    f(
+                                        txt,
+                                        LineMeta::new(
+                                            txt.len(),
+                                            start_line_num + line_num,
+                                            end_offset,
+                                            Some(m),
+                                        ),
+                                    );
+                                }
                             }
                         } else {
                             cur_line_count += 1;

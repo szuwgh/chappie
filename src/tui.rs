@@ -35,6 +35,7 @@ use ratatui::prelude::CrosstermBackend;
 use ratatui::prelude::Direction;
 use ratatui::prelude::Layout;
 use ratatui::prelude::Rect;
+use ratatui::prelude::Size;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -100,22 +101,22 @@ impl Byte {
     }
 }
 
-pub(crate) struct ChapTui {
-    chap_mod: ChapMod,
-    pub(crate) warp_type: TextWarpType,
-    pub(crate) terminal: Terminal<CrosstermBackend<io::Stdout>>,
+pub(crate) struct TuiElement {
     pub(crate) navi: Navigation,
     pub(crate) tv: TextView,
     pub(crate) cmd_title: Rect,
     pub(crate) cmd_inp: CmdInput,
     pub(crate) assist_tv1: TextView,
     pub(crate) assist_tv2: TextView,
-    // focus: Focus,
-    // prompt_tx: mpsc::Sender<String>,
-    // start_row: u16,
-    // llm_res_rx: mpsc::Receiver<String>,
-    // ui_type: UIType,
-    // que: bool,
+}
+
+pub(crate) struct ChapTui {
+    chap_mod: ChapMod,
+    size: Size,
+    pub(crate) warp_type: TextWarpType,
+    pub(crate) terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    pub(crate) elem: TuiElement,
+    ui_type: UIType,
     pub(crate) back_linenum: Vec<usize>, // 上一行号
     pub(crate) txt_sel: TextSelect,      // 文本选择
     pub(crate) cursor_x: usize,          // 光标x坐标
@@ -306,28 +307,43 @@ impl ChapTui {
     ) -> ChapResult<ChapTui> {
         let (_, row) = cursor::position()?; // (x, y) 返回的是光标的 (列号, 行号)
                                             //let backend = CrosstermBackend::new(std::io::stdout());
-        let mut terminal = init();
-
+        let terminal = init();
         let size = terminal.size()?;
+        let elem = Self::get_react(&ui_type, &chap_mod, &size)?;
+        Ok(ChapTui {
+            chap_mod: chap_mod,
+            size: size,
+            warp_type: TextWarpType::NoWrap,
+            terminal: terminal,
+            elem: elem,
+            ui_type: ui_type,
+            back_linenum: Vec::with_capacity(10), // 初始化上一行号
+            txt_sel: TextSelect::new(),
+            cursor_x: 0,
+            cursor_y: 0,
+            offset: 0,
+            start_line_num: 0,
+            is_last_line: false,
+            endian: Endian::Little, // 默认字节序为小端
+            assist_tv2_data: String::new(),
+        })
+    }
+
+    //
+    fn get_react(ui_type: &UIType, chap_mod: &ChapMod, size: &Size) -> ChapResult<TuiElement> {
         let (tui_height, tui_width, start_row) = match ui_type {
-            UIType::Full => {
-                execute!(
-                    terminal.backend_mut(),
-                    crossterm::terminal::EnterAlternateScreen
-                )?;
-                (size.height, size.width, 0)
-            }
+            UIType::Full => (size.height, size.width, 0),
             UIType::Lite => {
                 let tui_height = (size.height as f32 * 0.4) as u16;
                 let tui_width = size.width;
-                let mut start_row = row;
-                // 终端宽度
-                if size.height - row < tui_height {
-                    for _ in 0..tui_height.saturating_sub(size.height - row) {
-                        println!(); // 打印空白
-                        start_row -= 1;
-                    }
-                }
+                let mut start_row = tui_height;
+                // // 终端宽度
+                // if size.height - row < tui_height {
+                //     for _ in 0..tui_height.saturating_sub(size.height - row) {
+                //         println!(); // 打印空白
+                //         start_row -= 1;
+                //     }
+                // }
                 (tui_height, tui_width, start_row)
             }
         };
@@ -347,7 +363,7 @@ impl ChapTui {
         let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
-        let hex_with = 82;
+        let hex_with = if 82 < tui_width { 82 } else { tui_width };
         let p = ((hex_with as f32 / tui_width as f32) * 100.0) as u16;
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
@@ -411,12 +427,6 @@ impl ChapTui {
             scroll: 1,
             rect: assist_tv_chk1,
         };
-
-        // let assist_inp = ChatInput {
-        //     input: String::new(),
-        //     rect: assist_inp_chk,
-        // };
-
         let assist_tv2 = TextView {
             height: tv_heigth,
             width: assist_tv_width,
@@ -424,31 +434,13 @@ impl ChapTui {
             rect: assist_tv_chk2,
         };
 
-        Ok(ChapTui {
-            chap_mod: chap_mod,
-            warp_type: TextWarpType::NoWrap,
-            terminal: terminal,
+        Ok(TuiElement {
             navi: navi,
             tv: tv,
             cmd_title: inp_title_chk,
             cmd_inp: cmd_inp,
             assist_tv1: assist_tv1,
             assist_tv2: assist_tv2,
-            // focus: Focus::new(),
-            // prompt_tx: prompt_tx,
-            // start_row: start_row,
-            // llm_res_rx: llm_res_rx,
-            // ui_type: ui_type,
-            // que: que,
-            back_linenum: Vec::with_capacity(10), // 初始化上一行号
-            txt_sel: TextSelect::new(),
-            cursor_x: 0,
-            cursor_y: 0,
-            offset: 0,
-            start_line_num: 0,
-            is_last_line: false,
-            endian: Endian::Little, // 默认字节序为小端
-            assist_tv2_data: String::new(),
         })
     }
 
@@ -469,19 +461,19 @@ impl ChapTui {
                 let (navi, visible_content) = get_hex_content(
                     content,
                     &meta,
-                    self.navi.get_cur_line(),
+                    self.elem.navi.get_cur_line(),
                     &hex_sel,
-                    self.tv.get_height(),
+                    self.elem.tv.get_height(),
                     cursor_y,
                     cursor_x,
                 );
                 let text_para = Paragraph::new(visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(text_para, self.tv.get_rect());
+                f.render_widget(text_para, self.elem.tv.get_rect());
 
                 let nav_paragraph = Paragraph::new(navi);
-                f.render_widget(nav_paragraph, self.navi.get_rect());
+                f.render_widget(nav_paragraph, self.elem.navi.get_rect());
 
                 let sel_content = td.get_text_from_sel(&hex_sel);
                 let assist = get_data_inspector_content(
@@ -492,22 +484,22 @@ impl ChapTui {
                 let assist_para1 = Paragraph::new(assist)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(assist_para1, self.assist_tv1.get_rect());
+                f.render_widget(assist_para1, self.elem.assist_tv1.get_rect());
 
                 let assist_para2 = Paragraph::new(Text::raw(&self.assist_tv2_data))
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(assist_para2, self.assist_tv2.get_rect());
+                f.render_widget(assist_para2, self.elem.assist_tv2.get_rect());
 
                 let input_title_box = Paragraph::new(Text::raw(" >: "))
                     .block(Block::default())
                     .style(Style::default().fg(Color::White)); // 设置输入框样式
-                f.render_widget(input_title_box, self.cmd_title);
+                f.render_widget(input_title_box, self.elem.cmd_title);
 
-                let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
+                let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(input_box, self.cmd_inp.get_rect());
+                f.render_widget(input_box, self.elem.cmd_inp.get_rect());
             })?;
 
             meta
@@ -532,12 +524,12 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.cmd_inp.clear();
+                self.elem.cmd_inp.clear();
                 //保存
                 if let Ok(_) = td.save(&p) {
-                    self.cmd_inp.push_str("saved");
+                    self.elem.cmd_inp.push_str("saved");
                 } else {
-                    self.cmd_inp.push_str("save fail");
+                    self.elem.cmd_inp.push_str("save fail");
                 }
             }
             ChapMod::Text => {
@@ -565,11 +557,11 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.cmd_inp.clear();
+                self.elem.cmd_inp.clear();
                 if *cursor_x == 0 && *is_last {
                     td.insert(
                         *cursor_y - 1,
-                        self.tv.get_width(),
+                        self.elem.tv.get_width(),
                         line_meta.get(*cursor_y - 1).unwrap(),
                         c,
                     )?;
@@ -577,9 +569,11 @@ impl ChapTui {
                 } else {
                     td.insert(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap(), c)?;
                 }
-                if *cursor_x < self.tv.get_width() {
+                if *cursor_x < self.elem.tv.get_width() {
                     *cursor_x += 1;
-                    if *cursor_x >= self.tv.get_width() && *cursor_y < self.tv.get_height() {
+                    if *cursor_x >= self.elem.tv.get_width()
+                        && *cursor_y < self.elem.tv.get_height()
+                    {
                         //不断添加字符 还是续接上一行
                         *is_last = true;
                         *cursor_x = 0;
@@ -610,7 +604,7 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.cmd_inp.clear();
+                self.elem.cmd_inp.clear();
                 if *cursor_y == 0 && *cursor_x == 0 {
                     return Ok(());
                 }
@@ -645,9 +639,9 @@ impl ChapTui {
     ) -> ChapResult<()> {
         match self.chap_mod {
             ChapMod::Edit => {
-                self.cmd_inp.clear();
+                self.elem.cmd_inp.clear();
                 td.insert_newline(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
-                if *cursor_y < self.tv.get_height() - 1 {
+                if *cursor_y < self.elem.tv.get_height() - 1 {
                     *cursor_y += 1;
                 }
                 *cursor_x = 0;
@@ -740,7 +734,7 @@ impl ChapTui {
             ChapMod::Edit => {
                 match self.warp_type {
                     TextWarpType::NoWrap => {
-                        if *cursor_y < self.tv.get_height() - 1 {
+                        if *cursor_y < self.elem.tv.get_height() - 1 {
                             *cursor_y += 1;
                         } else {
                             //滚动下一行
@@ -757,7 +751,7 @@ impl ChapTui {
                         *is_last = false;
                     }
                     TextWarpType::SoftWrap => {
-                        if *cursor_y < self.tv.get_height() - 1 {
+                        if *cursor_y < self.elem.tv.get_height() - 1 {
                             *cursor_y += 1;
                         } else {
                             //滚动下一行
@@ -918,7 +912,7 @@ impl ChapTui {
                     TextWarpType::NoWrap => {
                         let meta = line_meta.get(chap_tui.cursor_y).unwrap();
                         if chap_tui.cursor_x < meta.get_char_len()
-                            && chap_tui.cursor_x < self.tv.width
+                            && chap_tui.cursor_x < self.elem.tv.width
                         {
                             chap_tui.cursor_x += 1;
                         }
@@ -934,7 +928,7 @@ impl ChapTui {
 
                             if chap_tui.cursor_x
                                 >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
-                                && chap_tui.cursor_y < self.tv.get_height()
+                                && chap_tui.cursor_y < self.elem.tv.get_height()
                             {
                                 //判断当前行是否读完
                                 if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
@@ -973,14 +967,20 @@ impl ChapTui {
 
     pub(crate) async fn render<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
         loop {
+            let size = self.terminal.size()?;
+            let elem = Self::get_react(&self.ui_type, &self.chap_mod, &size)?;
+            self.size = size;
+            self.elem = elem;
+            self.cursor_x = 0;
+            self.cursor_y = 0;
             let twy = TextWarpType::NoWrap;
             let mut td: TextDisplay = match self.chap_mod {
                 ChapMod::Edit => {
                     return Ok(());
                     TextDisplay::Edit(EditTextWarp::new(
                         GapText::from_file_path(&p)?,
-                        self.tv.get_height(),
-                        self.tv.get_width(),
+                        self.elem.tv.get_height(),
+                        self.elem.tv.get_width(),
                         twy,
                     ))
                 }
@@ -988,15 +988,15 @@ impl ChapTui {
                     return Ok(());
                     TextDisplay::Text(TextWarp::new(
                         MmapText::from_file_path(&p)?,
-                        self.tv.get_height(),
-                        self.tv.get_width(),
+                        self.elem.tv.get_height(),
+                        self.elem.tv.get_width(),
                         twy,
                     ))
                 }
                 ChapMod::Hex => TextDisplay::Hex(TextWarp::new(
-                    HexText::from_file_path(&p, self.tv.get_height() - 2)?,
-                    self.tv.get_height() - 2,
-                    self.tv.get_width(),
+                    HexText::from_file_path(&p, self.elem.tv.get_height() - 2)?,
+                    self.elem.tv.get_height() - 2,
+                    self.elem.tv.get_width(),
                     twy,
                 )),
                 _ => {
@@ -1011,15 +1011,12 @@ impl ChapTui {
                     todo!()
                 }
             };
-            // let mut txt_sel = TextSelect::new();
-            // let mut cursor_x: usize = 0;
-            // let mut cursor_y: usize = 0;
-            // let mut offset: usize = 0;
-            // let mut is_last: bool = false; //是否在行的末尾添加 否则在所在行的头添加
-            // let mut start_line_num = 1;
             td.get_one_page(1)?;
-
             'tui: loop {
+                let size = self.terminal.size()?;
+                if size != self.size {
+                    break 'tui;
+                }
                 let line_meta = match self.chap_mod {
                     ChapMod::Edit => {
                         self.render_edit(self.cursor_x, self.cursor_y, self.offset, &td)?
@@ -1104,25 +1101,25 @@ impl ChapTui {
                 let (navi, visible_content) = get_edit_content(
                     content,
                     &meta,
-                    self.navi.get_cur_line(),
-                    &self.navi.select_line,
-                    self.tv.get_height(),
-                    offset.saturating_sub(self.tv.width),
+                    self.elem.navi.get_cur_line(),
+                    &self.elem.navi.select_line,
+                    self.elem.tv.get_height(),
+                    offset.saturating_sub(self.elem.tv.width),
                     cursor_y,
                     cursor_x,
                 );
                 let text_para = Paragraph::new(visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(text_para, self.tv.get_rect());
+                f.render_widget(text_para, self.elem.tv.get_rect());
 
                 let nav_paragraph = Paragraph::new(navi);
-                f.render_widget(nav_paragraph, self.navi.get_rect());
+                f.render_widget(nav_paragraph, self.elem.navi.get_rect());
 
-                let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
+                let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
                     .block(Block::default().title(":"))
                     .style(Style::default().fg(Color::White)); // 设置输入框样式
-                f.render_widget(input_box, self.cmd_inp.get_rect());
+                f.render_widget(input_box, self.elem.cmd_inp.get_rect());
             })?;
             meta
         };

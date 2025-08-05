@@ -182,8 +182,8 @@ pub(crate) fn tui_retore() -> ChapResult<()> {
 
 pub(crate) trait Handle {
     fn handle_esc(&self, chap_tui: &mut ChapTui) -> ChapResult<()> {
-        chap_tui.cmd_inp.clear();
-        chap_tui.navi.clear();
+        chap_tui.elem.cmd_inp.clear();
+        chap_tui.elem.navi.clear();
         chap_tui.assist_tv2_data.clear();
         chap_tui.txt_sel.reset_to_start();
         Ok(())
@@ -295,12 +295,12 @@ impl Handle for HandleEdit {
         p: P,
         td: &mut TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.cmd_inp.clear();
+        chap_tui.elem.cmd_inp.clear();
         //保存
         if let Ok(_) = td.save(&p) {
-            chap_tui.cmd_inp.push_str("saved");
+            chap_tui.elem.cmd_inp.push_str("saved");
         } else {
-            chap_tui.cmd_inp.push_str("save fail");
+            chap_tui.elem.cmd_inp.push_str("save fail");
         }
         Ok(())
     }
@@ -353,7 +353,7 @@ impl Handle for HandleEdit {
     ) -> ChapResult<()> {
         match chap_tui.warp_type {
             TextWarpType::NoWrap => {
-                if chap_tui.cursor_y < chap_tui.tv.get_height() - 1 {
+                if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
                     chap_tui.cursor_y += 1;
                 } else {
                     //滚动下一行
@@ -370,7 +370,7 @@ impl Handle for HandleEdit {
                 chap_tui.is_last_line = false;
             }
             TextWarpType::SoftWrap => {
-                if chap_tui.cursor_y < chap_tui.tv.get_height() - 1 {
+                if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
                     chap_tui.cursor_y += 1;
                 } else {
                     //滚动下一行
@@ -426,7 +426,7 @@ impl Handle for HandleEdit {
             TextWarpType::NoWrap => {
                 let meta = line_meta.get(chap_tui.cursor_y).unwrap();
                 if chap_tui.cursor_x < meta.get_char_len()
-                    && chap_tui.cursor_x < chap_tui.tv.get_width()
+                    && chap_tui.cursor_x < chap_tui.elem.tv.get_width()
                 {
                     chap_tui.cursor_x += 1;
                 }
@@ -442,7 +442,7 @@ impl Handle for HandleEdit {
                     chap_tui.cursor_x += 1;
 
                     if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
-                        && chap_tui.cursor_y < chap_tui.tv.get_height()
+                        && chap_tui.cursor_y < chap_tui.elem.tv.get_height()
                     {
                         //判断当前行是否读完
                         if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
@@ -467,13 +467,13 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.cmd_inp.clear();
+        chap_tui.elem.cmd_inp.clear();
         td.insert_newline(
             chap_tui.cursor_y,
             chap_tui.cursor_x,
             line_meta.get(chap_tui.cursor_y).unwrap(),
         )?;
-        if chap_tui.cursor_y < chap_tui.tv.get_height() - 1 {
+        if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
             chap_tui.cursor_y += 1;
         }
         chap_tui.cursor_x = 0;
@@ -487,7 +487,7 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.cmd_inp.clear();
+        chap_tui.elem.cmd_inp.clear();
         if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
             return Ok(());
         }
@@ -513,11 +513,11 @@ impl Handle for HandleEdit {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
-        chap_tui.cmd_inp.clear();
+        chap_tui.elem.cmd_inp.clear();
         if chap_tui.cursor_x == 0 && chap_tui.is_last_line {
             td.insert(
                 chap_tui.cursor_y - 1,
-                chap_tui.tv.get_width(),
+                chap_tui.elem.tv.get_width(),
                 line_meta.get(chap_tui.cursor_y - 1).unwrap(),
                 c,
             )?;
@@ -530,10 +530,10 @@ impl Handle for HandleEdit {
                 c,
             )?;
         }
-        if chap_tui.cursor_x < chap_tui.tv.get_width() {
+        if chap_tui.cursor_x < chap_tui.elem.tv.get_width() {
             chap_tui.cursor_x += 1;
-            if chap_tui.cursor_x >= chap_tui.tv.get_width()
-                && chap_tui.cursor_y < chap_tui.tv.get_height()
+            if chap_tui.cursor_x >= chap_tui.elem.tv.get_width()
+                && chap_tui.cursor_y < chap_tui.elem.tv.get_height()
             {
                 //不断添加字符 还是续接上一行
                 chap_tui.is_last_line = true;
@@ -814,7 +814,7 @@ impl Handle for HandleHex {
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         //todo!("Handle enter in hex mode");
-        let cmd_inp = chap_tui.cmd_inp.get_inp();
+        let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
         let cmd = Command::parse(cmd_inp);
         match cmd {
             Command::Back => {
@@ -867,11 +867,11 @@ impl Handle for HandleHex {
                 // 新建一个文件 把bytes 保存到文件
                 let mut file = File::create(c.get_filepath())?;
                 // 写入字节数组
-                chap_tui.cmd_inp.clear();
+                chap_tui.elem.cmd_inp.clear();
                 if let Ok(_) = file.write_all(&bytes) {
-                    chap_tui.cmd_inp.push_str("save file success");
+                    chap_tui.elem.cmd_inp.push_str("save file success");
                 } else {
-                    chap_tui.cmd_inp.push_str("save file failed");
+                    chap_tui.elem.cmd_inp.push_str("save file failed");
                 }
             }
 
@@ -881,11 +881,11 @@ impl Handle for HandleHex {
                 // 新建一个文件 把bytes 保存到文件
                 let mut file = File::create(c.get_filepath())?;
                 // 写入字节数组
-                chap_tui.cmd_inp.clear();
+                chap_tui.elem.cmd_inp.clear();
                 if let Ok(_) = file.write_all(&bytes) {
-                    chap_tui.cmd_inp.push_str("save file success");
+                    chap_tui.elem.cmd_inp.push_str("save file success");
                 } else {
-                    chap_tui.cmd_inp.push_str("save file failed");
+                    chap_tui.elem.cmd_inp.push_str("save file failed");
                 }
             }
             Command::Call(function) => {
@@ -1083,7 +1083,7 @@ impl Handle for HandleHex {
         line_meta: &'a RingVec<EditLineMeta>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.cmd_inp.pop();
+        chap_tui.elem.cmd_inp.pop();
         Ok(())
     }
 
@@ -1094,10 +1094,10 @@ impl Handle for HandleHex {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
-        if chap_tui.cmd_inp.len() >= 50 {
+        if chap_tui.elem.cmd_inp.len() >= 50 {
             return Ok(()); // 限制输入长度为16
         }
-        chap_tui.cmd_inp.push(c);
+        chap_tui.elem.cmd_inp.push(c);
         Ok(())
     }
 }

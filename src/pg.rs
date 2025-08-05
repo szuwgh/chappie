@@ -11,7 +11,6 @@ pub struct PageHeaderData {
     pub pd_special: u16,
     pub pd_pagesize_version: u16,
     pub pd_prune_xid: u32,
-    // pd_linp follows
 }
 
 impl PageHeaderData {
