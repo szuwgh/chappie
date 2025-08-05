@@ -13,6 +13,7 @@ use crate::editor::TextOper;
 use crate::editor::TextWarp;
 use crate::editor::TextWarpType;
 use crate::error::ChapResult;
+use crate::function::FunctionPlugin;
 use crate::fuzzy::Match;
 use crate::handle::Handle;
 use crate::handle::HandleEdit;
@@ -112,11 +113,11 @@ pub(crate) struct TuiElement {
 
 pub(crate) struct ChapTui {
     chap_mod: ChapMod,
+    ui_type: UIType,
     size: Size,
     pub(crate) warp_type: TextWarpType,
     pub(crate) terminal: Terminal<CrosstermBackend<io::Stdout>>,
     pub(crate) elem: TuiElement,
-    ui_type: UIType,
     pub(crate) back_linenum: Vec<usize>, // 上一行号
     pub(crate) txt_sel: TextSelect,      // 文本选择
     pub(crate) cursor_x: usize,          // 光标x坐标
@@ -966,6 +967,14 @@ impl ChapTui {
     }
 
     pub(crate) async fn render<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+        let hand = match self.chap_mod {
+            ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
+            ChapMod::Text => todo!(),
+            ChapMod::Hex => HandleImpl::Hex(HandleHex::new(FunctionPlugin::new())),
+            _ => {
+                todo!()
+            }
+        };
         loop {
             let size = self.terminal.size()?;
             let elem = Self::get_react(&self.ui_type, &self.chap_mod, &size)?;
@@ -1003,14 +1012,7 @@ impl ChapTui {
                     todo!()
                 }
             };
-            let hand = match self.chap_mod {
-                ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
-                ChapMod::Text => todo!(),
-                ChapMod::Hex => HandleImpl::Hex(HandleHex::new()),
-                _ => {
-                    todo!()
-                }
-            };
+
             td.get_one_page(1)?;
             'tui: loop {
                 let size = self.terminal.size()?;

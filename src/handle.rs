@@ -9,7 +9,8 @@ use crate::editor::TextWarpType;
 use crate::editor::HEX_WITH;
 use crate::error::ChapResult;
 use crate::execute;
-use crate::function::format_function_list;
+use crate::function::FunctionPlugin;
+use crate::plugin::Plugin;
 use crate::tui::TextSelect;
 use crate::ChapTui;
 use crossterm::cursor::Show;
@@ -21,7 +22,7 @@ use std::path::Path;
 use std::process::exit;
 pub(crate) enum HandleImpl {
     Edit(HandleEdit),
-    Hex(HandleHex),
+    Hex(HandleHex<FunctionPlugin>),
 }
 
 impl Handle for HandleImpl {
@@ -582,11 +583,13 @@ impl Handle for HandleEdit {
     }
 }
 
-pub(crate) struct HandleHex;
+pub(crate) struct HandleHex<T: Plugin> {
+    plugin: T,
+}
 
-impl HandleHex {
-    pub(crate) fn new() -> Self {
-        HandleHex {}
+impl<T: Plugin> HandleHex<T> {
+    pub(crate) fn new(plugin: T) -> Self {
+        HandleHex { plugin }
     }
 
     fn jump_to_address(
@@ -634,7 +637,7 @@ impl HandleHex {
     }
 }
 
-impl Handle for HandleHex {
+impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_ctrl_s<P: AsRef<Path>>(
         &self,
         chap_tui: &mut ChapTui,
@@ -890,11 +893,12 @@ impl Handle for HandleHex {
             }
             Command::Call(function) => {
                 let b = td.get_text_from_sel(&chap_tui.txt_sel);
-                let a = function.call(ByteView::new(b, chap_tui.endian.clone()));
+                // let a = function.call(ByteView::new(b, chap_tui.endian.clone()));
+                let a = self.plugin.eval(&function, &b);
                 chap_tui.assist_tv2_data = a;
             }
             Command::ListFunc => {
-                chap_tui.assist_tv2_data = format_function_list();
+                chap_tui.assist_tv2_data = self.plugin.list();
             }
             Command::Unknown(cmd) => {}
         }

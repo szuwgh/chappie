@@ -59,11 +59,11 @@ half = "2.6.0"
 hex = "0.4.3"
 color-eyre = "0.6.5"
 dirs = "5.0"
-
+mlua = { version = "0.10", features = ["lua54", "vendored", "error-send"] }
 
 #ask_gemini = {path = "rust-lib/ask_gemini", version = "0.1.4"}  
 #llmapi = {path = "crates/llmapi", version = "0.0.1"}  
 #groq-api-rs = "0.2.0"
-#openssl = { version = "0.10", default-features = false, features = ["vendored"] }  
+#openssl = { version = "0.10", default-features = false, features = [ "vendored"] }  
 #reqwest = { version = "0.12.5", features = ["blocking", "json", "multipart"] }
 

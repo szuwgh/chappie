@@ -51,8 +51,8 @@ impl fmt::Display for PageHeaderData {
     }
 }
 
-pub(crate) fn parse_pg_page_header(b: &ByteView) -> String {
-    let buf = b.get_data();
+pub(crate) fn parse_pg_page_header(buf: &[u8]) -> String {
+    //let buf = b.get_data();
     if buf.len() < 8 + 2 * 6 + 4 {
         return "pg_page_header < 24".to_string();
     }
@@ -103,8 +103,8 @@ impl std::fmt::Display for ItemIdData {
 
 /// 从 page header 中已解析的 pd_lower 计算 item count（指针数量）
 /// 并逐个读取每个行指针，解析 bit 字段。
-pub fn format_item_ids(b: &ByteView) -> String {
-    let buf = b.get_data();
+pub fn format_item_ids(buf: &[u8]) -> String {
+    //let buf = b.get_data();
     if buf.len() < 4 {
         return "item_ids < 4".to_string();
     }
@@ -181,8 +181,8 @@ impl fmt::Display for HeapTupleHeader {
     }
 }
 
-pub(crate) fn parse_heap_tuple_header(b: &ByteView) -> String {
-    let buf = b.get_data();
+pub(crate) fn parse_heap_tuple_header(buf: &[u8]) -> String {
+    // let buf = b.get_data();
     // 需要至少到 t_hoff 字节：4+4+4+6+2+2+1 = 23 字节
     if buf.len() < 23 {
         return "heap_tuple_header < 23".to_string();
@@ -226,8 +226,8 @@ pub(crate) fn parse_heap_tuple_header(b: &ByteView) -> String {
 }
 
 /// varatt_external 结构在 tuple 中保存的位置，请你确保 buf 是从 va_data 开始读取的
-pub fn format_va_extinfo(b: &ByteView) -> String {
-    let buf = b.get_data();
+pub fn format_va_extinfo(buf: &[u8]) -> String {
+    // let buf = b.get_data();
     // 确保至少能读取 va_extinfo （4 bytes）在 offset 4，从 va_rawsize 后
     if buf.len() < 4 {
         return "buf < 4".to_string();
@@ -282,9 +282,9 @@ impl fmt::Display for VarattExternal {
 }
 
 /// 解析一个 varlena pointer datum buffer，返回解析后的 `VarattExternal`
-pub fn format_varatt_external(b: &ByteView) -> String {
+pub fn format_varatt_external(attr: &[u8]) -> String {
     // 需要至少 header(1B) + tag(1B) + struct size (16B)
-    let attr = b.get_data();
+    // let attr = b.get_data();
     const VA_EXTERNAL_SIZE: usize = 16;
     const HEADER_AND_TAG: usize = 2;
     if attr.len() < HEADER_AND_TAG + VA_EXTERNAL_SIZE {

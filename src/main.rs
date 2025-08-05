@@ -3,22 +3,23 @@
 #![feature(let_chains)]
 #![feature(trait_alias)]
 //mod chatapi;
-mod error;
-mod fuzzy;
-mod vb;
-use std::io::{self, Read};
 mod byteutil;
 mod chap;
 mod cli;
 mod command;
 mod editor;
+mod error;
 mod function;
+mod fuzzy;
 mod gap_buffer;
 mod handle;
+mod lua;
 mod pg;
+mod plugin;
 mod textwarp;
 mod tui;
 mod util;
+mod vb;
 use crate::cli::Cli;
 use crate::handle::tui_retore;
 use crate::util::mmap_file;

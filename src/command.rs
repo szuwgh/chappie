@@ -1,5 +1,4 @@
 use crate::byteutil::Endian;
-use crate::function::Function;
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
     Back,
@@ -11,7 +10,7 @@ pub(crate) enum Command {
     Unknown(String),   // unknown command
     Cut(CutFile),
     CutSel(CutSelFile),
-    Call(Function),
+    Call(String),
     ListFunc,
 }
 
@@ -104,7 +103,7 @@ impl Command {
                     Command::Unknown(input.to_string())
                 }
             }
-            ["call", function] => Command::Call(Function(function.to_string())),
+            ["call", function] => Command::Call(function.to_string()),
             _ => Command::Unknown(input.to_string()),
         }
     }
