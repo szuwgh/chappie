@@ -1,4 +1,3 @@
-use crate::byteutil::ByteView;
 use crate::command::Command;
 use crate::command::FindValue;
 use crate::editor::EditLineMeta;
@@ -9,7 +8,7 @@ use crate::editor::TextWarpType;
 use crate::editor::HEX_WITH;
 use crate::error::ChapResult;
 use crate::execute;
-use crate::function::FunctionPlugin;
+use crate::lua::LuaPlugin;
 use crate::plugin::Plugin;
 use crate::tui::TextSelect;
 use crate::ChapTui;
@@ -22,7 +21,7 @@ use std::path::Path;
 use std::process::exit;
 pub(crate) enum HandleImpl {
     Edit(HandleEdit),
-    Hex(HandleHex<FunctionPlugin>),
+    Hex(HandleHex<LuaPlugin>),
 }
 
 impl Handle for HandleImpl {
@@ -894,11 +893,11 @@ impl<T: Plugin> Handle for HandleHex<T> {
             Command::Call(function) => {
                 let b = td.get_text_from_sel(&chap_tui.txt_sel);
                 // let a = function.call(ByteView::new(b, chap_tui.endian.clone()));
-                let a = self.plugin.eval(&function, &b);
+                let a = self.plugin.eval(&function, &b)?;
                 chap_tui.assist_tv2_data = a;
             }
             Command::ListFunc => {
-                chap_tui.assist_tv2_data = self.plugin.list();
+                chap_tui.assist_tv2_data = self.plugin.list()?;
             }
             Command::Unknown(cmd) => {}
         }

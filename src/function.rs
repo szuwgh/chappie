@@ -1,10 +1,10 @@
-use crate::byteutil::ByteView;
 use crate::pg::format_item_ids;
 use crate::pg::format_va_extinfo;
 use crate::pg::format_varatt_external;
 use crate::pg::parse_heap_tuple_header;
 use crate::pg::parse_pg_page_header;
 use crate::plugin::Plugin;
+use crate::ChapResult;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -33,25 +33,25 @@ impl FunctionPlugin {
 }
 
 impl Plugin for FunctionPlugin {
-    fn eval(&self, name: &str, buf: &[u8]) -> String {
+    fn eval(&self, name: &str, buf: &[u8]) -> ChapResult<String> {
         if let Some(func) = self.function_registry.get(name) {
-            return func(buf);
+            return Ok(func(buf));
         }
-        "no function call".to_string()
+        Ok("no function call".to_string())
     }
 
-    fn list(&self) -> String {
+    fn list(&self) -> ChapResult<String> {
         let mut names = self.list_registered_functions();
         if names.is_empty() {
-            "No functions registered.".to_string()
+            Ok("No functions registered.".to_string())
         } else {
             // 原地按字母升序排序
             names.sort();
-            names
+            Ok(names
                 .iter()
                 .map(|name| format!("* {}", name))
                 .collect::<Vec<_>>()
-                .join("\n")
+                .join("\n"))
         }
     }
 }

@@ -13,12 +13,12 @@ use crate::editor::TextOper;
 use crate::editor::TextWarp;
 use crate::editor::TextWarpType;
 use crate::error::ChapResult;
-use crate::function::FunctionPlugin;
 use crate::fuzzy::Match;
 use crate::handle::Handle;
 use crate::handle::HandleEdit;
 use crate::handle::HandleHex;
 use crate::handle::HandleImpl;
+use crate::lua::LuaPlugin;
 use crate::textwarp::LineMeta;
 use const_hex::Buffer;
 use crossterm::event::KeyEvent;
@@ -966,11 +966,15 @@ impl ChapTui {
         Ok(())
     }
 
-    pub(crate) async fn render<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
+    pub(crate) async fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
+        &mut self,
+        p: P1,
+        plugin: P2,
+    ) -> ChapResult<()> {
         let hand = match self.chap_mod {
             ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
             ChapMod::Text => todo!(),
-            ChapMod::Hex => HandleImpl::Hex(HandleHex::new(FunctionPlugin::new())),
+            ChapMod::Hex => HandleImpl::Hex(HandleHex::new(LuaPlugin::new(plugin))),
             _ => {
                 todo!()
             }
@@ -1046,41 +1050,70 @@ impl ChapTui {
                                 hand.handle_esc(self)?;
                             }
                             (KeyCode::Up, KeyModifiers::CONTROL) => {
-                                hand.handle_shift_up(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_shift_up(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Down, KeyModifiers::CONTROL) => {
-                                hand.handle_shift_down(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_shift_down(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Right, KeyModifiers::CONTROL) => {
-                                hand.handle_shift_right(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_shift_right(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Left, KeyModifiers::CONTROL) => {
-                                hand.handle_shift_left(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_shift_left(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Up, _) => {
-                                hand.handle_up(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_up(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Down, _) => {
-                                hand.handle_down(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_down(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Left, _) => {
-                                hand.handle_left(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_left(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Right, _) => {
-                                hand.handle_right(self, &line_meta, &td)?;
+                                if let Err(e) = hand.handle_right(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                hand.handle_ctrl_c(self)?
+                                if let Err(e) = hand.handle_ctrl_c(self) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                                hand.handle_ctrl_s(self, &p, &mut td)?;
+                                if let Err(e) = hand.handle_ctrl_s(self, &p, &mut td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
-                            (KeyCode::Enter, _) => hand.handle_enter(self, line_meta, &td)?,
+                            (KeyCode::Enter, _) => {
+                                if let Err(e) = hand.handle_enter(self, line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
                             (KeyCode::Backspace, _) => {
-                                hand.handle_backspace(self, line_meta, &td)?
+                                if let Err(e) = hand.handle_backspace(self, line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
-
-                            (KeyCode::Char(c), _) => hand.handle_char(self, line_meta, &td, c)?,
+                            (KeyCode::Char(c), _) => {
+                                if let Err(e) = hand.handle_char(self, line_meta, &td, c) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
                             _ => {}
                         }
                     }

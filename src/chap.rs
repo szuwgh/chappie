@@ -6,6 +6,7 @@ use simplelog::*;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
+use std::path::PathBuf;
 use tokio::runtime::Builder;
 use tokio::sync::mpsc;
 
@@ -26,13 +27,17 @@ pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 //app
 pub(crate) struct Chappie {
     tui: ChapTui,
+    chap_log_dir: PathBuf,
+    chap_plugin_dir: PathBuf,
 }
 //
 impl Chappie {
     pub(crate) fn init(&self) -> ChapResult<()> {
         let home = dirs::home_dir().expect("Failed to get home directory");
         let chap_log_dir = home.join(".chap/log");
+        let chap_plugin_dir = home.join(".chap/plugin");
         fs::create_dir_all(&chap_log_dir)?;
+        fs::create_dir_all(&chap_plugin_dir)?;
         // 配置日志输出到文件
         WriteLogger::init(
             LevelFilter::Debug,                           // 设置日志级别
@@ -45,6 +50,18 @@ impl Chappie {
     pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
         let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
         let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
+        let home = dirs::home_dir().expect("Failed to get home directory");
+        let chap_log_dir = home.join(".chap/log");
+        let chap_plugin_dir = PathBuf::from("/home/postgres/rsproject/chappie/plugin"); //home.join(".chap/plugin");
+        fs::create_dir_all(&chap_log_dir)?;
+        fs::create_dir_all(&chap_plugin_dir)?;
+        // 配置日志输出到文件
+        WriteLogger::init(
+            LevelFilter::Debug,                           // 设置日志级别
+            Config::default(),                            // 使用默认日志配置
+            File::create(chap_log_dir.join("chap.log"))?, // 创建日志文件
+        )?;
+
         let chap_ui = ChapTui::new(
             cli.get_chap_mod(),
             prompt_tx,
@@ -53,12 +70,15 @@ impl Chappie {
             cli.get_que(),
         )?;
 
-        Ok(Self { tui: chap_ui })
+        Ok(Self {
+            tui: chap_ui,
+            chap_log_dir: chap_log_dir,
+            chap_plugin_dir: chap_plugin_dir,
+        })
     }
 
     pub(crate) fn run<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        self.init()?;
-        RUNTIME.block_on(async move { self.tui.render(p).await })
+        RUNTIME.block_on(async move { self.tui.render(p, self.chap_plugin_dir.as_path()).await })
     }
 }
 
