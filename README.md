@@ -13,7 +13,7 @@ Analyze binary structures such as headers or firmware dumps
 Ensure byte-level accuracy for debugging, reverse engineering, or file repair
 Useful for database, developers, reverse engineers, and digital forensics experts.
 
-<img src="./docs/img4.png" style="zoom:60%;" />
+<img src="./docs/img4.png" style="zoom:50%;" />
 
 ## Keybindings
 
