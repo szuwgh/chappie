@@ -19,7 +19,7 @@ use crate::handle::HandleEdit;
 use crate::handle::HandleHex;
 use crate::handle::HandleImpl;
 use crate::lua::LuaPlugin;
-use crate::textwarp::LineMeta;
+// use crate::textwarp::LineMeta;
 use const_hex::Buffer;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -989,7 +989,7 @@ impl ChapTui {
             let twy = TextWarpType::NoWrap;
             let mut td: TextDisplay = match self.chap_mod {
                 ChapMod::Edit => {
-                    return Ok(());
+                    // return Ok(());
                     TextDisplay::Edit(EditTextWarp::new(
                         GapText::from_file_path(&p)?,
                         self.elem.tv.get_height(),
@@ -1938,28 +1938,28 @@ impl ChatInput {
     }
 }
 
-fn get_chat_content<'a>(
-    txts: &Vec<&'a str>,
-    line_meta: &Vec<LineMeta>,
-    chat_item: &ChatItemIndex,
-) -> Text<'a> {
-    let mut lines = Vec::with_capacity(line_meta.len());
-    //  debug!("{:?},{:?}", line_meta, chat_item);
-    for (i, txt) in txts.into_iter().enumerate() {
-        let line_num = line_meta[i].get_line_num();
-        // debug!("text: {:?}", *text);
-        if line_num >= chat_item.start() && line_num <= chat_item.end() {
-            lines.push(Line::from(Span::styled(
-                *txt,
-                Style::default().fg(Color::Green),
-            )));
-        } else {
-            lines.push(Line::from(*txt));
-        }
-    }
-    let text = Text::from(lines);
-    text
-}
+// fn get_chat_content<'a>(
+//     txts: &Vec<&'a str>,
+//     line_meta: &Vec<LineMeta>,
+//     chat_item: &ChatItemIndex,
+// ) -> Text<'a> {
+//     let mut lines = Vec::with_capacity(line_meta.len());
+//     //  debug!("{:?},{:?}", line_meta, chat_item);
+//     for (i, txt) in txts.into_iter().enumerate() {
+//         let line_num = line_meta[i].get_line_num();
+//         // debug!("text: {:?}", *text);
+//         if line_num >= chat_item.start() && line_num <= chat_item.end() {
+//             lines.push(Line::from(Span::styled(
+//                 *txt,
+//                 Style::default().fg(Color::Green),
+//             )));
+//         } else {
+//             lines.push(Line::from(*txt));
+//         }
+//     }
+//     let text = Text::from(lines);
+//     text
+// }
 
 fn n_chars_skip_control_mem_opt(s: &str, n: usize) -> (&str, &str, &str) {
     let mut count = 0;
@@ -2456,94 +2456,94 @@ fn get_edit_content<'a>(
     (nav_text, text)
 }
 
-fn get_content<'a>(
-    txts: &'a Vec<&str>,
-    line_meta: &'a Vec<LineMeta>,
-    cur_line: usize,
-    select_line: &Option<(usize, usize)>,
-    height: usize,
-) -> (Text<'a>, Text<'a>) {
-    // assert!(content.len() == line_meta.len());
-    let mut lines = Vec::with_capacity(line_meta.len());
-    for (i, txt) in txts.into_iter().enumerate() {
-        let mut spans = Vec::new();
-        let mf = line_meta[i].get_match(); //fuzzy_search(input, text, false);
-        if let Some(m) = mf {
-            match m {
-                Match::Char(_) => {
-                    todo!()
-                }
-                Match::Byte(v) => {
-                    let mut current_idx = 0;
-                    for bm in v.into_iter() {
-                        if current_idx < bm.start && bm.start <= txt.len() {
-                            spans.push(Span::raw(&txt[current_idx..bm.start]));
-                        }
-                        // 添加高亮文本
-                        if bm.start < txt.len() && bm.end <= txt.len() {
-                            spans.push(Span::styled(
-                                &txt[bm.start..bm.end],
-                                Style::default().bg(Color::Green),
-                            ));
-                        }
-                        // 更新当前索引为高亮区间的结束位置
-                        current_idx = bm.end;
-                    }
-                    // 添加剩余的文本（如果有）
-                    if current_idx < txt.len() {
-                        spans.push(Span::raw(&txt[current_idx..]));
-                    }
-                }
-            }
-        }
-        if let Some((st, en)) = select_line {
-            if (line_meta[i].get_line_num() >= *st && line_meta[i].get_line_num() <= *en)
-                || i == cur_line
-            {
-                lines.push(Line::from(Span::styled(
-                    *txt,
-                    Style::default().bg(Color::LightRed), // 设置背景颜色为红色
-                )));
-            } else {
-                if spans.len() > 0 {
-                    lines.push(Line::from(spans));
-                } else {
-                    lines.push(Line::from(*txt));
-                }
-            }
-        } else {
-            if i == cur_line {
-                lines.push(Line::from(Span::styled(
-                    *txt,
-                    Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
-                )));
-            } else {
-                if spans.len() > 0 {
-                    lines.push(Line::from(spans));
-                } else {
-                    lines.push(Line::from(*txt));
-                }
-            }
-        }
-    }
+// fn get_content<'a>(
+//     txts: &'a Vec<&str>,
+//     line_meta: &'a Vec<EditLineMeta>,
+//     cur_line: usize,
+//     select_line: &Option<(usize, usize)>,
+//     height: usize,
+// ) -> (Text<'a>, Text<'a>) {
+//     // assert!(content.len() == line_meta.len());
+//     let mut lines = Vec::with_capacity(line_meta.len());
+//     for (i, txt) in txts.into_iter().enumerate() {
+//         let mut spans = Vec::new();
+//         let mf = line_meta[i].get_match(); //fuzzy_search(input, text, false);
+//         if let Some(m) = mf {
+//             match m {
+//                 Match::Char(_) => {
+//                     todo!()
+//                 }
+//                 Match::Byte(v) => {
+//                     let mut current_idx = 0;
+//                     for bm in v.into_iter() {
+//                         if current_idx < bm.start && bm.start <= txt.len() {
+//                             spans.push(Span::raw(&txt[current_idx..bm.start]));
+//                         }
+//                         // 添加高亮文本
+//                         if bm.start < txt.len() && bm.end <= txt.len() {
+//                             spans.push(Span::styled(
+//                                 &txt[bm.start..bm.end],
+//                                 Style::default().bg(Color::Green),
+//                             ));
+//                         }
+//                         // 更新当前索引为高亮区间的结束位置
+//                         current_idx = bm.end;
+//                     }
+//                     // 添加剩余的文本（如果有）
+//                     if current_idx < txt.len() {
+//                         spans.push(Span::raw(&txt[current_idx..]));
+//                     }
+//                 }
+//             }
+//         }
+//         if let Some((st, en)) = select_line {
+//             if (line_meta[i].get_line_num() >= *st && line_meta[i].get_line_num() <= *en)
+//                 || i == cur_line
+//             {
+//                 lines.push(Line::from(Span::styled(
+//                     *txt,
+//                     Style::default().bg(Color::LightRed), // 设置背景颜色为红色
+//                 )));
+//             } else {
+//                 if spans.len() > 0 {
+//                     lines.push(Line::from(spans));
+//                 } else {
+//                     lines.push(Line::from(*txt));
+//                 }
+//             }
+//         } else {
+//             if i == cur_line {
+//                 lines.push(Line::from(Span::styled(
+//                     *txt,
+//                     Style::default().bg(Color::LightRed), // 设置背景颜色为蓝色
+//                 )));
+//             } else {
+//                 if spans.len() > 0 {
+//                     lines.push(Line::from(spans));
+//                 } else {
+//                     lines.push(Line::from(*txt));
+//                 }
+//             }
+//         }
+//     }
 
-    let nav_text = Text::from(
-        (0..height)
-            .enumerate()
-            .map(|(i, _)| {
-                if i == cur_line {
-                    Line::from(Span::styled(">", Style::default().fg(Color::LightRed)))
-                // 高亮当前行
-                } else {
-                    Line::from(" ") // 非当前行为空白
-                }
-            })
-            .collect::<Vec<Line>>(),
-    );
+//     let nav_text = Text::from(
+//         (0..height)
+//             .enumerate()
+//             .map(|(i, _)| {
+//                 if i == cur_line {
+//                     Line::from(Span::styled(">", Style::default().fg(Color::LightRed)))
+//                 // 高亮当前行
+//                 } else {
+//                     Line::from(" ") // 非当前行为空白
+//                 }
+//             })
+//             .collect::<Vec<Line>>(),
+//     );
 
-    let text = Text::from(lines);
-    (nav_text, text)
-}
+//     let text = Text::from(lines);
+//     (nav_text, text)
+// }
 
 // 获取要显示的内容（根据终端高度和偏移量）
 

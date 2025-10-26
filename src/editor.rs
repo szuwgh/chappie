@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, Write};
+use std::iter::Empty;
 use std::ops::Bound;
 use std::ops::RangeBounds;
 use std::path::{Path, PathBuf};
@@ -652,6 +653,14 @@ pub(crate) trait Text {
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>>;
 
+    //反向迭代
+    fn iter_rev<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = LineStr<'a>>;
+
     fn iter_u8<'a>(
         &'a mut self,
         line_index: usize,
@@ -660,7 +669,7 @@ pub(crate) trait Text {
     ) -> impl Iterator<Item = u8>;
 }
 
-trait TextIndex {
+pub(crate) trait TextIndex {
     fn get_page_offset(&self, line_num: usize) -> PageOffset;
     fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset);
 }
@@ -685,6 +694,25 @@ impl<'a> GapTextIter<'a> {
 }
 
 impl<'a> Iterator for GapTextIter<'a> {
+    type Item = LineStr<'a>;
+    fn next(&mut self) -> Option<LineStr<'a>> {
+        self.lines.next().map(|line| line.get_line_str())
+    }
+}
+
+struct GapTextIterRev<'a> {
+    lines: std::iter::Rev<std::slice::IterMut<'a, GapBuffer>>,
+}
+
+impl<'a> GapTextIterRev<'a> {
+    fn new(lines: &'a mut [GapBuffer], line_index: usize) -> GapTextIterRev<'a> {
+        GapTextIterRev {
+            lines: lines[..line_index].iter_mut().rev(),
+        }
+    }
+}
+
+impl<'a> Iterator for GapTextIterRev<'a> {
     type Item = LineStr<'a>;
     fn next(&mut self) -> Option<LineStr<'a>> {
         self.lines.next().map(|line| line.get_line_str())
@@ -771,7 +799,6 @@ impl<'a> LineData<'a> {
 }
 
 pub struct LineStr<'a> {
-    // pub(crate) line: GapBytes<'a>,
     pub(crate) line_data: LineData<'a>,
     pub(crate) line_file_start: usize,
     pub(crate) line_file_end: usize,
@@ -1091,16 +1118,6 @@ impl Text for HexText {
             }
             // 更新起点为当前块末尾，继续下一块
             start = s.file_end;
-            // if start >= s.file_start && end <= s.file_end {
-            //     buf.extend_from_slice(
-            //         &s.buffer
-            //             .text(start - s.file_start..=end - s.file_start)
-            //             .to_vec(),
-            //     );
-            // } else if start >= s.file_start && end > s.file_end && start < s.file_end {
-            //     buf.extend_from_slice(&s.buffer.text(start - s.file_start..).to_vec());
-            //     start = s.file_end;
-            // }
         }
         buf
     }
@@ -1167,7 +1184,6 @@ impl Text for HexText {
                 };
             }
         }
-        //assert!(false, "not found line");
         return LineStr {
             // line: buffer,
             line_data: LineData::Bytes(&[]),
@@ -1185,6 +1201,15 @@ impl Text for HexText {
             return false;
         }
         return true;
+    }
+
+    fn iter_rev<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = LineStr<'a>> {
+        self.iter(line_index, line_offset, line_file_start)
     }
 
     fn iter<'a>(
@@ -1253,12 +1278,6 @@ impl Text for HexText {
                 }
             }
             self.reset_chunks(line_file_start);
-            // let n = (self.file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
-            // let last_chunk_address = (n - CHUNK_NUM) * CHUNK_SIZE;
-            // //如果没有找到块 从新重读chunks
-            // //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
-            // let chunk_start = (line_file_start / CHUNK_SIZE * CHUNK_SIZE).min(last_chunk_address);
-            // self.read_chunks(chunk_start).unwrap();
         }
     }
 
@@ -1296,7 +1315,6 @@ impl Text for HexText {
 
 struct HexTextU8Iter<'a> {
     hex_text: &'a mut HexText,
-    //chunk_index: usize,
     i: usize,
 }
 
@@ -1309,25 +1327,7 @@ impl<'a> HexTextU8Iter<'a> {
 impl<'a> Iterator for HexTextU8Iter<'a> {
     type Item = u8;
     fn next(&mut self) -> Option<Self::Item> {
-        //let mut chunk_len = self.hex_text.chunks.len();
-
         loop {
-            // 如果当前 chunk_index 无效，尝试加载更多或直接结束
-            // if self.chunk_index >= chunk_len {
-            //     let seek = if chunk_len > 0 {
-            //         let prev = &self.hex_text.chunks.get(chunk_len - 1)?;
-            //         prev.file_end
-            //     } else {
-            //         0
-            //     };
-            //     if seek >= self.hex_text.file_size {
-            //         return None;
-            //     }
-            //     self.hex_text.read_next_chunk(seek).unwrap();
-            //     chunk_len = self.hex_text.chunks.len();
-            //     self.chunk_index = chunk_len - 1; // 重置到最后一个 chunk
-            // }
-
             // 获取当前 chunk 并从中读取一字节
             let chunk = &self.hex_text.chk_iter;
             let buffer = chunk.buffer.text(..);
@@ -1416,7 +1416,6 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 v.extend_from_slice(buf1.right());
                                 self.line_file_start += len + buf1.len();
                                 return Some(LineStr {
-                                    // line: buffer,
                                     line_data: LineData::Own(v),
                                     line_file_start: line_start,
                                     line_file_end: line_start + len + buf1.len(),
@@ -1427,7 +1426,6 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 v.extend_from_slice(buf2.left());
                                 v.extend_from_slice(buf2.right());
                                 return Some(LineStr {
-                                    // line: buffer,
                                     line_data: LineData::Own(v),
                                     line_file_start: line_start,
                                     line_file_end: line_start + self.with,
@@ -1435,9 +1433,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                             }
                         } else {
                             self.line_file_start += len;
-                            // println!("读取完毕");
                             return Some(LineStr {
-                                //   line: buffer,
                                 line_data: LineData::GapBytes(buffer),
                                 line_file_start: line_start,
                                 line_file_end: line_start + len,
@@ -1445,9 +1441,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                         }
                     } else {
                         self.line_file_start += len;
-                        // println!("读取完毕");
                         return Some(LineStr {
-                            //   line: buffer,
                             line_data: LineData::GapBytes(buffer),
                             line_file_start: line_start,
                             line_file_end: line_start + len,
@@ -1587,6 +1581,15 @@ impl Text for MmapText {
         MmapTextIter::new(&self.mmap, line_index, line_start, self.mmap.len())
     }
 
+    fn iter_rev<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = LineStr<'a>> {
+        self.iter(line_index, line_offset, line_file_start)
+    }
+
     fn iter_u8<'a>(
         &'a mut self,
         line_index: usize,
@@ -1598,8 +1601,9 @@ impl Text for MmapText {
 }
 
 pub(crate) struct GapText {
-    lines: Vec<GapBuffer>, //每行使用 GapBuffer 存储
-    file_size: usize,      //文件大小
+    lines: Vec<GapBuffer>,             //每行使用 GapBuffer 存储
+    file_size: usize,                  //文件大小
+    page_offset_list: Vec<PageOffset>, //分页偏移列表
 }
 
 impl GapText {
@@ -1627,6 +1631,7 @@ impl GapText {
         Ok(GapText {
             lines: gap_buffers,
             file_size: 0,
+            page_offset_list: Vec::new(),
         })
     }
 
@@ -1640,6 +1645,10 @@ impl GapText {
 
     fn get_iter(&mut self, line_index: usize) -> GapTextIter {
         GapTextIter::new(&mut self.lines, line_index)
+    }
+
+    fn get_iter_rev(&mut self, line_index: usize) -> GapTextIterRev {
+        GapTextIterRev::new(&mut self.lines, line_index)
     }
 
     pub(crate) fn get_text_len(&self, index: usize) -> usize {
@@ -1707,11 +1716,10 @@ impl Text for GapText {
     }
 
     fn has_next_line(&self, meta: &EditLineMeta) -> bool {
-        let mut line_index = meta.get_line_index();
-        let mut line_end = meta.get_line_end();
-        // 结束
+        let line_index = meta.get_line_index();
+        let line_end = meta.get_line_end();
         if line_index == self.lines.len() - 1 && line_end == self.get_text_len(line_index) {
-            return false; // return (None, EditLineMeta::default());
+            return false;
         }
         true
     }
@@ -1736,6 +1744,15 @@ impl Text for GapText {
         line_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
         self.get_iter(line_index)
+    }
+
+    fn iter_rev<'a>(
+        &'a mut self,
+        line_index: usize,
+        line_offset: usize,
+        line_file_start: usize,
+    ) -> impl Iterator<Item = LineStr<'a>> {
+        self.get_iter_rev(line_index)
     }
 
     fn iter_u8<'a>(
@@ -1840,7 +1857,7 @@ impl EditText for GapText {
 pub(crate) struct TextWarp<T: Text + TextIndex> {
     lines: UnsafeCell<T>,                               // 文本
     cache_lines: UnsafeCell<RingVec<CacheStr>>,         // 缓存行
-    cache_line_meta: UnsafeCell<RingVec<EditLineMeta>>, // 缓存行
+    cache_line_meta: UnsafeCell<RingVec<EditLineMeta>>, // 缓存行元数据
     //page_offset_list: UnsafeCell<Vec<PageOffset>>,      // 每页的偏移量
     height: usize, //最大行数
     with: usize,
@@ -1934,12 +1951,33 @@ impl<T: Text + TextIndex> TextWarp<T> {
     }
 
     //从当前行开始获取前面n行
+    pub(crate) fn get_pre_line2<'a>(
+        &'a self,
+        meta: &EditLineMeta,
+        line_count: usize,
+    ) -> (Option<CacheStr>, EditLineMeta) {
+        assert!(meta.get_line_num() >= 1);
+
+        if meta.get_line_num() == 1 {
+            return (None, EditLineMeta::default());
+        }
+        let mut s = LineData::empty();
+        let mut m = EditLineMeta::default();
+        self.get_text(meta.get_line_num() - line_count, line_count, |txt, meta| {
+            s = txt;
+            m = meta;
+        });
+        (Some(CacheStr::from_data(s)), m)
+    }
+
+    //从当前行开始获取前面n行
     pub(crate) fn get_pre_line<'a>(
         &'a self,
         meta: &EditLineMeta,
         line_count: usize,
     ) -> (Option<CacheStr>, EditLineMeta) {
         assert!(meta.get_line_num() >= 1);
+
         if meta.get_line_num() == 1 {
             return (None, EditLineMeta::default());
         }
@@ -2241,7 +2279,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
 
         match text_warp_type {
             TextWarpType::NoWrap => {
-                //  todo!()
                 Self::no_warp(
                     line_str,
                     line_index,
@@ -2366,8 +2403,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
 
         for (i, (byte_index, ch)) in line_txt.char_indices().enumerate() {
             let ch_width = ch.width().unwrap_or(0);
-            // let byte_size = byte_index - cur_byte_index;
-            // cur_byte_index = byte_index;
             //检查是否超过屏幕宽度
             if current_width + ch_width > with {
                 let end = (line_offset + current_bytes).min(line_txt.len());
@@ -2985,8 +3020,8 @@ struct PageOffset {
     line_index: usize,      //第多少行
     line_offset: usize,     //行在总行的起始位置
     line_file_start: usize, //这一行在整个文件的起始位置
-    start_line_num: usize,
-    start_page_num: usize, //这一行在第几页开始
+    start_line_num: usize,  //开始的行数
+    start_page_num: usize,  //这一行在第几页开始
 }
 
 impl PageOffset {
