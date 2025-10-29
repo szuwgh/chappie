@@ -7,26 +7,27 @@ mod byteutil;
 mod chap;
 mod cli;
 mod command;
+mod common;
 mod editor;
-mod error;
+
 mod function;
 mod fuzzy;
-mod gap_buffer;
+
 mod handle;
 mod lua;
 mod pg;
 mod plugin;
 mod textwarp;
 mod tui;
-mod util;
+use crate::common::error::ChapError;
 mod vb;
 use crate::cli::Cli;
 use crate::handle::tui_retore;
-use crate::util::mmap_file;
+
 use chap::Chappie;
 use clap::Parser;
 use crossterm::execute;
-use error::ChapResult;
+
 use std::error::Error;
 use tui::ChapTui;
 fn main() -> Result<(), Box<dyn Error>> {
@@ -34,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let filename = cli.get_filepath()?;
     //校验文件是否存在
     if !std::path::Path::new(filename).exists() {
-        return Err(error::ChapError::FileNotFound(filename.to_string()).into());
+        return Err(ChapError::FileNotFound(filename.to_string()).into());
     }
     if atty::is(atty::Stream::Stdin) {
         if let Err(e) = run_app(&cli, filename) {

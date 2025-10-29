@@ -1,15 +1,21 @@
 use crate::command::Command;
 use crate::command::FindValue;
-use crate::editor::EditLineMeta;
-use crate::editor::RingVec;
-use crate::editor::TextDisplay;
-use crate::editor::TextOper;
-use crate::editor::TextWarpType;
-use crate::editor::HEX_WITH;
-use crate::error::ChapResult;
+// use crate::editor::EditLineMeta;
+// use crate::editor::RingVec;
+// use crate::editor::TextDisplay;
+// use crate::editor::TextOper;
+// use crate::editor::TextWarpType;
+// use crate::editor::HEX_WITH;
+use crate::common::error::ChapResult;
+use crate::common::ring_vec::RingVec;
 use crate::execute;
 use crate::lua::LuaPlugin;
 use crate::plugin::Plugin;
+use crate::textwarp::hex::HEX_WITH;
+use crate::textwarp::EditLineMeta;
+use crate::textwarp::TextDisplay;
+use crate::textwarp::TextOper;
+use crate::textwarp::TextWarpType;
 use crate::tui::TextSelect;
 use crate::ChapTui;
 use crossterm::cursor::Show;
@@ -496,13 +502,15 @@ impl Handle for HandleEdit {
             chap_tui.cursor_x,
             line_meta.get(chap_tui.cursor_y).unwrap(),
         )?;
+        td.get_one_page(chap_tui.start_line_num)?;
         if chap_tui.cursor_x == 0 {
-            chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y - 1).unwrap().get_txt_len();
-            chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+            let cursor_y = chap_tui.cursor_y.saturating_sub(1);
+            chap_tui.cursor_x = line_meta.get(cursor_y).unwrap().get_txt_len();
+            chap_tui.cursor_y = cursor_y;
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
         }
-        td.get_one_page(chap_tui.start_line_num)?;
+
         Ok(())
     }
 

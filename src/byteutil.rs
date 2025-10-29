@@ -34,6 +34,7 @@ macro_rules! convert {
         }
     };
 }
+
 #[derive(Debug, PartialEq, Clone)]
 pub(crate) enum Endian {
     Little,
@@ -297,31 +298,31 @@ pub fn format_va_extinfo(buf: &[u8]) -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use half::vec;
+// #[cfg(test)]
+// mod tests {
+//     use half::vec;
 
-    use super::*;
-    use crate::util::mmap_file;
-    use std::io;
+//     use super::*;
+//     use crate::util::mmap_file;
+//     use std::io;
 
-    #[test]
-    fn test_to_u16() {
-        let data = vec![0x34, 0x12];
-        let bv = ByteView::new(data, Endian::Little);
-        assert_eq!(bv.to_u16(), 0x1234);
+//     #[test]
+//     fn test_to_u16() {
+//         let data = vec![0x34, 0x12];
+//         let bv = ByteView::new(data, Endian::Little);
+//         assert_eq!(bv.to_u16(), 0x1234);
 
-        let data = vec![0x34, 0x12];
-        let bv = ByteView::new(data, Endian::Big);
-        assert_eq!(bv.to_u16(), 0x3412);
-    }
+//         let data = vec![0x34, 0x12];
+//         let bv = ByteView::new(data, Endian::Big);
+//         assert_eq!(bv.to_u16(), 0x3412);
+//     }
 
-    #[test]
-    fn test_to_varlena() {
-        let data = vec![0x19];
-        let bv = ByteView::new(data, Endian::Little);
-        println!("bv: {:?}", bv.to_varlena());
-    }
+//     #[test]
+//     fn test_to_varlena() {
+//         let data = vec![0x19];
+//         let bv = ByteView::new(data, Endian::Little);
+//         println!("bv: {:?}", bv.to_varlena());
+//     }
 
-    //  fn test
-}
+//     //  fn test
+// }

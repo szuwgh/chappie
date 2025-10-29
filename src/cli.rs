@@ -1,4 +1,4 @@
-use crate::error::{ChapError, ChapResult};
+use crate::common::error::{ChapError, ChapResult};
 use crate::tui::ChapMod;
 use clap::Parser;
 use clap::ValueEnum;

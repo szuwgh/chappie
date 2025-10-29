@@ -1,5 +1,5 @@
 use crate::cli::Cli;
-use crate::ChapResult;
+use crate::common::error::ChapResult;
 use crate::ChapTui;
 use once_cell::sync::Lazy;
 use simplelog::*;

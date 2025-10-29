@@ -1,24 +1,23 @@
 use crate::byteutil::ByteView;
 use crate::byteutil::Endian;
 use crate::cli::UIType;
-use crate::editor::CacheStr;
-use crate::editor::EditLineMeta;
-use crate::editor::EditTextWarp;
-use crate::editor::GapText;
-use crate::editor::HexText;
-use crate::editor::MmapText;
-use crate::editor::RingVec;
-use crate::editor::TextDisplay;
-use crate::editor::TextOper;
-use crate::editor::TextWarp;
-use crate::editor::TextWarpType;
-use crate::error::ChapResult;
-use crate::fuzzy::Match;
+use crate::common::error::ChapResult;
+use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
 use crate::handle::HandleEdit;
 use crate::handle::HandleHex;
 use crate::handle::HandleImpl;
 use crate::lua::LuaPlugin;
+use crate::textwarp::edit::GapText;
+use crate::textwarp::hex::HexText;
+use crate::textwarp::text::MmapText;
+use crate::textwarp::CacheStr;
+use crate::textwarp::EditLineMeta;
+use crate::textwarp::EditTextWarp;
+use crate::textwarp::TextDisplay;
+use crate::textwarp::TextOper;
+use crate::textwarp::TextWarp;
+use crate::textwarp::TextWarpType;
 // use crate::textwarp::LineMeta;
 use const_hex::Buffer;
 use crossterm::event::KeyEvent;
@@ -314,7 +313,7 @@ impl ChapTui {
         Ok(ChapTui {
             chap_mod: chap_mod,
             size: size,
-            warp_type: TextWarpType::NoWrap,
+            warp_type: TextWarpType::SoftWrap,
             terminal: terminal,
             elem: elem,
             ui_type: ui_type,
@@ -336,15 +335,8 @@ impl ChapTui {
             UIType::Full => (size.height, size.width, 0),
             UIType::Lite => {
                 let tui_height = (size.height as f32 * 0.4) as u16;
-                let tui_width = size.width;
-                let mut start_row = tui_height;
-                // // 终端宽度
-                // if size.height - row < tui_height {
-                //     for _ in 0..tui_height.saturating_sub(size.height - row) {
-                //         println!(); // 打印空白
-                //         start_row -= 1;
-                //     }
-                // }
+                let tui_width = 100; //size.width;
+                let start_row = tui_height;
                 (tui_height, tui_width, start_row)
             }
         };
@@ -986,17 +978,14 @@ impl ChapTui {
             self.elem = elem;
             self.cursor_x = 0;
             self.cursor_y = 0;
-            let twy = TextWarpType::NoWrap;
+            let twy = self.warp_type;
             let mut td: TextDisplay = match self.chap_mod {
-                ChapMod::Edit => {
-                    // return Ok(());
-                    TextDisplay::Edit(EditTextWarp::new(
-                        GapText::from_file_path(&p)?,
-                        self.elem.tv.get_height(),
-                        self.elem.tv.get_width(),
-                        twy,
-                    ))
-                }
+                ChapMod::Edit => TextDisplay::Edit(EditTextWarp::new(
+                    GapText::from_file_path(&p)?,
+                    self.elem.tv.get_height(),
+                    self.elem.tv.get_width(),
+                    twy,
+                )),
                 ChapMod::Text => {
                     return Ok(());
                     TextDisplay::Text(TextWarp::new(

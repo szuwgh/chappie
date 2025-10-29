@@ -5,8 +5,6 @@ use std::borrow::Cow;
 use utf8_iter::Utf8CharIndices;
 use utf8_iter::Utf8CharsEx;
 
-use crate::editor::{Line, LineData, LineStr};
-
 pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
 
 impl<'a> GapBytes<'a> {
@@ -112,6 +110,16 @@ impl<'a> Iterator for GapBytesCharIter<'a> {
     }
 }
 
+impl DoubleEndedIterator for GapBytesCharIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if let Some((index, byte)) = self.right.next_back() {
+            Some((index + self.left_bytes, byte))
+        } else {
+            self.left.next_back()
+        }
+    }
+}
+
 pub(crate) struct GapBytesIter<'a> {
     left: std::slice::Iter<'a, u8>,
     right: std::slice::Iter<'a, u8>,
@@ -152,15 +160,9 @@ pub(crate) struct GapBuffer {
     gap_end: usize,
 }
 
-impl Line for GapBuffer {
-    fn text_len(&self) -> usize {
-        self.buffer.len() - (self.gap_end - self.gap_start)
-    }
+// impl Line for GapBuffer {
 
-    fn text<'a>(&'a self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
-        self.get_text(range)
-    }
-}
+// }
 
 impl GapBuffer {
     pub(crate) fn new(size: usize) -> GapBuffer {
@@ -169,6 +171,14 @@ impl GapBuffer {
             gap_start: 0,
             gap_end: size,
         }
+    }
+
+    pub(crate) fn text_len(&self) -> usize {
+        self.buffer.len() - (self.gap_end - self.gap_start)
+    }
+
+    pub(crate) fn text<'a>(&'a self, range: impl std::ops::RangeBounds<usize>) -> GapBytes<'a> {
+        self.get_text(range)
     }
 
     fn gap_size(&self) -> usize {
@@ -208,14 +218,14 @@ impl GapBuffer {
         &self.buffer
     }
 
-    pub(crate) fn get_line_str<'a>(&'a mut self) -> LineStr<'a> {
-        LineStr {
-            // line: self.text(..),
-            line_data: LineData::GapBytes(self.text(..)),
-            line_file_start: 0,
-            line_file_end: 0,
-        }
-    }
+    // pub(crate) fn get_line_str<'a>(&'a mut self) -> LineStr<'a> {
+    //     LineStr {
+    //         // line: self.text(..),
+    //         line_data: LineData::GapBytes(self.text(..)),
+    //         line_file_start: 0,
+    //         line_file_end: 0,
+    //     }
+    // }
 
     /// Move the gap to the specified index
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]

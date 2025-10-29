@@ -1,4 +1,5 @@
-use crate::{error::ChapResult, plugin::Plugin};
+use crate::common::error::ChapResult;
+use crate::plugin::Plugin;
 use mlua::prelude::*;
 use std::collections::HashMap;
 use std::fs;
