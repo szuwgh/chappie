@@ -121,7 +121,9 @@ pub(crate) struct ChapTui {
     pub(crate) txt_sel: TextSelect,      // 文本选择
     pub(crate) cursor_x: usize,          // 光标x坐标
     pub(crate) cursor_y: usize,          // 光标y坐标
-    pub(crate) offset: usize,            // 偏移量
+    pub(crate) column_offset: usize,     // 列偏移量
+    pub(crate) bytes_cursor: usize,      //字节偏移量
+    pub(crate) bytes_cursor_size: usize, //字节偏移量
     pub(crate) start_line_num: usize,    // 起始行号
     pub(crate) is_last_line: bool,       // 是否是最后一行
     pub(crate) endian: Endian,           // 字节序
@@ -321,7 +323,9 @@ impl ChapTui {
             txt_sel: TextSelect::new(),
             cursor_x: 0,
             cursor_y: 0,
-            offset: 0,
+            column_offset: 0,
+            bytes_cursor: 0,
+            bytes_cursor_size: 0,
             start_line_num: 0,
             is_last_line: false,
             endian: Endian::Little, // 默认字节序为小端
@@ -601,7 +605,12 @@ impl ChapTui {
                 if *cursor_y == 0 && *cursor_x == 0 {
                     return Ok(());
                 }
-                td.backspace(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
+                td.backspace(
+                    *cursor_y,
+                    self.bytes_cursor,
+                    self.bytes_cursor_size,
+                    line_meta.get(*cursor_y).unwrap(),
+                )?;
                 if *cursor_x == 0 {
                     *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_txt_len();
                     *cursor_y = cursor_y.saturating_sub(1);
@@ -909,8 +918,8 @@ impl ChapTui {
                         {
                             chap_tui.cursor_x += 1;
                         }
-                        if chap_tui.offset <= meta.get_char_len() {
-                            chap_tui.offset += 1;
+                        if chap_tui.column_offset <= meta.get_char_len() {
+                            chap_tui.column_offset += 1;
                         }
                     }
                     TextWarpType::SoftWrap => {
@@ -1014,7 +1023,7 @@ impl ChapTui {
                 }
                 let line_meta = match self.chap_mod {
                     ChapMod::Edit => {
-                        self.render_edit(self.cursor_x, self.cursor_y, self.offset, &td)?
+                        self.render_edit(self.cursor_x, self.cursor_y, self.column_offset, &td)?
                     }
                     ChapMod::Text => {
                         todo!()
@@ -1122,7 +1131,7 @@ impl ChapTui {
         let line_meta = {
             let (content, meta) = td.get_current_page()?;
             self.terminal.draw(|f| {
-                let (navi, visible_content) = get_edit_content(
+                let (navi, visible_content, byte_cursor, last_char_bytes_size) = get_edit_content(
                     content,
                     &meta,
                     self.elem.navi.get_cur_line(),
@@ -1132,6 +1141,8 @@ impl ChapTui {
                     cursor_y,
                     cursor_x,
                 );
+                self.bytes_cursor = byte_cursor;
+                self.bytes_cursor_size = last_char_bytes_size;
                 let text_para = Paragraph::new(visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
@@ -1950,14 +1961,18 @@ impl ChatInput {
 //     text
 // }
 
-fn n_chars_skip_control_mem_opt(s: &str, n: usize) -> (&str, &str, &str) {
+fn n_chars_skip_control_mem_opt(s: &str, n: usize) -> (&str, &str, &str, usize) {
     let mut count = 0;
     let mut start_idx = None;
     let mut end_idx = None;
+    let mut last_start_idx = None;
 
     for (idx, ch) in s.char_indices() {
         if ch.is_control() {
             continue;
+        }
+        if n > 0 && count == n - 1 {
+            last_start_idx = Some(idx);
         }
         if count == n {
             // 第 n 个非控制字符
@@ -1972,10 +1987,11 @@ fn n_chars_skip_control_mem_opt(s: &str, n: usize) -> (&str, &str, &str) {
     }
 
     // 如果 never set, 默认到末尾
+    let last_start = last_start_idx.unwrap_or_else(|| 0);
     let start = start_idx.unwrap_or_else(|| s.len());
     let end = end_idx.unwrap_or_else(|| s.len());
 
-    (&s[..start], &s[start..end], &s[end..])
+    (&s[..start], &s[start..end], &s[end..], start - last_start)
 }
 
 fn n_chars(s: &str, n: usize) -> (&str, &str, &str) {
@@ -2359,16 +2375,21 @@ fn get_edit_content<'a>(
     offset: usize,
     cursor_y: usize,
     cursor_x: usize,
-) -> (Text<'a>, Text<'a>) {
+) -> (Text<'a>, Text<'a>, usize, usize) {
     assert!(txts.len() == line_meta.len());
     let mut lines = Vec::with_capacity(line_meta.len());
+    let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
+    let mut last_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
     for (i, txt) in txts.iter().enumerate() {
         let (str1, str2) = txt.text(offset..);
         if cursor_y == i {
             let mut spans = Vec::new();
-            if cursor_x < str1.chars().count() {
-                let (a, b, c) = n_chars_skip_control_mem_opt(str1.as_ref(), cursor_x);
+            let count1 = str1.chars().count();
+            if cursor_x < count1 {
+                let (a, b, c, size) = n_chars_skip_control_mem_opt(str1.as_ref(), cursor_x);
+                last_char_bytes_size = size;
                 if b.len() > 0 {
+                    byte_cursor = a.len();
                     spans.push(Span::raw(a.to_string()));
                     spans.push(Span::styled(
                         b.to_string(),
@@ -2377,6 +2398,7 @@ fn get_edit_content<'a>(
                     spans.push(Span::raw(c.to_string()));
                     spans.push(Span::raw(str2));
                 } else {
+                    byte_cursor = str1.len();
                     spans.push(Span::raw(str1));
                     spans.push(Span::raw(str2));
                     let diff = cursor_x.saturating_sub(txt.len());
@@ -2386,8 +2408,17 @@ fn get_edit_content<'a>(
                     spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
                 }
             } else {
-                let (a, b, c) = n_chars(str2.as_ref(), cursor_x - str1.chars().count());
+                let (a, b, c, size) =
+                    n_chars_skip_control_mem_opt(str2.as_ref(), cursor_x - str1.chars().count());
+                //如果上一个字符大小是0则光标可能在第一个字符那里
+                if size == 0 {
+                    let (_, _, _, sz) = n_chars_skip_control_mem_opt(str1.as_ref(), count1);
+                    last_char_bytes_size = sz;
+                } else {
+                    last_char_bytes_size = size;
+                }
                 if b.len() > 0 {
+                    byte_cursor = a.len() + str1.len();
                     spans.push(Span::raw(str1));
                     spans.push(Span::raw(a.to_string()));
                     spans.push(Span::styled(
@@ -2396,6 +2427,7 @@ fn get_edit_content<'a>(
                     ));
                     spans.push(Span::raw(c.to_string()));
                 } else {
+                    byte_cursor = str1.len() + str2.len();
                     spans.push(Span::raw(str1));
                     spans.push(Span::raw(str2));
                     let diff = cursor_x.saturating_sub(txt.len());
@@ -2442,7 +2474,7 @@ fn get_edit_content<'a>(
     );
 
     let text = Text::from(lines);
-    (nav_text, text)
+    (nav_text, text, byte_cursor, last_char_bytes_size)
 }
 
 // fn get_content<'a>(

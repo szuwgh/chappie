@@ -300,8 +300,8 @@ impl GapBuffer {
 
     // Backspace 删除光标前一个字符
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
-    pub(crate) fn backspace(&mut self, index: usize) {
-        self.delete(index, 1);
+    pub(crate) fn backspace(&mut self, index: usize, count: usize) {
+        self.delete(index, count);
     }
 
     /// 删除index处前len个字符

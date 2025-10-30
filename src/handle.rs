@@ -329,8 +329,8 @@ impl Handle for HandleEdit {
                     chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
                 }
                 let meta = line_meta.get(chap_tui.cursor_y).unwrap();
-                if chap_tui.offset >= meta.get_char_len() {
-                    chap_tui.offset = meta.get_char_len();
+                if chap_tui.column_offset >= meta.get_char_len() {
+                    chap_tui.column_offset = meta.get_char_len();
                 }
                 chap_tui.is_last_line = false;
             }
@@ -370,8 +370,8 @@ impl Handle for HandleEdit {
                     chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
                 }
                 let meta = line_meta.get(chap_tui.cursor_y).unwrap();
-                if chap_tui.offset >= meta.get_char_len() {
-                    chap_tui.offset = meta.get_char_len();
+                if chap_tui.column_offset >= meta.get_char_len() {
+                    chap_tui.column_offset = meta.get_char_len();
                 }
                 chap_tui.is_last_line = false;
             }
@@ -401,7 +401,7 @@ impl Handle for HandleEdit {
         match chap_tui.warp_type {
             TextWarpType::NoWrap => {
                 chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
-                chap_tui.offset = chap_tui.offset.saturating_sub(1);
+                chap_tui.column_offset = chap_tui.column_offset.saturating_sub(1);
             }
             TextWarpType::SoftWrap => {
                 if chap_tui.cursor_x == 0 {
@@ -439,8 +439,8 @@ impl Handle for HandleEdit {
                 {
                     chap_tui.cursor_x += 1;
                 }
-                if chap_tui.offset <= meta.get_char_len() {
-                    chap_tui.offset += 1;
+                if chap_tui.column_offset <= meta.get_char_len() {
+                    chap_tui.column_offset += 1;
                 }
             }
             TextWarpType::SoftWrap => {
@@ -499,7 +499,8 @@ impl Handle for HandleEdit {
         }
         td.backspace(
             chap_tui.cursor_y,
-            chap_tui.cursor_x,
+            chap_tui.bytes_cursor,
+            chap_tui.bytes_cursor_size,
             line_meta.get(chap_tui.cursor_y).unwrap(),
         )?;
         td.get_one_page(chap_tui.start_line_num)?;
@@ -533,7 +534,7 @@ impl Handle for HandleEdit {
         } else {
             td.insert(
                 chap_tui.cursor_y,
-                chap_tui.cursor_x,
+                chap_tui.bytes_cursor,
                 line_meta.get(chap_tui.cursor_y).unwrap(),
                 c,
             )?;

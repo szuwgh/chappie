@@ -200,10 +200,16 @@ impl Text for GapText {
 }
 
 impl EditText for GapText {
-    fn backspace(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta) {
+    fn backspace(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        count: usize,
+        line_meta: &EditLineMeta,
+    ) {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
-            line_meta.get_line_offset() + cursor_x,
+            line_meta.get_line_offset() + bytes_cursor,
         );
         if self.borrow_lines_mut()[line_index].text_len() == 0 && line_offset == 0 {
             //删除一行
@@ -229,15 +235,15 @@ impl EditText for GapText {
             }
             return;
         }
-        self.borrow_lines_mut()[line_index].backspace(line_offset);
+        self.borrow_lines_mut()[line_index].backspace(line_offset, count);
     }
 
-    fn insert(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta, c: char) {
+    fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &EditLineMeta, c: char) {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
-            line_meta.get_line_offset() + cursor_x,
+            line_meta.get_line_offset() + bytes_cursor,
         );
-
+        log::debug!("line_offset:{}", line_offset);
         let mut buf = [0u8; 4]; // 一个 char 最多需要 4 个字节存储 UTF-8 编码
         let s: &str = c.encode_utf8(&mut buf);
         let line = &mut self.borrow_lines_mut()[line_index];

@@ -418,7 +418,7 @@ pub(crate) trait TextOper {
     fn insert(
         &self,
         cursor_y: usize,
-        cursor_x: usize,
+        bytes_cursor: usize,
         line_meta: &EditLineMeta,
         c: char,
     ) -> ChapResult<()>;
@@ -435,6 +435,7 @@ pub(crate) trait TextOper {
         &self,
         cursor_y: usize,
         cursor_x: usize,
+        count: usize,
         line_meta: &EditLineMeta,
     ) -> ChapResult<()>;
 
@@ -507,9 +508,15 @@ pub(crate) trait TextIndex {
 }
 
 pub(crate) trait EditText {
-    fn insert(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta, c: char);
+    fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &EditLineMeta, c: char);
     fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta);
-    fn backspace(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta);
+    fn backspace(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        count: usize,
+        line_meta: &EditLineMeta,
+    );
     fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()>;
 }
 
@@ -639,14 +646,14 @@ impl TextOper for TextDisplay {
     fn insert(
         &self,
         cursor_y: usize,
-        cursor_x: usize,
+        bytes_cursor: usize,
         line_meta: &EditLineMeta,
         c: char,
     ) -> ChapResult<()> {
         match self {
             TextDisplay::Text(v) => Ok(()),
             TextDisplay::Hex(v) => Ok(()),
-            TextDisplay::Edit(v) => v.insert(cursor_y, cursor_x, line_meta, c),
+            TextDisplay::Edit(v) => v.insert(cursor_y, bytes_cursor, line_meta, c),
         }
     }
 
@@ -691,12 +698,13 @@ impl TextOper for TextDisplay {
         &self,
         cursor_y: usize,
         cursor_x: usize,
+        count: usize,
         line_meta: &EditLineMeta,
     ) -> ChapResult<()> {
         match self {
             TextDisplay::Text(v) => Ok(()),
             TextDisplay::Hex(v) => Ok(()),
-            TextDisplay::Edit(v) => v.backspace(cursor_y, cursor_x, line_meta),
+            TextDisplay::Edit(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
         }
     }
 
@@ -1824,13 +1832,13 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     pub(crate) fn insert(
         &self,
         cursor_y: usize,
-        cursor_x: usize,
+        bytes_cursor: usize,
         line_meta: &EditLineMeta,
         c: char,
     ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
-            .insert(cursor_y, cursor_x, line_meta, c);
+            .insert(cursor_y, bytes_cursor, line_meta, c);
         //切断page_offset_list 索引
         // todo
         // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
@@ -1862,12 +1870,13 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     pub(crate) fn backspace(
         &self,
         cursor_y: usize,
-        cursor_x: usize,
+        bytes_cursor: usize,
+        count: usize,
         line_meta: &EditLineMeta,
     ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
-            .backspace(cursor_y, cursor_x, line_meta);
+            .backspace(cursor_y, bytes_cursor, count, line_meta);
         // todo
         //let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
         //unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
