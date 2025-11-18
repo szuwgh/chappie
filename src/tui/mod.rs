@@ -1,0 +1,1736 @@
+pub(crate) mod edit;
+pub(crate) mod hex;
+
+use crate::byteutil::Endian;
+use crate::cli::UIType;
+use crate::common::error::ChapResult;
+use crate::common::ring_vec::RingVec;
+use crate::handle::Handle;
+use crate::handle::HandleEdit;
+use crate::handle::HandleHex;
+use crate::handle::HandleImpl;
+use crate::lua::LuaPlugin;
+use crate::textwarp::edit::GapText;
+use crate::textwarp::hex::HexText;
+use crate::textwarp::text::MmapText;
+use crate::textwarp::CacheStr;
+use crate::textwarp::EditLineMeta;
+use crate::textwarp::EditTextWarp;
+use crate::textwarp::TextDisplay;
+use crate::textwarp::TextOper;
+use crate::textwarp::TextWarp;
+use crate::textwarp::TextWarpType;
+use crate::tui::edit::get_edit_content;
+use crate::tui::hex::get_data_inspector_content;
+use crate::tui::hex::get_hex_content;
+// use crate::textwarp::LineMeta;
+use const_hex::Buffer;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
+use crossterm::execute;
+use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::{
+    cursor,
+    event::{self, KeyCode},
+    ExecutableCommand,
+};
+use ratatui::init;
+use ratatui::prelude::Constraint;
+use ratatui::prelude::CrosstermBackend;
+use ratatui::prelude::Direction;
+use ratatui::prelude::Layout;
+use ratatui::prelude::Rect;
+use ratatui::prelude::Size;
+use ratatui::style::Color;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::text::Text;
+use ratatui::widgets::Block;
+use ratatui::widgets::Paragraph;
+use ratatui::Terminal;
+use std::io;
+use std::mem;
+use std::path::Path;
+use std::process::exit;
+use tokio::sync::mpsc;
+//use vectorbase::collection::Collection;
+
+pub(crate) enum ChapMod {
+    Edit,   //普通编辑器模式
+    Hex,    //16进制编辑器模式
+    Text,   //大文本浏览模式
+    Vector, //向量分析模式
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TextSelect(usize, usize);
+
+impl TextSelect {
+    fn new() -> Self {
+        TextSelect(0, 0)
+    }
+
+    pub(crate) fn from_select(start: usize, end: usize) -> Self {
+        TextSelect(start, end)
+    }
+
+    fn start(&self) -> usize {
+        self.0
+    }
+    fn end(&self) -> usize {
+        self.1
+    }
+
+    fn len(&self) -> usize {
+        self.end() - self.start()
+    }
+
+    fn inc_end(&mut self) {
+        self.1 += 1;
+    }
+
+    fn has_selected(&self) -> bool {
+        self.start() < self.end()
+    }
+
+    fn is_selected(&self, pos: usize) -> bool {
+        pos >= self.start() && pos <= self.end()
+    }
+
+    // 递减end
+    fn dec_end(&mut self) {
+        if self.1 > self.0 {
+            self.1 -= 1;
+        }
+    }
+
+    pub(crate) fn reset_to_start(&mut self) {
+        self.1 = self.0;
+    }
+
+    pub(crate) fn set_pos(&mut self, pos: usize) {
+        self.0 = pos;
+        self.1 = pos;
+    }
+
+    pub(crate) fn get_start(&self) -> usize {
+        self.0
+    }
+
+    pub(crate) fn get_end(&self) -> usize {
+        self.1
+    }
+
+    pub(crate) fn set_start(&mut self, start: usize) {
+        self.0 = start;
+    }
+
+    pub(crate) fn set_end(&mut self, end: usize) {
+        self.1 = end;
+    }
+
+    pub(crate) fn set_select(&mut self, start: usize, end: usize) {
+        self.0 = start;
+        self.1 = end;
+    }
+}
+
+pub(crate) struct Navigation {
+    min_line: usize,
+    max_line: usize,
+    cur_line: usize,
+    select_line: Option<(usize, usize)>,
+    rect: Rect,
+}
+
+impl Navigation {
+    pub(crate) fn clear(&mut self) {
+        self.select_line = None;
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn is_top(&self) -> bool {
+        self.cur_line == self.min_line
+    }
+
+    fn is_bottom(&self) -> bool {
+        self.cur_line == self.max_line
+    }
+
+    fn down_line(&mut self) {
+        if self.cur_line < self.max_line {
+            self.cur_line += 1;
+        }
+    }
+
+    fn up_line(&mut self) {
+        if self.cur_line > self.min_line {
+            self.cur_line -= 1;
+        }
+    }
+
+    fn get_cur_line(&self) -> usize {
+        self.cur_line
+    }
+
+    fn to_min_line(&mut self) {
+        self.cur_line = self.min_line
+    }
+
+    fn to_max_line(&mut self) {
+        self.cur_line = self.max_line
+    }
+
+    fn set_cur_line(&mut self, cur_line: usize) {
+        self.cur_line = cur_line
+    }
+}
+
+pub(crate) struct TextView {
+    height: usize,
+    width: usize,
+    scroll: usize, //当前页 第一行 行数
+    rect: Rect,
+}
+
+impl TextView {
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    pub(crate) fn get_height(&self) -> usize {
+        self.height
+    }
+
+    pub(crate) fn get_width(&self) -> usize {
+        self.width
+    }
+
+    fn get_scroll(&self) -> usize {
+        self.scroll
+    }
+
+    fn set_scroll(&mut self, scroll: usize) {
+        self.scroll = scroll
+    }
+
+    fn up_line(&mut self) {
+        self.scroll = (self.scroll - 1).max(1);
+    }
+
+    fn down_line(&mut self, max_num: Option<usize>) {
+        if let Some(max_scroll_num) = max_num {
+            if self.scroll <= max_scroll_num {
+                self.scroll += 1;
+            }
+        } else {
+            self.scroll += 1;
+        }
+    }
+
+    fn up_page(&mut self) {
+        if self.scroll > self.height {
+            self.scroll = (self.scroll - self.height).max(1);
+        } else {
+            self.scroll = 1;
+        }
+    }
+
+    fn down_page(&mut self, max_num: Option<usize>) {
+        if let Some(max_scroll_num) = max_num {
+            self.scroll = ((self.scroll + self.height).min(max_scroll_num)).max(1)
+        } else {
+            self.scroll += self.height;
+        }
+    }
+}
+
+pub(crate) struct CmdInput {
+    input: String,
+    rect: Rect,
+}
+
+impl CmdInput {
+    pub(crate) fn new(rect: Rect) -> Self {
+        CmdInput {
+            input: String::new(),
+            rect,
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.input.clear();
+    }
+
+    pub(crate) fn push(&mut self, c: char) {
+        self.input.push(c);
+    }
+
+    pub(crate) fn push_str(&mut self, c: &str) {
+        self.input.push_str(c);
+    }
+
+    pub(crate) fn pop(&mut self) {
+        self.input.pop();
+    }
+
+    pub(crate) fn len(&mut self) -> usize {
+        self.input.len()
+    }
+
+    pub(crate) fn get_inp(&self) -> &str {
+        &self.input
+    }
+
+    fn get_inp_exact(&self) -> (&str, bool) {
+        return if let Some(first_char) = &self.input.chars().next() {
+            if *first_char == '/' {
+                (&self.input[1..].trim(), false)
+            } else {
+                (&self.input.trim(), true)
+            }
+        } else {
+            (&self.input.trim(), true)
+        };
+    }
+}
+
+// 文本编辑器大文件浏览 窗口
+pub(crate) struct TextWindow {
+    navi: Navigation, //导航
+    tv: TextView,
+    cmd_inp: CmdInput,
+}
+
+// 16进制编辑窗口
+pub(crate) struct HexWindow {
+    tv: TextView,
+    cmd_inp: CmdInput,
+}
+
+pub(crate) struct TuiElement {
+    pub(crate) navi: Navigation,
+    pub(crate) tv: TextView,
+    pub(crate) cmd_title: Rect,
+    pub(crate) cmd_inp: CmdInput,
+    pub(crate) assist_tv1: TextView,
+    pub(crate) assist_tv2: TextView,
+}
+
+pub(crate) struct ChapTui {
+    chap_mod: ChapMod,
+    ui_type: UIType,
+    size: Size,
+    pub(crate) warp_type: TextWarpType,
+    pub(crate) terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    pub(crate) elem: TuiElement,
+    pub(crate) back_linenum: Vec<usize>, // 上一行号
+    pub(crate) txt_sel: TextSelect,      // 文本选择
+    pub(crate) cursor_x: usize,          // 光标x坐标
+    pub(crate) cursor_y: usize,          // 光标y坐标
+    pub(crate) column_offset: usize,     // 列偏移量
+    pub(crate) bytes_cursor: usize,      //字节偏移量
+    pub(crate) bytes_cursor_size: usize, //字节偏移量
+    pub(crate) start_line_num: usize,    // 起始行号
+    pub(crate) is_last_line: bool,       // 是否是最后一行
+    pub(crate) endian: Endian,           // 字节序
+    pub(crate) assist_tv2_data: String,
+}
+
+impl ChapTui {
+    pub(crate) fn new(
+        chap_mod: ChapMod,
+        prompt_tx: mpsc::Sender<String>,
+        // vdb: Option<Collection>,
+        llm_res_rx: mpsc::Receiver<String>,
+        ui_type: UIType,
+        que: bool,
+    ) -> ChapResult<ChapTui> {
+        let (_, row) = cursor::position()?; // (x, y) 返回的是光标的 (列号, 行号)
+                                            //let backend = CrosstermBackend::new(std::io::stdout());
+        let terminal = init();
+        let size = terminal.size()?;
+        let elem = Self::get_react(&ui_type, &chap_mod, &size)?;
+        Ok(ChapTui {
+            chap_mod: chap_mod,
+            size: size,
+            warp_type: TextWarpType::SoftWrap,
+            terminal: terminal,
+            elem: elem,
+            ui_type: ui_type,
+            back_linenum: Vec::with_capacity(10), // 初始化上一行号
+            txt_sel: TextSelect::new(),
+            cursor_x: 0,
+            cursor_y: 0,
+            column_offset: 0,
+            bytes_cursor: 0,
+            bytes_cursor_size: 0,
+            start_line_num: 0,
+            is_last_line: false,
+            endian: Endian::Little, // 默认字节序为小端
+            assist_tv2_data: String::new(),
+        })
+    }
+
+    //
+    fn get_react(ui_type: &UIType, chap_mod: &ChapMod, size: &Size) -> ChapResult<TuiElement> {
+        let (tui_height, tui_width, start_row) = match ui_type {
+            UIType::Full => (size.height, size.width, 0),
+            UIType::Lite => {
+                let tui_height = (size.height as f32 * 0.4) as u16;
+                let tui_width = 100; //size.width;
+                let start_row = tui_height;
+                (tui_height, tui_width, start_row)
+            }
+        };
+
+        let nav_with = match chap_mod {
+            ChapMod::Edit => 5,
+            ChapMod::Hex => 8,
+            ChapMod::Text => 5,
+            ChapMod::Vector => 5,
+        };
+
+        // 文本框显示内容的高度
+        let tv_heigth = (tui_height - 1) as usize;
+        // 文本框显示内容的宽度
+        let tv_width = (tui_width as f32 * 0.5) as usize - 3;
+
+        let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
+
+        let max_line = (tui_height - 3) as usize;
+        let hex_with = if 82 < tui_width { 82 } else { tui_width };
+        let p = ((hex_with as f32 / tui_width as f32) * 100.0) as u16;
+        let rect = Rect::new(0, start_row, tui_width, tui_height);
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(p), Constraint::Percentage(100 - p)].as_ref())
+            .split(rect);
+
+        let (nav_chk, tv_chk, inp_title_chk, seach_chk, assist_tv_chk1, assist_tv_chk2) = {
+            //文本框和输入框
+            let left_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(100), Constraint::Length(1)].as_ref())
+                .split(chunks[0]); // chunks[1] 是左侧区域
+
+            //LLM聊天和输入框
+            let right_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                .split(chunks[1]); // chunks[1] 是左侧区域
+
+            //导航栏和文本框
+            let nav_text_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(nav_with), Constraint::Percentage(100)].as_ref())
+                .split(left_chunks[0]); // chunks[1] 是左侧区域
+
+            let search_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(4), Constraint::Percentage(100)].as_ref())
+                .split(left_chunks[1]); // chunks[1] 是左侧区域
+            (
+                nav_text_chunks[0],
+                nav_text_chunks[1],
+                search_chunks[0],
+                search_chunks[1],
+                right_chunks[0],
+                right_chunks[1],
+            )
+        };
+
+        let navi = Navigation {
+            max_line: max_line,
+            min_line: 0,
+            cur_line: 0,
+            rect: nav_chk,
+            select_line: None,
+        };
+
+        let tv = TextView {
+            height: tv_heigth,
+            width: tv_width,
+            scroll: 1,
+            rect: tv_chk,
+        };
+
+        let cmd_inp = CmdInput::new(seach_chk);
+
+        let assist_tv1 = TextView {
+            height: tv_heigth,
+            width: assist_tv_width,
+            scroll: 1,
+            rect: assist_tv_chk1,
+        };
+        let assist_tv2 = TextView {
+            height: tv_heigth,
+            width: assist_tv_width,
+            scroll: 1,
+            rect: assist_tv_chk2,
+        };
+
+        Ok(TuiElement {
+            navi: navi,
+            tv: tv,
+            cmd_title: inp_title_chk,
+            cmd_inp: cmd_inp,
+            assist_tv1: assist_tv1,
+            assist_tv2: assist_tv2,
+        })
+    }
+
+    pub(crate) fn set_endian(&mut self, endian: Endian) {
+        self.endian = endian;
+    }
+
+    fn render_hex<'a>(
+        &mut self,
+        cursor_x: usize,
+        cursor_y: usize,
+        hex_sel: TextSelect,
+        td: &'a TextDisplay,
+    ) -> ChapResult<&'a RingVec<EditLineMeta>> {
+        let line_meta = {
+            let (content, meta) = td.get_current_page()?;
+            self.terminal.draw(|f| {
+                let (navi, visible_content) = get_hex_content(
+                    content,
+                    &meta,
+                    self.elem.navi.get_cur_line(),
+                    &hex_sel,
+                    self.elem.tv.get_height(),
+                    cursor_y,
+                    cursor_x,
+                );
+                let text_para = Paragraph::new(visible_content)
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(text_para, self.elem.tv.get_rect());
+
+                let nav_paragraph = Paragraph::new(navi);
+                f.render_widget(nav_paragraph, self.elem.navi.get_rect());
+
+                let sel_content = td.get_text_from_sel(&hex_sel);
+                let assist = get_data_inspector_content(
+                    hex_sel.get_start(),
+                    sel_content,
+                    self.endian.clone(),
+                );
+                let assist_para1 = Paragraph::new(assist)
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(assist_para1, self.elem.assist_tv1.get_rect());
+
+                let assist_para2 = Paragraph::new(Text::raw(&self.assist_tv2_data))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(assist_para2, self.elem.assist_tv2.get_rect());
+
+                let input_title_box = Paragraph::new(Text::raw(" >: "))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White)); // 设置输入框样式
+                f.render_widget(input_title_box, self.elem.cmd_title);
+
+                let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(input_box, self.elem.cmd_inp.get_rect());
+            })?;
+
+            meta
+        };
+        Ok(line_meta)
+    }
+
+    pub(crate) fn handle_ctrl_c(&mut self) -> ChapResult<()> {
+        crossterm::terminal::disable_raw_mode()?;
+        execute!(
+            self.terminal.backend_mut(),
+            LeaveAlternateScreen // 离开备用屏幕
+        )?;
+        io::stdout().execute(cursor::Show)?;
+        exit(0);
+    }
+
+    pub(crate) fn handle_ctrl_s<P: AsRef<Path>>(
+        &mut self,
+        p: P,
+        td: &mut TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                self.elem.cmd_inp.clear();
+                //保存
+                if let Ok(_) = td.save(&p) {
+                    self.elem.cmd_inp.push_str("saved");
+                } else {
+                    self.elem.cmd_inp.push_str("save fail");
+                }
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                todo!()
+                // is_last = false;
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub(crate) fn handle_char(
+        &mut self,
+        c: char,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        offset: &mut usize,
+        is_last: &mut bool,
+        start_line_num: usize,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                self.elem.cmd_inp.clear();
+                if *cursor_x == 0 && *is_last {
+                    td.insert(
+                        *cursor_y - 1,
+                        self.elem.tv.get_width(),
+                        line_meta.get(*cursor_y - 1).unwrap(),
+                        c,
+                    )?;
+                    *is_last = false;
+                } else {
+                    td.insert(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap(), c)?;
+                }
+                if *cursor_x < self.elem.tv.get_width() {
+                    *cursor_x += 1;
+                    if *cursor_x >= self.elem.tv.get_width()
+                        && *cursor_y < self.elem.tv.get_height()
+                    {
+                        //不断添加字符 还是续接上一行
+                        *is_last = true;
+                        *cursor_x = 0;
+                        *cursor_y += 1;
+                    }
+                }
+                td.get_one_page(start_line_num)?;
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                todo!()
+                // is_last = false;
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_backspace(
+        &mut self,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        start_line_num: usize,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                self.elem.cmd_inp.clear();
+                if *cursor_y == 0 && *cursor_x == 0 {
+                    return Ok(());
+                }
+                td.backspace(
+                    *cursor_y,
+                    self.bytes_cursor,
+                    self.bytes_cursor_size,
+                    line_meta.get(*cursor_y).unwrap(),
+                )?;
+                if *cursor_x == 0 {
+                    *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_txt_len();
+                    *cursor_y = cursor_y.saturating_sub(1);
+                } else {
+                    *cursor_x = cursor_x.saturating_sub(1);
+                }
+                td.get_one_page(start_line_num)?;
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                todo!()
+                // is_last = false;
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub(crate) fn handle_enter<'a>(
+        &mut self,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        start_line_num: usize,
+        line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                self.elem.cmd_inp.clear();
+                td.insert_newline(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
+                if *cursor_y < self.elem.tv.get_height() - 1 {
+                    *cursor_y += 1;
+                }
+                *cursor_x = 0;
+                td.get_one_page(start_line_num)?;
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                todo!()
+                // is_last = false;
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub(crate) fn handle_up<'a>(
+        &self,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        offset: &mut usize,
+        is_last: &mut bool,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                match self.warp_type {
+                    TextWarpType::NoWrap => {
+                        if *cursor_y == 0 {
+                            //滚动上一行
+                            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                            line_meta = td.get_current_line_meta()?;
+                        }
+                        *cursor_y = cursor_y.saturating_sub(1);
+                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+                        }
+                        let meta = line_meta.get(*cursor_y).unwrap();
+                        if *offset >= meta.get_char_len() {
+                            *offset = meta.get_char_len();
+                        }
+                        *is_last = false;
+                    }
+                    TextWarpType::SoftWrap => {
+                        if *cursor_y == 0 {
+                            //滚动上一行
+                            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                            line_meta = td.get_current_line_meta()?;
+                        }
+                        *cursor_y = cursor_y.saturating_sub(1);
+                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+                        }
+
+                        *is_last = false;
+                    }
+                }
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if *cursor_y == 0 {
+                    //滚动上一行
+                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                    line_meta = td.get_current_line_meta()?;
+                }
+                *cursor_y = cursor_y.saturating_sub(1);
+                if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_hex_len() {
+                    *cursor_x = line_meta.get(*cursor_y).unwrap().get_hex_len();
+                }
+            }
+            _ => {}
+        };
+        return Ok(());
+    }
+
+    pub(crate) fn handle_down<'a>(
+        &self,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        offset: &mut usize,
+        is_last: &mut bool,
+        mut line_meta: &'a RingVec<EditLineMeta>,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                match self.warp_type {
+                    TextWarpType::NoWrap => {
+                        if *cursor_y < self.elem.tv.get_height() - 1 {
+                            *cursor_y += 1;
+                        } else {
+                            //滚动下一行
+                            td.scroll_next_one_line(line_meta.last().unwrap())?;
+                            line_meta = td.get_current_line_meta()?;
+                        }
+                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+                        }
+                        let meta = line_meta.get(*cursor_y).unwrap();
+                        if *offset >= meta.get_char_len() {
+                            *offset = meta.get_char_len();
+                        }
+                        *is_last = false;
+                    }
+                    TextWarpType::SoftWrap => {
+                        if *cursor_y < self.elem.tv.get_height() - 1 {
+                            *cursor_y += 1;
+                        } else {
+                            //滚动下一行
+                            td.scroll_next_one_line(line_meta.last().unwrap())?;
+                            line_meta = td.get_current_line_meta()?;
+                        }
+                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+                        }
+                        *is_last = false;
+                    }
+                }
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if *cursor_y < line_meta.len() - 1 {
+                    *cursor_y += 1;
+                } else {
+                    //滚动下一行
+                    td.scroll_next_one_line(line_meta.last().unwrap())?;
+                    line_meta = td.get_current_line_meta()?;
+                }
+                if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_hex_len() {
+                    *cursor_x = line_meta.get(*cursor_y).unwrap().get_hex_len();
+                };
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub(crate) fn handle_left(
+        &self,
+        cursor_x: &mut usize,
+        cursor_y: &mut usize,
+        offset: &mut usize,
+        is_last: &mut bool,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                match self.warp_type {
+                    TextWarpType::NoWrap => {
+                        *cursor_x = cursor_x.saturating_sub(1);
+                        *offset = offset.saturating_sub(1);
+                    }
+                    TextWarpType::SoftWrap => {
+                        if *cursor_x == 0 {
+                            // 这个判断说明当前行已经读完了
+                            if line_meta.get(*cursor_y).unwrap().get_line_offset() == 0 {
+                                //无需操作
+                            } else {
+                                *cursor_x =
+                                    line_meta.get(*cursor_y - 1).unwrap().get_char_len() - 1;
+                                *cursor_y = cursor_y.saturating_sub(1);
+                            }
+                        } else {
+                            *cursor_x = cursor_x.saturating_sub(1);
+                        }
+                        *is_last = false;
+                    }
+                }
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if *cursor_x == 0 {
+                    // 这个判断说明当前行已经读完了
+                    if line_meta.get(*cursor_y).unwrap().get_line_offset() == 0 {
+                        //无需操作
+                    } else {
+                        *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_char_len() - 1;
+                        *cursor_y = cursor_y.saturating_sub(1);
+                    }
+                } else {
+                    *cursor_x = cursor_x.saturating_sub(1);
+                }
+                // is_last = false;
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_right_shift(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                todo!()
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+                    chap_tui.cursor_x += 1;
+                }
+                chap_tui.txt_sel.set_end(
+                    line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_line_file_start()
+                        + chap_tui.cursor_x,
+                );
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_left_shift(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                todo!()
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+                    chap_tui.cursor_x += 1;
+                }
+                chap_tui.txt_sel.set_end(
+                    line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_line_file_start()
+                        + chap_tui.cursor_x,
+                );
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    fn handle_right(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &RingVec<EditLineMeta>,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        match self.chap_mod {
+            ChapMod::Edit => {
+                match self.warp_type {
+                    TextWarpType::NoWrap => {
+                        let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                        if chap_tui.cursor_x < meta.get_char_len()
+                            && chap_tui.cursor_x < self.elem.tv.width
+                        {
+                            chap_tui.cursor_x += 1;
+                        }
+                        if chap_tui.column_offset <= meta.get_char_len() {
+                            chap_tui.column_offset += 1;
+                        }
+                    }
+                    TextWarpType::SoftWrap => {
+                        if chap_tui.cursor_x
+                            < line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+                        {
+                            chap_tui.cursor_x += 1;
+
+                            if chap_tui.cursor_x
+                                >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+                                && chap_tui.cursor_y < self.elem.tv.get_height()
+                            {
+                                //判断当前行是否读完
+                                if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
+                                    < td.get_text_len_from_index(
+                                        line_meta.get(chap_tui.cursor_y).unwrap().get_line_index(),
+                                    )
+                                {
+                                    chap_tui.cursor_x = 0;
+                                    chap_tui.cursor_y += 1;
+                                }
+                            }
+                        }
+                        chap_tui.is_last_line = false;
+                    }
+                }
+            }
+            ChapMod::Text => {
+                todo!()
+            }
+            ChapMod::Hex => {
+                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() {
+                    chap_tui.cursor_x += 1;
+                }
+                chap_tui.txt_sel.set_pos(
+                    line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_line_file_start()
+                        + chap_tui.cursor_x,
+                );
+            }
+            _ => {}
+        };
+        Ok(())
+    }
+
+    pub(crate) async fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
+        &mut self,
+        p: P1,
+        plugin: P2,
+    ) -> ChapResult<()> {
+        let hand = match self.chap_mod {
+            ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
+            ChapMod::Text => todo!(),
+            ChapMod::Hex => HandleImpl::Hex(HandleHex::new(LuaPlugin::new(plugin))),
+            _ => {
+                todo!()
+            }
+        };
+        loop {
+            let size = self.terminal.size()?;
+            let elem = Self::get_react(&self.ui_type, &self.chap_mod, &size)?;
+            self.size = size;
+            self.elem = elem;
+            self.cursor_x = 0;
+            self.cursor_y = 0;
+            let twy = self.warp_type;
+            let mut td: TextDisplay = match self.chap_mod {
+                ChapMod::Edit => TextDisplay::Edit(EditTextWarp::new(
+                    GapText::from_file_path(&p)?,
+                    self.elem.tv.get_height(),
+                    self.elem.tv.get_width(),
+                    twy,
+                )),
+                ChapMod::Text => {
+                    return Ok(());
+                    TextDisplay::Text(TextWarp::new(
+                        MmapText::from_file_path(&p)?,
+                        self.elem.tv.get_height(),
+                        self.elem.tv.get_width(),
+                        twy,
+                    ))
+                }
+                ChapMod::Hex => TextDisplay::Hex(TextWarp::new(
+                    HexText::from_file_path(&p, self.elem.tv.get_height() - 2)?,
+                    self.elem.tv.get_height() - 2,
+                    self.elem.tv.get_width(),
+                    twy,
+                )),
+                _ => {
+                    todo!()
+                }
+            };
+
+            td.get_one_page(1)?;
+            'tui: loop {
+                let size = self.terminal.size()?;
+                if size != self.size {
+                    break 'tui;
+                }
+                let line_meta = match self.chap_mod {
+                    ChapMod::Edit => {
+                        self.render_edit(self.cursor_x, self.cursor_y, self.column_offset, &td)?
+                    }
+                    ChapMod::Text => {
+                        todo!()
+                    }
+                    ChapMod::Hex => {
+                        self.render_hex(self.cursor_x, self.cursor_y, self.txt_sel.clone(), &td)?
+                    }
+                    _ => {
+                        todo!()
+                    }
+                };
+                if let Some(start_line_meta) = line_meta.get(0) {
+                    self.start_line_num = start_line_meta.get_line_num();
+                }
+                'key: loop {
+                    if let event::Event::Key(KeyEvent {
+                        code, modifiers, ..
+                    }) = event::read()?
+                    {
+                        match (code, modifiers) {
+                            (KeyCode::Esc, _) => {
+                                hand.handle_esc(self)?;
+                            }
+                            (KeyCode::Up, KeyModifiers::CONTROL) => {
+                                if let Err(e) = hand.handle_shift_up(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Down, KeyModifiers::CONTROL) => {
+                                if let Err(e) = hand.handle_shift_down(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Right, KeyModifiers::CONTROL) => {
+                                if let Err(e) = hand.handle_shift_right(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Left, KeyModifiers::CONTROL) => {
+                                if let Err(e) = hand.handle_shift_left(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Up, _) => {
+                                if let Err(e) = hand.handle_up(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Down, _) => {
+                                if let Err(e) = hand.handle_down(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Left, _) => {
+                                if let Err(e) = hand.handle_left(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Right, _) => {
+                                if let Err(e) = hand.handle_right(self, &line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                if let Err(e) = hand.handle_ctrl_c(self) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                                if let Err(e) = hand.handle_ctrl_s(self, &p, &mut td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Enter, _) => {
+                                if let Err(e) = hand.handle_enter(self, line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Backspace, _) => {
+                                if let Err(e) = hand.handle_backspace(self, line_meta, &td) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            (KeyCode::Char(c), _) => {
+                                if let Err(e) = hand.handle_char(self, line_meta, &td, c) {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    break 'key;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn render_edit<'a>(
+        &mut self,
+        cursor_x: usize,
+        cursor_y: usize,
+        offset: usize,
+        td: &'a TextDisplay,
+    ) -> ChapResult<&'a RingVec<EditLineMeta>> {
+        let line_meta = {
+            let (content, meta) = td.get_current_page()?;
+            self.terminal.draw(|f| {
+                let (navi, visible_content, byte_cursor, last_char_bytes_size) = get_edit_content(
+                    content,
+                    &meta,
+                    self.elem.navi.get_cur_line(),
+                    &self.elem.navi.select_line,
+                    self.elem.tv.get_height(),
+                    offset.saturating_sub(self.elem.tv.width),
+                    cursor_y,
+                    cursor_x,
+                );
+                self.bytes_cursor = byte_cursor;
+                self.bytes_cursor_size = last_char_bytes_size;
+                let text_para = Paragraph::new(visible_content)
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(text_para, self.elem.tv.get_rect());
+
+                let nav_paragraph = Paragraph::new(navi);
+                f.render_widget(nav_paragraph, self.elem.navi.get_rect());
+
+                let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
+                    .block(Block::default().title(":"))
+                    .style(Style::default().fg(Color::White)); // 设置输入框样式
+                f.render_widget(input_box, self.elem.cmd_inp.get_rect());
+            })?;
+            meta
+        };
+        return Ok(line_meta);
+    }
+
+    // pub(crate) async fn render_text<T: SimpleText>(&mut self, bytes: T) -> ChapResult<()> {
+    //     let mut eg = SimpleTextEngine::new(bytes, self.tv.get_height(), self.tv.get_width());
+    //     let mut chat_eg = SimpleTextEngine::new(
+    //         String::with_capacity(1024),
+    //         self.assist_tv.get_height(),
+    //         self.assist_tv.get_width(),
+    //     );
+    //     let mut chat_index: usize = 0;
+    //     let mut chat_item: Vec<ChatItemIndex> = Vec::new();
+    //     let chat_type = ChatType::default();
+    //     loop {
+    //         let line_meta = {
+    //             let (inp, is_exact) = self.cmd_inp.get_inp_exact();
+    //             let (txt, line_meta) = eg.get_line(self.tv.get_scroll(), inp, is_exact);
+    //             self.terminal.draw(|f| {
+    //                 let (txt_clr, inp_clr, chat_clr_, assist_inp_clr) = self.focus.get_colors();
+    //                 // 左下输入框区
+    //                 let input_box = Paragraph::new(Text::raw(self.cmd_inp.get_inp()))
+    //                     .block(
+    //                         Block::default()
+    //                             .title("search")
+    //                             .borders(Borders::TOP | Borders::LEFT),
+    //                     )
+    //                     .style(Style::default().fg(inp_clr)); // 设置输入框样式
+    //                 f.render_widget(input_box, self.cmd_inp.get_rect());
+    //                 let block = Block::default().borders(Borders::LEFT);
+    //                 if let Some(c) = &txt {
+    //                     let (navi, visible_content) = get_content(
+    //                         c,
+    //                         &line_meta,
+    //                         self.navi.get_cur_line(),
+    //                         &self.navi.select_line,
+    //                         self.tv.get_height(),
+    //                     );
+    //                     let text_para = Paragraph::new(visible_content)
+    //                         .block(block)
+    //                         .style(Style::default().fg(txt_clr));
+    //                     f.render_widget(text_para, self.tv.get_rect());
+    //                     let nav_paragraph = Paragraph::new(navi);
+    //                     f.render_widget(nav_paragraph, self.navi.get_rect());
+    //                 } else {
+    //                     let text_para = Paragraph::new("")
+    //                         .block(block)
+    //                         .style(Style::default().fg(txt_clr));
+    //                     f.render_widget(text_para, self.tv.get_rect());
+    //                     let nav_paragraph = Paragraph::new("");
+    //                     f.render_widget(nav_paragraph, self.navi.get_rect());
+    //                 }
+
+    //                 match chat_type {
+    //                     ChatType::ChatTv => {
+    //                         let (chat_line_meta, meta) =
+    //                             chat_eg.get_line(self.assist_tv.get_scroll(), "", is_exact);
+    //                         if let Some(c) = &chat_line_meta {
+    //                             let chat_content =
+    //                                 get_chat_content(c, &meta, &chat_item[chat_index]);
+    //                             let assist_tv = Paragraph::new(chat_content)
+    //                                 .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+    //                                 .style(Style::default().fg(chat_clr_));
+    //                             f.render_widget(assist_tv, self.assist_tv.get_rect());
+    //                         } else {
+    //                             let assist_tv = Paragraph::new("")
+    //                                 .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))
+    //                                 .style(Style::default().fg(chat_clr_));
+    //                             f.render_widget(assist_tv, self.assist_tv.get_rect());
+    //                         }
+    //                     }
+    //                     ChatType::Promt => {}
+    //                     ChatType::Pattern => {}
+    //                 }
+    //                 // 右侧部分可以显示空白或其他内容
+    //                 // let block = Block::default().borders(Borders::ALL).title("LLM Chat");
+    //                 let input_box = Paragraph::new(Text::raw(self.assist_inp.get_inp()))
+    //                     .block(
+    //                         Block::default()
+    //                             .title("prompt")
+    //                             .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT),
+    //                     )
+    //                     .style(Style::default().fg(assist_inp_clr)); // 设置输入框样式
+    //                 f.render_widget(input_box, self.assist_inp.get_rect());
+
+    //                 match self.focus.current() {
+    //                     FocusType::TxtFuzzy => {
+    //                         // 将光标移动到输入框中合适的位置
+    //                         let inp_len = self.cmd_inp.get_inp().width();
+    //                         let x = if inp_len == 0 {
+    //                             self.cmd_inp.get_rect().x + 2
+    //                         } else {
+    //                             self.cmd_inp.get_rect().x + inp_len as u16 + 1
+    //                         };
+
+    //                         let y = self.cmd_inp.get_rect().y + 1; // 输入框的 Y 起点
+    //                         f.set_cursor_position(Position { x, y });
+    //                     }
+    //                     FocusType::Chat => {
+    //                         // 将光标移动到输入框中合适的位置
+    //                         let inp_len = self.assist_inp.get_inp().width();
+    //                         let x = if inp_len == 0 {
+    //                             self.assist_inp.get_rect().x + 2
+    //                         } else {
+    //                             self.assist_inp.get_rect().x + inp_len as u16 + 1
+    //                         };
+    //                         let y = self.assist_inp.get_rect().y + 1; // 输入框的 Y 起点
+    //                         f.set_cursor_position(Position { x, y });
+    //                     }
+    //                     _ => {}
+    //                 };
+    //             })?;
+    //             line_meta
+    //         };
+
+    //         loop {
+    //             tokio::select! {
+    //                 Some(msg) = self.llm_res_rx.recv() => {
+    //                     let chat_item_start = chat_eg.get_line_count().max(1);
+    //                     chat_eg.push_str(&msg);
+    //                     chat_eg.push_str("\n");
+    //                     let chat_item_end = chat_eg.get_line_count().max(1);
+    //                     //debug!("chat_item:{:?}",(chat_item_start, chat_item_end-1));
+    //                     chat_item
+    //                         .push(ChatItemIndex(chat_item_start, chat_item_end-1));
+    //                     break;
+    //                 }
+    //                 _ = tokio::time::sleep(Duration::from_millis(25)) => {
+    //                 }
+    //             }
+    //             // 监听键盘输入
+    //             if event::poll(Duration::from_millis(50)).unwrap() {
+    //                 if let event::Event::Key(KeyEvent {
+    //                     code, modifiers, ..
+    //                 }) = event::read()?
+    //                 {
+    //                     match (code, modifiers) {
+    //                         (KeyCode::Esc, _) => {
+    //                             self.cmd_inp.clear();
+    //                             self.assist_inp.clear();
+    //                             self.navi.select_line = None;
+
+    //                             break;
+    //                         }
+    //                         (KeyCode::Tab, _) => {
+    //                             // 按下 Tab 键，切换焦点
+    //                             self.focus.next();
+    //                             break;
+    //                         }
+    //                         (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+    //                             let assist_inp = self.assist_inp.get_inp();
+    //                             if assist_inp.len() == 0 {
+    //                                 break;
+    //                             }
+    //                             let mut message = String::new();
+    //                             if let Some((start_line, end_line)) = self.navi.select_line {
+    //                                 if let (Some(line), _) = eg.get_start_end(start_line, end_line)
+    //                                 {
+    //                                     for l in line.iter() {
+    //                                         message.push_str(l);
+    //                                     }
+    //                                 }
+    //                                 message.push_str("\n");
+    //                             }
+    //                             message.push_str(assist_inp);
+    //                             break;
+    //                         }
+    //                         (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+    //                             crossterm::terminal::disable_raw_mode()?;
+    //                             match self.ui_type {
+    //                                 UIType::Full => {
+    //                                     self.terminal.clear()?;
+    //                                     execute!(
+    //                                         self.terminal.backend_mut(),
+    //                                         LeaveAlternateScreen // 离开备用屏幕
+    //                                     )?;
+    //                                 }
+    //                                 UIType::Lite => {
+    //                                     self.terminal.show_cursor()?; // 确保光标可见
+    //                                     self.terminal
+    //                                         .backend_mut()
+    //                                         .execute(MoveTo(0, self.start_row))?; // 假设从当前光标位置下移2行开始清除
+    //                                     self.terminal.backend_mut().clear_region(
+    //                                         ratatui::backend::ClearType::AfterCursor,
+    //                                     )?; // 清除光标下方的区域
+    //                                 }
+    //                             }
+    //                             if chat_item.len() > 0 {
+    //                                 // 在下一行打印退出消息
+
+    //                                 self.terminal
+    //                                     .backend_mut()
+    //                                     .execute(cursor::MoveToNextLine(1))?;
+    //                                 let item = &chat_item[chat_index];
+    //                                 if let (Some(msg), _) =
+    //                                     chat_eg.get_start_end(item.start(), item.end())
+    //                                 {
+    //                                     //println!("{}", msg.join(""));
+    //                                 }
+    //                             }
+    //                             // self.terminal.backend_mut().flush()?;
+    //                             exit(0);
+    //                             //break;
+    //                         }
+    //                         (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+    //                             crossterm::terminal::disable_raw_mode()?;
+    //                             match self.ui_type {
+    //                                 UIType::Full => {
+    //                                     execute!(
+    //                                         self.terminal.backend_mut(),
+    //                                         LeaveAlternateScreen // 离开备用屏幕
+    //                                     )?;
+    //                                 }
+    //                                 UIType::Lite => {
+    //                                     self.terminal.show_cursor()?; // 确保光标可见
+    //                                     self.terminal
+    //                                         .backend_mut()
+    //                                         .execute(MoveTo(0, self.start_row))?; // 假设从当前光标位置下移2行开始清除
+    //                                     self.terminal.backend_mut().clear_region(
+    //                                         ratatui::backend::ClearType::AfterCursor,
+    //                                     )?; // 清除光标下方的区域
+    //                                 }
+    //                             }
+    //                             exit(0);
+    //                         }
+    //                         (KeyCode::Enter, _) => match self.focus.current() {
+    //                             FocusType::TxtFuzzy => {
+    //                                 if let Some((_, _)) = self.navi.select_line {
+    //                                     self.focus.next();
+    //                                 } else {
+    //                                     self.cmd_inp.clear();
+    //                                     let cur_line = self.navi.get_cur_line();
+    //                                     if cur_line < line_meta.len() {
+    //                                         self.tv.set_scroll(line_meta[cur_line].get_line_num());
+    //                                         self.navi.to_min_line();
+    //                                     }
+    //                                 }
+    //                                 break;
+    //                             }
+    //                             FocusType::Chat => {
+    //                                 let assist_inp = self.assist_inp.get_inp();
+    //                                 if assist_inp.len() == 0 {
+    //                                     break;
+    //                                 }
+    //                                 let mut message = String::new();
+    //                                 if let Some((start_line, end_line)) = self.navi.select_line {
+    //                                     // if let Some(line) = eg.get_start_end(start_line, end_line) {
+    //                                     //     for l in line.iter() {
+    //                                     //         message.push_str(l.get_txt());
+    //                                     //     }
+    //                                     // }
+    //                                     message.push_str("\n");
+    //                                 }
+    //                                 message.push_str(assist_inp);
+
+    //                                 if message.trim().len() > 0 {
+    //                                     let chat_item_start = chat_eg.get_line_count().max(1);
+    //                                     self.assist_tv.set_scroll(chat_item_start);
+    //                                     chat_eg.push_str(&format!("----------------------------\n{}\n----------------------------\n",message));
+    //                                     let chat_item_end = chat_eg.get_line_count().max(1);
+    //                                     chat_item.push(ChatItemIndex(
+    //                                         chat_item_start,
+    //                                         chat_item_end - 1,
+    //                                     ));
+    //                                     self.assist_inp.clear();
+    //                                     chat_index = chat_item.len() - 1;
+    //                                     let _ = self.prompt_tx.send(message.to_string()).await;
+    //                                     break;
+    //                                 }
+    //                             }
+    //                             _ => {}
+    //                         },
+    //                         (KeyCode::Down, KeyModifiers::SHIFT) => {
+    //                             // 下一页
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     let sel_line = if self.navi.is_bottom() {
+    //                                         self.tv.down_line(eg.get_max_scroll_num());
+    //                                         self.tv.scroll + self.tv.get_height()
+    //                                     } else {
+    //                                         self.navi.down_line();
+    //                                         let cur_line = self.navi.get_cur_line();
+    //                                         if cur_line >= line_meta.len() {
+    //                                             break;
+    //                                         }
+    //                                         let sel_line = line_meta[cur_line].get_line_num();
+    //                                         sel_line
+    //                                     };
+    //                                     match self.navi.select_line {
+    //                                         Some((st, en)) => {
+    //                                             if sel_line == en {
+    //                                                 if let Some(max_num) = eg.get_max_scroll_num() {
+    //                                                     if sel_line == max_num {
+    //                                                         self.navi.select_line =
+    //                                                             Some((st, sel_line));
+    //                                                     } else {
+    //                                                         self.navi.select_line =
+    //                                                             Some((sel_line, sel_line));
+    //                                                     }
+    //                                                 } else {
+    //                                                     self.navi.select_line =
+    //                                                         Some((sel_line, sel_line));
+    //                                                 }
+    //                                             } else if sel_line > st && sel_line > en {
+    //                                                 self.navi.select_line = Some((st, sel_line));
+    //                                             } else if sel_line > st && sel_line < en {
+    //                                                 self.navi.select_line = Some((sel_line, en));
+    //                                             }
+    //                                         }
+    //                                         None => {
+    //                                             self.navi.select_line =
+    //                                                 Some((sel_line - 1, sel_line - 1));
+    //                                         }
+    //                                     }
+
+    //                                     break;
+    //                                 }
+    //                                 FocusType::Chat => {
+    //                                     self.assist_tv.down_line(chat_eg.get_max_scroll_num());
+    //                                     break;
+    //                                 }
+    //                                 _ => {}
+    //                             }
+    //                             break;
+    //                         }
+    //                         (KeyCode::Up, KeyModifiers::SHIFT) => {
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     let sel_line = if self.navi.is_top() {
+    //                                         self.tv.up_line();
+    //                                         (self.tv.scroll - 1).max(1)
+    //                                     } else {
+    //                                         self.navi.up_line();
+
+    //                                         let cur_line = self.navi.get_cur_line();
+    //                                         if cur_line >= line_meta.len() {
+    //                                             break;
+    //                                         }
+    //                                         let sel_line = line_meta[cur_line].get_line_num();
+    //                                         sel_line
+    //                                     };
+
+    //                                     match self.navi.select_line {
+    //                                         Some((st, en)) => {
+    //                                             if sel_line == st {
+    //                                                 if sel_line == 1 {
+    //                                                     self.navi.select_line = Some((st, en));
+    //                                                 } else {
+    //                                                     self.navi.select_line =
+    //                                                         Some((sel_line, sel_line));
+    //                                                 }
+    //                                             } else if sel_line > st && sel_line < en {
+    //                                                 self.navi.select_line = Some((st, sel_line));
+    //                                             } else if sel_line < st {
+    //                                                 self.navi.select_line = Some((sel_line, en));
+    //                                             }
+    //                                         }
+    //                                         None => {
+    //                                             self.navi.select_line =
+    //                                                 Some((sel_line + 1, sel_line + 1));
+    //                                         }
+    //                                     }
+    //                                 }
+
+    //                                 FocusType::Chat => {
+    //                                     // self.assist_tv.up_line();
+    //                                 }
+    //                                 _ => {}
+    //                             }
+    //                             break;
+    //                         }
+    //                         (KeyCode::Down, KeyModifiers::CONTROL) => {
+    //                             // 下一页
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     self.tv.down_page(eg.get_max_scroll_num());
+    //                                 }
+    //                                 FocusType::Chat => {}
+    //                                 _ => {}
+    //                             }
+    //                             break;
+    //                         }
+    //                         (KeyCode::Up, KeyModifiers::CONTROL) => {
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     self.tv.up_page();
+    //                                 }
+    //                                 FocusType::Chat => {}
+    //                                 _ => {}
+    //                             }
+
+    //                             break;
+    //                         }
+    //                         (KeyCode::Up, _) => {
+    //                             // 向上滚动
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     if self.navi.is_top() {
+    //                                         self.tv.up_line();
+    //                                     } else {
+    //                                         self.navi.up_line();
+    //                                     }
+    //                                     break;
+    //                                 }
+    //                                 FocusType::Chat => {
+    //                                     // self.assist_tv.up_line();
+    //                                     if chat_index >= chat_item.len() {
+    //                                         break;
+    //                                     }
+    //                                     let chat_item_index = &chat_item[chat_index];
+    //                                     let start = chat_item_index.start();
+    //                                     let pre_scorll = (self
+    //                                         .assist_tv
+    //                                         .get_scroll()
+    //                                         .saturating_sub(self.assist_tv.get_height()))
+    //                                     .max(1);
+    //                                     if pre_scorll >= start {
+    //                                         self.assist_tv.set_scroll(pre_scorll);
+    //                                     } else if self.assist_tv.get_scroll() <= start {
+    //                                         chat_index = chat_index.saturating_sub(1);
+    //                                         let pre_chat_item_index = &chat_item[chat_index];
+    //                                         let pre_start = pre_chat_item_index.start();
+    //                                         self.assist_tv.set_scroll(pre_start);
+    //                                     } else if pre_scorll < start {
+    //                                         self.assist_tv.set_scroll(start);
+    //                                     }
+
+    //                                     break;
+    //                                 }
+    //                                 _ => {}
+    //                             }
+    //                         }
+    //                         (KeyCode::Down, _) => {
+    //                             // 向下滚动
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     if self.navi.is_bottom() {
+    //                                         self.tv.down_line(eg.get_max_scroll_num());
+    //                                     } else {
+    //                                         self.navi.down_line();
+    //                                     }
+    //                                     break;
+    //                                 }
+    //                                 FocusType::Chat => {
+    //                                     match chat_type {
+    //                                         ChatType::ChatTv => {
+    //                                             // 下一个item
+    //                                             if chat_index >= chat_item.len() {
+    //                                                 break;
+    //                                             }
+    //                                             let chat_item_index = &chat_item[chat_index];
+    //                                             let start = chat_item_index.start();
+    //                                             let end = chat_item_index.end();
+    //                                             if self.assist_tv.get_scroll() < start {
+    //                                                 self.assist_tv.set_scroll(start);
+    //                                             } else if self.assist_tv.get_scroll()
+    //                                                 + self.assist_tv.get_height()
+    //                                                 <= end
+    //                                             {
+    //                                                 self.assist_tv.set_scroll(
+    //                                                     self.assist_tv.get_scroll()
+    //                                                         + self.assist_tv.get_height(),
+    //                                                 );
+    //                                             } else if self.assist_tv.get_scroll()
+    //                                                 + self.assist_tv.get_height()
+    //                                                 > end
+    //                                             {
+    //                                                 if chat_index + 1 < chat_item.len() {
+    //                                                     chat_index += 1;
+    //                                                     let next_chat_item_index =
+    //                                                         &chat_item[chat_index];
+    //                                                     let next_start =
+    //                                                         next_chat_item_index.start();
+    //                                                     self.assist_tv.set_scroll(next_start);
+    //                                                 }
+    //                                             }
+    //                                         }
+    //                                         ChatType::Promt => {}
+    //                                         ChatType::Pattern => {}
+    //                                     }
+
+    //                                     break;
+    //                                 }
+    //                                 _ => {}
+    //                             }
+    //                         }
+    //                         (KeyCode::Char(c), _) => {
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     if self.cmd_inp.get_inp().len() >= 10 {
+    //                                         break;
+    //                                     }
+    //                                     self.cmd_inp.push(c); // 添加字符到输入缓冲区
+    //                                     self.tv.set_scroll(1);
+    //                                     break;
+    //                                 }
+    //                                 FocusType::Chat => {
+    //                                     self.assist_inp.push(c); // 添加字符到输入缓冲区
+    //                                     break;
+    //                                 }
+    //                                 _ => {}
+    //                             }
+
+    //                             break;
+    //                         }
+    //                         (KeyCode::Backspace, _) => {
+    //                             match self.focus.current() {
+    //                                 FocusType::TxtFuzzy => {
+    //                                     self.cmd_inp.pop();
+    //                                     self.tv.set_scroll(1);
+    //                                     break;
+    //                                 }
+    //                                 FocusType::Chat => {
+    //                                     self.assist_inp.pop();
+    //                                     break;
+    //                                 }
+    //                                 _ => {}
+    //                             }
+    //                             break;
+    //                         }
+
+    //                         _ => {}
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+}

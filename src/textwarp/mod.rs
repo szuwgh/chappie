@@ -56,7 +56,7 @@ pub(crate) struct EditTextBuffer {
 impl EditTextBuffer {}
 
 #[derive(Debug, Clone, Copy)]
-struct PageOffset {
+pub(crate) struct PageOffset {
     line_index: usize,      //第多少行
     line_offset: usize,     //行在总行的起始位置
     line_file_start: usize, //这一行在整个文件的起始位置

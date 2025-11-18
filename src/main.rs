@@ -8,8 +8,6 @@ mod chap;
 mod cli;
 mod command;
 mod common;
-mod editor;
-
 mod function;
 mod fuzzy;
 
@@ -19,6 +17,7 @@ mod pg;
 mod plugin;
 mod textwarp;
 mod tui;
+// mod tui_bak;
 use crate::common::error::ChapError;
 mod vb;
 use crate::cli::Cli;
