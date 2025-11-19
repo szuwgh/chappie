@@ -381,10 +381,7 @@ impl ChapTui {
         let (tui_height, tui_width, start_row) = match ui_type {
             UIType::Full => (size.height, size.width, 0),
             UIType::Lite => {
-                let tui_height = (size.height as f32 * 0.4) as u16;
-                let tui_width = 100; //size.width;
-                let start_row = tui_height;
-                (tui_height, tui_width, start_row)
+                todo!()
             }
         };
 
@@ -404,7 +401,12 @@ impl ChapTui {
 
         let max_line = (tui_height - 3) as usize;
         let hex_with = if 82 < tui_width { 82 } else { tui_width };
-        let p = ((hex_with as f32 / tui_width as f32) * 100.0) as u16;
+        let p = match chap_mod {
+            ChapMod::Edit => 100,
+            ChapMod::Hex => ((hex_with as f32 / tui_width as f32) * 100.0) as u16,
+            ChapMod::Text => 0,
+            ChapMod::Vector => 0,
+        };
         let rect = Rect::new(0, start_row, tui_width, tui_height);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
@@ -422,7 +424,7 @@ impl ChapTui {
             let right_chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                .split(chunks[1]); // chunks[1] 是左侧区域
+                .split(chunks[1]); // chunks[1] 是右侧区域
 
             //导航栏和文本框
             let nav_text_chunks = Layout::default()
@@ -1031,6 +1033,7 @@ impl ChapTui {
             self.cursor_x = 0;
             self.cursor_y = 0;
             let twy = self.warp_type;
+            log::info!("with {:?}", self.elem.tv.get_width());
             let mut td: TextDisplay = match self.chap_mod {
                 ChapMod::Edit => TextDisplay::Edit(EditTextWarp::new(
                     GapText::from_file_path(&p)?,
