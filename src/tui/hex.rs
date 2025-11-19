@@ -1,56 +1,16 @@
 use crate::byteutil::ByteView;
 use crate::byteutil::Endian;
-use crate::cli::UIType;
-use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
-use crate::handle::Handle;
-use crate::handle::HandleEdit;
-use crate::handle::HandleHex;
-use crate::handle::HandleImpl;
-use crate::lua::LuaPlugin;
-use crate::textwarp::edit::GapText;
-use crate::textwarp::hex::HexText;
-use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
 use crate::textwarp::EditLineMeta;
-use crate::textwarp::EditTextWarp;
-use crate::textwarp::TextDisplay;
-use crate::textwarp::TextOper;
-use crate::textwarp::TextWarp;
-use crate::textwarp::TextWarpType;
 use crate::tui::TextSelect;
-// use crate::textwarp::LineMeta;
 use const_hex::Buffer;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyModifiers;
-use crossterm::execute;
-use crossterm::terminal::LeaveAlternateScreen;
-use crossterm::{
-    cursor,
-    event::{self, KeyCode},
-    ExecutableCommand,
-};
-use ratatui::init;
-use ratatui::prelude::Constraint;
-use ratatui::prelude::CrosstermBackend;
-use ratatui::prelude::Direction;
-use ratatui::prelude::Layout;
-use ratatui::prelude::Rect;
-use ratatui::prelude::Size;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
-use ratatui::widgets::Block;
-use ratatui::widgets::Paragraph;
-use ratatui::Terminal;
-use std::io;
-use std::mem;
-use std::path::Path;
-use std::process::exit;
-use tokio::sync::mpsc;
 
 //u8类型
 enum U8Category {
@@ -224,6 +184,7 @@ pub(crate) fn get_hex_content<'a>(
     let mut lines = Vec::with_capacity(line_meta.len() + 1);
     let mut buffer = Buffer::<1>::new();
 
+    // 添加头部
     let top = Span::styled(
         HEX_TOP,
         Style::default()
@@ -232,240 +193,164 @@ pub(crate) fn get_hex_content<'a>(
     );
     lines.push(Line::from(top));
     lines.push(Line::from(""));
+
+    // 处理每一行文本
     for (i, txt) in txts.iter().enumerate() {
         let (slice1, slice2) = txt.as_slice();
-        let mut spans = Vec::with_capacity(slice1.len() + slice2.len());
-        let mut str_spans = Vec::with_capacity(slice1.len() + slice2.len());
-        let mut j = 0;
-        if cursor_y == i {
-            for b in slice1.iter() {
-                let category = Byte(*b).category();
-                let color = category.color();
-                let c = buffer.format(&[*b]);
-                let space = if j != 0 && (j + 1) % 8 == 0 {
-                    "  "
-                } else {
-                    " "
-                };
+        let line_start = line_meta
+            .get(i)
+            .map(|meta| meta.get_line_file_start())
+            .unwrap_or(0);
 
-                let b1 = if b.is_ascii() && !b.is_ascii_control() {
-                    (*b as char).to_string()
-                } else {
-                    '.'.to_string()
-                };
+        let (hex_spans, char_spans) = process_line_bytes(
+            slice1,
+            slice2,
+            line_start,
+            hex_sel,
+            cursor_y,
+            i,
+            cursor_x,
+            &mut buffer,
+        );
 
-                if hex_sel.has_selected() {
-                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::DarkGray),
-                        ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
-                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color),
-                        ));
-                        spans.push(Span::raw(space));
-                        str_spans.push(Span::raw(b1));
-                    }
-                } else {
-                    if j == cursor_x {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::DarkGray),
-                        ));
-                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color),
-                        ));
-                        str_spans.push(Span::raw(b1));
-                    }
-                    spans.push(Span::raw(space));
-                }
-                j += 1;
-            }
-
-            for b in slice2.iter() {
-                let category = Byte(*b).category();
-                let color = category.color();
-                let c = buffer.format(&[*b]);
-                let space = if j != 0 && (j + 1) % 8 == 0 {
-                    "  "
-                } else {
-                    " "
-                };
-
-                let b1 = if b.is_ascii() && !b.is_ascii_control() {
-                    (*b as char).to_string()
-                } else {
-                    '.'.to_string()
-                };
-
-                if hex_sel.has_selected() {
-                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::DarkGray),
-                        ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
-                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color),
-                        ));
-                        spans.push(Span::raw(space));
-                        str_spans.push(Span::raw(b1));
-                    }
-                } else {
-                    if j == cursor_x {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::DarkGray),
-                        ));
-                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color),
-                        ));
-                        str_spans.push(Span::raw(b1));
-                    }
-                    spans.push(Span::raw(space));
-                }
-                j += 1;
-            }
-        } else {
-            for b in slice1.iter() {
-                let category = Byte(*b).category();
-                let color = category.color();
-                let c = buffer.format(&[*b]);
-
-                let space = if j != 0 && (j + 1) % 8 == 0 {
-                    "  "
-                } else {
-                    " "
-                };
-                let b1 = if b.is_ascii() && !b.is_ascii_control() {
-                    (*b as char).to_string()
-                } else {
-                    '.'.to_string()
-                };
-                if hex_sel.has_selected() {
-                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::DarkGray),
-                        ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
-                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color),
-                        ));
-                        spans.push(Span::raw(space));
-                        str_spans.push(Span::raw(b1));
-                    }
-                } else {
-                    spans.push(Span::styled(
-                        c.to_string().to_uppercase(),
-                        Style::default().fg(color),
-                    ));
-                    spans.push(Span::raw(space));
-                    str_spans.push(Span::raw(b1));
-                }
-                j += 1;
-            }
-
-            for b in slice2.iter() {
-                let category = Byte(*b).category();
-                let color = category.color();
-                let c = buffer.format(&[*b]);
-                let space = if j != 0 && (j + 1) % 8 == 0 {
-                    "  "
-                } else {
-                    " "
-                };
-                let b1 = if b.is_ascii() && !b.is_ascii_control() {
-                    (*b as char).to_string()
-                } else {
-                    '.'.to_string()
-                };
-                if hex_sel.has_selected() {
-                    if hex_sel.is_selected(line_meta.get(i).unwrap().get_line_file_start() + j) {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color).bg(Color::DarkGray),
-                        ));
-                        spans.push(Span::styled(space, Style::default().bg(Color::DarkGray)));
-                        str_spans.push(Span::styled(b1, Style::default().bg(Color::DarkGray)));
-                    } else {
-                        spans.push(Span::styled(
-                            c.to_string().to_uppercase(),
-                            Style::default().fg(color),
-                        ));
-                        spans.push(Span::raw(space));
-                        str_spans.push(Span::raw(b1));
-                    }
-                } else {
-                    spans.push(Span::styled(
-                        c.to_string().to_uppercase(),
-                        Style::default().fg(color),
-                    ));
-                    spans.push(Span::raw(space));
-                    str_spans.push(Span::raw(b1));
-                }
-                j += 1;
-            }
-        }
-
-        spans.push(Span::raw(
-            "   ".repeat(16_usize.saturating_sub(txt.len()) + 1),
-        ));
-        spans.extend_from_slice(&str_spans);
-        lines.push(Line::from(spans));
+        // 添加填充和字符显示
+        let padding = "   ".repeat(16_usize.saturating_sub(txt.len()) + 1);
+        let mut all_spans = hex_spans;
+        all_spans.push(Span::raw(padding));
+        all_spans.extend(char_spans);
+        lines.push(Line::from(all_spans));
     }
-    if cursor_y >= line_meta.len() {
-        let diff = cursor_y - line_meta.len();
+
+    // 处理光标超出范围的情况
+    add_cursor_padding(&mut lines, cursor_y, line_meta.len(), cursor_x);
+
+    let nav_text = create_navigation_text(height, line_meta);
+    let text = Text::from(lines);
+
+    (nav_text, text)
+}
+
+/// 处理单行字节数据，生成十六进制和字符spans
+fn process_line_bytes<'a>(
+    slice1: &[u8],
+    slice2: &[u8],
+    line_start: usize,
+    hex_sel: &TextSelect,
+    cursor_y: usize,
+    current_line: usize,
+    cursor_x: usize,
+    buffer: &mut Buffer<1>,
+) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
+    let mut hex_spans = Vec::new();
+    let mut char_spans = Vec::new();
+    let mut byte_index = 0;
+
+    // 处理所有字节（slice1和slice2）
+    for byte_slice in [slice1, slice2] {
+        for byte in byte_slice {
+            let global_pos = line_start + byte_index;
+            let highlight = should_highlight(
+                hex_sel,
+                global_pos,
+                cursor_y,
+                current_line,
+                byte_index,
+                cursor_x,
+            );
+
+            let category = Byte(*byte).category();
+            let color = category.color();
+            let hex_str = buffer.format(&[*byte]).to_uppercase();
+            let space = if byte_index != 0 && (byte_index + 1) % 8 == 0 {
+                "  "
+            } else {
+                " "
+            };
+            let char_repr = if byte.is_ascii() && !byte.is_ascii_control() {
+                (*byte as char).to_string()
+            } else {
+                '.'.to_string()
+            };
+
+            let (hex_span, char_span) = create_byte_spans(hex_str, char_repr, color, highlight);
+            hex_spans.push(hex_span);
+            hex_spans.push(Span::raw(space));
+            char_spans.push(char_span);
+
+            byte_index += 1;
+        }
+    }
+
+    (hex_spans, char_spans)
+}
+
+/// 判断是否应该高亮显示字节
+fn should_highlight(
+    hex_sel: &TextSelect,
+    global_pos: usize,
+    cursor_y: usize,
+    current_line: usize,
+    current_x: usize,
+    cursor_x: usize,
+) -> bool {
+    if hex_sel.has_selected() {
+        hex_sel.is_selected(global_pos)
+    } else {
+        cursor_y == current_line && current_x == cursor_x
+    }
+}
+
+/// 创建单个字节的十六进制和字符spans
+fn create_byte_spans<'a>(
+    hex_str: String,
+    char_repr: String,
+    color: Color,
+    highlight: bool,
+) -> (Span<'a>, Span<'a>) {
+    if highlight {
+        let highlight_style = Style::default().fg(color).bg(Color::DarkGray);
+        (
+            Span::styled(hex_str, highlight_style),
+            Span::styled(char_repr, highlight_style),
+        )
+    } else {
+        (
+            Span::styled(hex_str, Style::default().fg(color)),
+            Span::raw(char_repr),
+        )
+    }
+}
+
+/// 添加光标超出范围时的填充行
+fn add_cursor_padding(lines: &mut Vec<Line>, cursor_y: usize, line_count: usize, cursor_x: usize) {
+    if cursor_y >= line_count {
+        let diff = cursor_y - line_count;
         for _ in 0..diff {
             lines.push(Line::raw(""));
         }
-        let mut spans = Vec::new();
         let padding = " ".repeat(cursor_x);
-        spans.push(Span::raw(padding));
-        // 在填充后显示高亮的光标
-        spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
-        lines.push(Line::from(spans));
+        let cursor_span = Span::styled(" ", Style::default().bg(Color::LightRed));
+        lines.push(Line::from(vec![Span::raw(padding), cursor_span]));
     }
-    let nav_text = Text::from(
+}
+
+/// 创建左侧导航地址文本
+fn create_navigation_text(height: usize, line_meta: &RingVec<EditLineMeta>) -> Text<'_> {
+    Text::from(
         (0..height)
             .enumerate()
-            .map(|(i, _)| {
-                if i == 0 {
-                    return Line::from(Span::raw("Address"));
+            .map(|(i, _)| match i {
+                0 => Line::from(Span::raw("Address")),
+                1 => Line::from(Span::raw("")),
+                _ if i - 2 < line_meta.len() => {
+                    let start = line_meta.get(i - 2).unwrap().get_line_file_start();
+                    Line::from(Span::styled(
+                        format!("{:07x}", start),
+                        Style::default().fg(Color::White),
+                    ))
                 }
-                if i == 1 {
-                    return Line::from(Span::raw(""));
-                }
-                if i - 2 >= line_meta.len() {
-                    return Line::raw(" ");
-                }
-                Line::from(Span::styled(
-                    format!(
-                        "{:07x}",
-                        line_meta.get(i - 2).unwrap().get_line_file_start()
-                    ),
-                    Style::default().fg(Color::White),
-                ))
+                _ => Line::raw(" "),
             })
             .collect::<Vec<Line>>(),
-    );
-
-    let text = Text::from(lines);
-    (nav_text, text)
+    )
 }

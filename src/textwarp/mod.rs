@@ -267,14 +267,14 @@ impl CacheStr {
         }
     }
 
-    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> (Cow<str>, Cow<str>) {
+    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> (&str, &str) {
         match self {
             CacheStr::Gap(v) => {
                 let (l, r) = v.text(range);
-                (String::from_utf8_lossy(l), String::from_utf8_lossy(r))
+                unsafe { (str::from_utf8_unchecked(l), str::from_utf8_unchecked(r)) }
             }
-            CacheStr::Bytes(v) => (String::from_utf8_lossy(v.text(range)), Cow::Borrowed("")),
-            CacheStr::Vec(v) => (String::from_utf8_lossy(v.text(range)), Cow::Borrowed("")),
+            CacheStr::Bytes(v) => unsafe { (str::from_utf8_unchecked(v.text(range)), "") },
+            CacheStr::Vec(v) => unsafe { (str::from_utf8_unchecked(v.text(range)), "") },
         }
     }
 

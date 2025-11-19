@@ -2,6 +2,7 @@
 #![feature(async_closure)]
 #![feature(let_chains)]
 #![feature(trait_alias)]
+#![feature(str_as_str)]
 //mod chatapi;
 mod byteutil;
 mod chap;
