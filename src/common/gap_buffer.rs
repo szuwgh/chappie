@@ -7,6 +7,15 @@ use utf8_iter::Utf8CharsEx;
 
 pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
 
+impl Display for GapBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let left_str = String::from_utf8_lossy(self.left());
+        let right_str = String::from_utf8_lossy(self.right());
+        f.write_str(&left_str)?;
+        f.write_str(&right_str)
+    }
+}
+
 impl<'a> GapBytes<'a> {
     pub(crate) fn new(left: &'a [u8], right: &'a [u8]) -> GapBytes<'a> {
         GapBytes(left, right)
@@ -16,7 +25,7 @@ impl<'a> GapBytes<'a> {
         GapBytes(&[], &[])
     }
 
-    pub(crate) fn as_str(&self) -> (Cow<str>, Cow<str>) {
+    pub(crate) fn as_str_parts(&self) -> (Cow<str>, Cow<str>) {
         let str1 = String::from_utf8_lossy(self.left());
         let str2 = String::from_utf8_lossy(self.right());
         (str1, str2)
@@ -37,7 +46,9 @@ impl<'a> GapBytes<'a> {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.len(),
         };
-        assert!(start <= end && end <= self.len());
+        if start > self.len() || end > self.len() {
+            return GapBytes::empty();
+        }
 
         if start < self.left().len() {
             if end <= self.left().len() {
@@ -86,6 +97,32 @@ impl<'a> GapBytes<'a> {
             left: self.left().char_indices(),
             right: self.right().char_indices(),
             left_bytes: self.left().len(),
+        }
+    }
+}
+
+pub(crate) struct GapBytesBlockCharIter<'a> {
+    left: GapBytesCharIter<'a>,
+    right: GapBytesCharIter<'a>,
+}
+
+impl<'a> GapBytesBlockCharIter<'a> {
+    pub(crate) fn new(
+        left: GapBytesCharIter<'a>,
+        right: GapBytesCharIter<'a>,
+    ) -> GapBytesBlockCharIter<'a> {
+        GapBytesBlockCharIter { left, right }
+    }
+}
+
+impl Iterator for GapBytesBlockCharIter<'_> {
+    type Item = (usize, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((index, byte)) = self.left.next() {
+            Some((index, byte))
+        } else {
+            self.right.next()
         }
     }
 }
@@ -147,11 +184,11 @@ impl<'a> Debug for GapBytes<'a> {
     }
 }
 
-impl<'a> Display for GapBytes<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("{:?}{:?}", self.left(), self.right()))
-    }
-}
+// impl<'a> Display for GapBytes<'a> {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         f.write_fmt(format_args!("{:?}{:?}", self.left(), self.right()))
+//     }
+// }
 
 #[derive(Clone)]
 pub(crate) struct GapBuffer {
@@ -160,11 +197,28 @@ pub(crate) struct GapBuffer {
     gap_end: usize,
 }
 
-// impl Line for GapBuffer {
-
-// }
+impl Default for GapBuffer {
+    fn default() -> Self {
+        GapBuffer {
+            buffer: Vec::new(),
+            gap_start: 0,
+            gap_end: 0,
+        }
+    }
+}
 
 impl GapBuffer {
+    pub(crate) fn from_bytes(bytes: &[u8], gap_size: usize) -> GapBuffer {
+        let size = bytes.len() + gap_size;
+        let mut buffer = vec![0u8; size];
+        buffer[..bytes.len()].copy_from_slice(bytes);
+        GapBuffer {
+            buffer,
+            gap_start: bytes.len(),
+            gap_end: size,
+        }
+    }
+
     pub(crate) fn new(size: usize) -> GapBuffer {
         GapBuffer {
             buffer: vec![0u8; size],
@@ -196,7 +250,9 @@ impl GapBuffer {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.text_len(),
         };
-        assert!(start <= end && end <= self.text_len());
+        if start > end || end > self.text_len() {
+            return GapBytes::empty();
+        }
         if start < self.gap_start {
             if end <= self.gap_start {
                 GapBytes(&self.buffer[start..end], &[])

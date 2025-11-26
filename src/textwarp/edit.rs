@@ -3,10 +3,12 @@ use crate::textwarp::EditLineMeta;
 use crate::textwarp::EditText;
 use crate::textwarp::GapBuffer;
 use crate::textwarp::LineData;
+use crate::textwarp::LineStr;
 use crate::textwarp::PageOffset;
 use crate::textwarp::RingVec;
+use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
-use crate::tui::TextSelect;
+use crate::textwarp::TextSelect;
 use std::fs;
 use std::fs::File;
 use std::io::BufRead;
@@ -14,24 +16,13 @@ use std::io::BufReader;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-const CHAR_GAP_SIZE: usize = 128;
-use crate::textwarp::LineStr;
-use crate::textwarp::Text;
-use std::collections::HashMap;
 
-//按块加载文件 每个块4KB大小
-struct Block {
-    lines: Vec<GapBuffer>,
-    file_start: usize,
-    file_end: usize,
-    is_modified: bool,
-}
+const CHAR_GAP_SIZE: usize = 128;
 
 pub(crate) struct GapText {
-    lines: Vec<GapBuffer>,             //每行使用 GapBuffer 存储
-    file_size: usize,                  //文件大小
-    page_offset_list: Vec<PageOffset>, //分页偏移列表
-    cache: HashMap<usize, Block>,
+    lines: Vec<GapBuffer>,             // 每128字节使用 GapBuffer 存储
+    file_size: usize,                  // 文件大小
+    page_offset_list: Vec<PageOffset>, // 分页偏移列表
 }
 
 impl GapText {
@@ -50,8 +41,7 @@ impl GapText {
                 buffer.pop();
             }
 
-            let mut gap_buffer = GapBuffer::new(buffer.len() + CHAR_GAP_SIZE);
-            gap_buffer.insert(0, &buffer);
+            let gap_buffer = GapBuffer::from_bytes(&buffer, CHAR_GAP_SIZE);
             gap_buffers.push(gap_buffer);
             buffer.clear(); // 清空缓冲区，准备读取下一行
         }
@@ -60,7 +50,6 @@ impl GapText {
             lines: gap_buffers,
             file_size: 0,
             page_offset_list: Vec::new(),
-            cache: HashMap::new(),
         })
     }
 
@@ -136,6 +125,7 @@ impl TextIndex for GapText {
 }
 
 impl Text for GapText {
+    type LineItem<'a> = LineStr<'a>;
     fn get_file_size(&self) -> usize {
         self.file_size
     }
@@ -269,7 +259,7 @@ impl EditText for GapText {
                 self.borrow_lines_mut()
                     .insert(line_index + 1, new_gap_buffer);
             } else {
-                let b = &line_txt.text(line_offset..);
+                let b = &line_txt.text((line_offset..));
                 let mut new_gap_buffer = GapBuffer::new(b.len() + 5);
                 new_gap_buffer.insert(0, b.left());
                 new_gap_buffer.insert(new_gap_buffer.text_len(), b.left());

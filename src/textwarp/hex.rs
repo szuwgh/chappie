@@ -9,7 +9,8 @@ use crate::textwarp::PageOffset;
 use crate::textwarp::RingVec;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
-use crate::tui::TextSelect;
+use crate::textwarp::TextSelect;
+use crate::textwarp::CHUNK_NUM;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -17,7 +18,7 @@ use std::io::Seek;
 use std::ops::RangeBounds;
 use std::path::Path;
 //const PAGE_GROUP: usize = 1;
-const CHUNK_SIZE: usize = 4 * 1024; // 每个块的大小
+const HEX_CHUNK_SIZE: usize = 4 * 1024; // 每个块的大小
 const HEX_GAP_SIZE: usize = 5;
 pub(crate) const HEX_WITH: usize = 16; //16进制文本的宽度
 
@@ -51,15 +52,13 @@ impl Chunk {
     }
 }
 
-const CHUNK_NUM: usize = 5;
-
 pub(crate) struct HexText {
-    chunks: RingVec<Chunk>,
-    chk_iter: Chunk,
-    file: File,
-    cache: HashMap<usize, Chunk>,
-    file_size: usize,
-    height: usize,
+    chunks: RingVec<Chunk>,       // 每个块4KB大小
+    chk_iter: Chunk,              // 当前迭代的块 这个后续可以优化
+    file: File,                   // 文件句柄
+    cache: HashMap<usize, Chunk>, // 缓存已修改的块
+    file_size: usize,             // 文件大小
+    height: usize,                //显示高度
 }
 
 impl HexText {
@@ -69,14 +68,14 @@ impl HexText {
     ) -> ChapResult<HexText> {
         let mut file = File::open(filename)?;
         let file_size = file.metadata()?.len() as usize;
-        let mut chunks = RingVec::new(CHUNK_NUM);
+        let mut chunks = RingVec::with_capacity(CHUNK_NUM);
 
-        let mut buf = [0u8; CHUNK_SIZE];
+        let mut buf = [0u8; HEX_CHUNK_SIZE];
         let mut bytes_start = 0;
         for _ in 0..CHUNK_NUM {
-            let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+            let mut buffer = GapBuffer::new(HEX_CHUNK_SIZE + HEX_GAP_SIZE);
             let mut bytes_read = 0;
-            while bytes_read < CHUNK_SIZE {
+            while bytes_read < HEX_CHUNK_SIZE {
                 let n = file.read(&mut buf)?;
                 if n == 0 {
                     //跳出 for 循环
@@ -120,22 +119,23 @@ impl HexText {
     }
 
     pub(crate) fn reset_chunks(&mut self, line_file_start: usize) {
-        let n = (self.file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        let last_chunk_address = (n - CHUNK_NUM) * CHUNK_SIZE;
+        let n = (self.file_size + HEX_CHUNK_SIZE - 1) / HEX_CHUNK_SIZE;
+        let last_chunk_address = (n - CHUNK_NUM) * HEX_CHUNK_SIZE;
         //如果没有找到块 从新重读chunks
-        //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
-        let chunk_start = (line_file_start / CHUNK_SIZE * CHUNK_SIZE).min(last_chunk_address);
+        //通过line_file_start 计算在哪一个块 每个块的大小是 HEX_CHUNK_SIZE
+        let chunk_start =
+            (line_file_start / HEX_CHUNK_SIZE * HEX_CHUNK_SIZE).min(last_chunk_address);
         self.read_chunks(chunk_start).unwrap();
     }
 
     pub(crate) fn read_one_chunk(&mut self, chunk_seek: usize) -> ChapResult<Chunk> {
         self.file
             .seek(std::io::SeekFrom::Start(chunk_seek as u64))?;
-        let mut buf = [0u8; CHUNK_SIZE];
+        let mut buf = [0u8; HEX_CHUNK_SIZE];
         let bytes_start = chunk_seek;
-        let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+        let mut buffer = GapBuffer::new(HEX_CHUNK_SIZE + HEX_GAP_SIZE);
         let mut bytes_read = 0;
-        while bytes_read < CHUNK_SIZE {
+        while bytes_read < HEX_CHUNK_SIZE {
             let n = self.file.read(&mut buf)?;
             if n == 0 {
                 //跳出 for 循环
@@ -158,14 +158,14 @@ impl HexText {
     pub(crate) fn read_chunks(&mut self, chunk_seek: usize) -> ChapResult<()> {
         self.file
             .seek(std::io::SeekFrom::Start(chunk_seek as u64))?;
-        let mut chunks = RingVec::new(CHUNK_NUM);
+        let mut chunks = RingVec::with_capacity(CHUNK_NUM);
 
-        let mut buf = [0u8; CHUNK_SIZE];
+        let mut buf = [0u8; HEX_CHUNK_SIZE];
         let mut bytes_start = chunk_seek;
         for _ in 0..CHUNK_NUM {
-            let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+            let mut buffer = GapBuffer::new(HEX_CHUNK_SIZE + HEX_GAP_SIZE);
             let mut bytes_read = 0;
-            while bytes_read < CHUNK_SIZE {
+            while bytes_read < HEX_CHUNK_SIZE {
                 let n = self.file.read(&mut buf)?;
                 if n == 0 {
                     //跳出 for 循环
@@ -194,10 +194,10 @@ impl HexText {
             return Ok(());
         }
         self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
-        let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+        let mut buffer = GapBuffer::new(HEX_CHUNK_SIZE + HEX_GAP_SIZE);
         let mut bytes_read = 0;
         let mut buf = [0u8; 1024];
-        while bytes_read < CHUNK_SIZE {
+        while bytes_read < HEX_CHUNK_SIZE {
             let n = self.file.read(&mut buf)?;
             if n == 0 {
                 break;
@@ -227,10 +227,10 @@ impl HexText {
             return Ok(());
         }
         self.file.seek(std::io::SeekFrom::Start(file_seek as u64))?;
-        let mut buffer = GapBuffer::new(CHUNK_SIZE + HEX_GAP_SIZE);
+        let mut buffer = GapBuffer::new(HEX_CHUNK_SIZE + HEX_GAP_SIZE);
         let mut bytes_read = 0;
         let mut buf = [0u8; 1024];
-        while bytes_read < CHUNK_SIZE {
+        while bytes_read < HEX_CHUNK_SIZE {
             let n = self.file.read(&mut buf)?;
             if n == 0 {
                 break;
@@ -277,6 +277,7 @@ impl TextIndex for HexText {
 }
 
 impl Text for HexText {
+    type LineItem<'a> = LineStr<'a>;
     fn get_file_size(&self) -> usize {
         self.file_size
     }
@@ -427,7 +428,7 @@ impl Text for HexText {
                             line_file_start,
                         );
                     } else {
-                        last_chunk = last_chunk.saturating_sub(CHUNK_SIZE);
+                        last_chunk = last_chunk.saturating_sub(HEX_CHUNK_SIZE);
 
                         self.read_last_chunk(last_chunk).unwrap();
                         // for c in self.chunks.iter() {}
@@ -489,11 +490,11 @@ impl Text for HexText {
             );
         }
         // self.reset_chunks(line_file_start);
-        // let n = (self.file_size + CHUNK_SIZE - 1) / CHUNK_SIZE;
-        // let last_chunk_address = (n - CHUNK_NUM) * CHUNK_SIZE;
+        // let n = (self.file_size + HEX_CHUNK_SIZE - 1) / HEX_CHUNK_SIZE;
+        // let last_chunk_address = (n - CHUNK_NUM) * HEX_CHUNK_SIZE;
         // //如果没有找到块 从新重读chunks
-        // //通过line_file_start 计算在哪一个块 每个块的大小是 CHUNK_SIZE
-        let chunk_start = line_file_start / CHUNK_SIZE * CHUNK_SIZE;
+        // //通过line_file_start 计算在哪一个块 每个块的大小是 HEX_CHUNK_SIZE
+        let chunk_start = line_file_start / HEX_CHUNK_SIZE * HEX_CHUNK_SIZE;
         let chk_iter = self.read_one_chunk(chunk_start).unwrap();
         self.chk_iter = chk_iter;
         return HexTextU8Iter::new(self, line_file_start - self.chk_iter.file_start);
@@ -596,7 +597,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                             let remaining = self.with - buffer.len();
                             //从下一个块读取
                             let buf1 = c1.text(self.line_file_start + len..);
-                            //
+                            //继续读取
                             if remaining >= buf1.len() {
                                 // let buf2 = buf1.text(..need);
                                 v.extend_from_slice(buf1.left());

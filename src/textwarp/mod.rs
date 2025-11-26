@@ -1,9 +1,11 @@
 pub(crate) mod edit;
+pub(crate) mod edit_block;
 pub(crate) mod hex;
 pub(crate) mod text;
 use crate::common::error::ChapResult;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::gap_buffer::GapBytes;
+use crate::common::gap_buffer::GapBytesBlockCharIter;
 use crate::common::gap_buffer::GapBytesCharIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
@@ -11,7 +13,6 @@ use crate::fuzzy::boyermoore::BoyerMoore;
 use crate::textwarp::edit::GapText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
-use crate::tui::TextSelect;
 use inherit_methods_macro::inherit_methods;
 use mlua::Either;
 use std::borrow::Cow;
@@ -22,6 +23,9 @@ use std::ptr::NonNull;
 use unicode_width::UnicodeWidthChar;
 use utf8_iter::Utf8CharIndices;
 use utf8_iter::Utf8CharsEx;
+
+const CHUNK_NUM: usize = 5;
+
 macro_rules! get_page_number {
     ($line_number:expr, $lines_per_page:expr) => {{
         let line_num = $line_number;
@@ -38,22 +42,84 @@ macro_rules! get_page_number {
     }};
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct TextSelect(usize, usize);
+
+impl TextSelect {
+    pub(crate) fn new() -> Self {
+        TextSelect(0, 0)
+    }
+
+    pub(crate) fn from_select(start: usize, end: usize) -> Self {
+        TextSelect(start, end)
+    }
+
+    fn start(&self) -> usize {
+        self.0
+    }
+    fn end(&self) -> usize {
+        self.1
+    }
+
+    fn len(&self) -> usize {
+        self.end() - self.start()
+    }
+
+    fn inc_end(&mut self) {
+        self.1 += 1;
+    }
+
+    pub(crate) fn has_selected(&self) -> bool {
+        self.start() < self.end()
+    }
+
+    pub(crate) fn is_selected(&self, pos: usize) -> bool {
+        pos >= self.start() && pos <= self.end()
+    }
+
+    // 递减end
+    fn dec_end(&mut self) {
+        if self.1 > self.0 {
+            self.1 -= 1;
+        }
+    }
+
+    pub(crate) fn reset_to_start(&mut self) {
+        self.1 = self.0;
+    }
+
+    pub(crate) fn set_pos(&mut self, pos: usize) {
+        self.0 = pos;
+        self.1 = pos;
+    }
+
+    pub(crate) fn get_start(&self) -> usize {
+        self.0
+    }
+
+    pub(crate) fn get_end(&self) -> usize {
+        self.1
+    }
+
+    pub(crate) fn set_start(&mut self, start: usize) {
+        self.0 = start;
+    }
+
+    pub(crate) fn set_end(&mut self, end: usize) {
+        self.1 = end;
+    }
+
+    pub(crate) fn set_select(&mut self, start: usize, end: usize) {
+        self.0 = start;
+        self.1 = end;
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum TextWarpType {
     NoWrap,
     SoftWrap,
 }
-
-pub(crate) struct EditTextBuffer {
-    lines: UnsafeCell<Vec<GapBuffer>>, // 每行使用 GapBuffer 存储
-    cache_lines: UnsafeCell<RingVec<CacheStr>>, // 缓存行
-    cache_line_meta: UnsafeCell<RingVec<EditLineMeta>>, // 缓存行
-    page_offset_list: UnsafeCell<Vec<PageOffset>>, // 每页的偏移量
-    height: usize,                     //最大行数
-    with: usize,                       //最大列数
-}
-
-impl EditTextBuffer {}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PageOffset {
@@ -121,7 +187,7 @@ impl GapBytesCache {
         (slice1, slice2)
     }
 
-    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> (&[u8], &[u8]) {
+    pub(crate) fn text(&self, range: &impl std::ops::RangeBounds<usize>) -> (&[u8], &[u8]) {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
             std::ops::Bound::Excluded(&start) => start + 1,
@@ -132,7 +198,7 @@ impl GapBytesCache {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.len(),
         };
-        if start > end && end > self.len() {
+        if start > self.len() || end > self.len() {
             return (&[], &[]);
         }
 
@@ -253,36 +319,48 @@ impl VecCache {
 }
 
 pub(crate) enum CacheStr {
-    Gap(GapBytesCache),
     Vec(VecCache),
     Bytes(BytesCache),
+    Gap(GapBytesCache),
+    GapBlock(GapBytesCache, GapBytesCache),
 }
 
 impl CacheStr {
     fn from_data(s: LineData) -> Self {
         match s {
             LineData::Bytes(v) => CacheStr::Bytes(BytesCache::from_slice(v)),
-            LineData::GapBytes(v) => CacheStr::Gap(GapBytesCache::from_data(v)),
             LineData::Own(v) => CacheStr::Vec(VecCache::from_vec(v)),
-        }
-    }
-
-    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> (&str, &str) {
-        match self {
-            CacheStr::Gap(v) => {
-                let (l, r) = v.text(range);
-                unsafe { (str::from_utf8_unchecked(l), str::from_utf8_unchecked(r)) }
+            LineData::GapBytes(v) => CacheStr::Gap(GapBytesCache::from_data(v)),
+            LineData::GapBlockBytes(v1, v2) => {
+                CacheStr::GapBlock(GapBytesCache::from_data(v1), GapBytesCache::from_data(v2))
             }
-            CacheStr::Bytes(v) => unsafe { (str::from_utf8_unchecked(v.text(range)), "") },
-            CacheStr::Vec(v) => unsafe { (str::from_utf8_unchecked(v.text(range)), "") },
         }
     }
 
-    pub(crate) fn as_str(&self) -> (Cow<str>, Cow<str>) {
+    pub(crate) fn text(&self, range: impl std::ops::RangeBounds<usize>) -> LineParts<&[u8]> {
         match self {
-            CacheStr::Gap(v) => v.as_str(),
-            CacheStr::Vec(v) => (v.as_str(), Cow::Borrowed("")),
-            CacheStr::Bytes(v) => (v.as_str(), Cow::Borrowed("")),
+            CacheStr::Bytes(v) => LineParts::from_1(v.text(range)),
+            CacheStr::Vec(v) => LineParts::from_1(v.text(range)),
+            CacheStr::Gap(v) => {
+                let (l, r) = v.text(&range);
+                LineParts::from_2(l, r)
+            }
+            CacheStr::GapBlock(v1, v2) => {
+                let (l1, r1) = v1.text(&range);
+                let (l2, r2) = v2.text(&range);
+                LineParts::from_4(l1, r1, l2, r2)
+            }
+        }
+    }
+
+    pub(crate) fn as_str(&self) -> LineParts<Cow<str>> {
+        match self {
+            CacheStr::Vec(v) => LineParts::from_1(v.as_str()),
+            CacheStr::Bytes(v) => LineParts::from_1(v.as_str()),
+            CacheStr::Gap(v) => LineParts::from_2(v.as_str().0, v.as_str().1),
+            CacheStr::GapBlock(v1, v2) => {
+                LineParts::from_4(v1.as_str().0, v1.as_str().1, v2.as_str().0, v2.as_str().1)
+            }
         }
     }
 
@@ -291,14 +369,21 @@ impl CacheStr {
             CacheStr::Gap(v) => v.len(),
             CacheStr::Vec(v) => v.len(),
             CacheStr::Bytes(v) => v.len(),
+            CacheStr::GapBlock(v1, v2) => v1.len() + v2.len(),
         }
     }
 
-    pub(crate) fn as_slice(&self) -> (&[u8], &[u8]) {
+    pub(crate) fn as_slice(&self) -> LineParts<&[u8]> {
         match self {
-            CacheStr::Gap(v) => v.as_slice(),
-            CacheStr::Vec(v) => (v.as_slice(), &[]),
-            CacheStr::Bytes(v) => (v.as_slice(), &[]),
+            CacheStr::Vec(v) => LineParts::from_1(v.as_slice()),
+            CacheStr::Bytes(v) => LineParts::from_1(v.as_slice()),
+            CacheStr::Gap(v) => LineParts::from_2(v.as_slice().0, v.as_slice().1),
+            CacheStr::GapBlock(v1, v2) => LineParts::from_4(
+                v1.as_slice().0,
+                v1.as_slice().1,
+                v2.as_slice().0,
+                v2.as_slice().1,
+            ),
         }
     }
 }
@@ -306,6 +391,7 @@ impl CacheStr {
 enum LineDataCharIter<'a> {
     CharIter(Utf8CharIndices<'a>),
     GapCharIter(GapBytesCharIter<'a>),
+    GapBlockCharIter(GapBytesBlockCharIter<'a>),
 }
 
 impl<'a> Iterator for LineDataCharIter<'a> {
@@ -314,6 +400,7 @@ impl<'a> Iterator for LineDataCharIter<'a> {
         match self {
             LineDataCharIter::CharIter(iter) => iter.next(),
             LineDataCharIter::GapCharIter(iter) => iter.next(),
+            LineDataCharIter::GapBlockCharIter(iter) => iter.next(),
         }
     }
 }
@@ -323,6 +410,7 @@ impl DoubleEndedIterator for LineDataCharIter<'_> {
         match self {
             LineDataCharIter::CharIter(iter) => iter.next_back(),
             LineDataCharIter::GapCharIter(iter) => iter.next_back(),
+            LineDataCharIter::GapBlockCharIter(iter) => todo!(),
         }
     }
 }
@@ -331,6 +419,94 @@ pub enum LineData<'a> {
     Own(Vec<u8>),
     Bytes(&'a [u8]),
     GapBytes(GapBytes<'a>),
+    GapBlockBytes(GapBytes<'a>, GapBytes<'a>),
+}
+
+pub(crate) trait LineDefault {
+    fn empty() -> Self;
+}
+
+impl<'a> LineDefault for Cow<'a, str> {
+    fn empty() -> Self {
+        Cow::Borrowed("")
+    }
+}
+
+impl LineDefault for &str {
+    fn empty() -> Self {
+        ""
+    }
+}
+
+impl LineDefault for &[u8] {
+    fn empty() -> Self {
+        &[]
+    }
+}
+
+impl LineDefault for usize {
+    fn empty() -> Self {
+        0
+    }
+}
+
+pub struct LineParts<T: LineDefault> {
+    pub(crate) data: [T; 4],
+    pub(crate) length: usize,
+}
+
+impl<T: LineDefault> LineParts<T> {
+    pub(crate) fn empty() -> Self {
+        LineParts {
+            data: [T::empty(), T::empty(), T::empty(), T::empty()],
+            length: 0,
+        }
+    }
+
+    pub(crate) fn append(&mut self, t: T) {
+        if self.length < 4 {
+            self.data[self.length] = t;
+            self.length += 1;
+        } else {
+            panic!("LineParts is full");
+        }
+    }
+
+    fn from_1(t: T) -> LineParts<T> {
+        LineParts {
+            data: [t, T::empty(), T::empty(), T::empty()],
+            length: 1,
+        }
+    }
+
+    fn from_2(t1: T, t2: T) -> LineParts<T> {
+        LineParts {
+            data: [t1, t2, T::empty(), T::empty()],
+            length: 2,
+        }
+    }
+
+    fn from_3(t1: T, t2: T, t3: T) -> LineParts<T> {
+        LineParts {
+            data: [t1, t2, t3, T::empty()],
+            length: 3,
+        }
+    }
+
+    fn from_4(t1: T, t2: T, t3: T, t4: T) -> LineParts<T> {
+        LineParts {
+            data: [t1, t2, t3, t4],
+            length: 4,
+        }
+    }
+
+    pub(crate) fn as_parts(&self) -> &[T] {
+        &self.data[..self.length]
+    }
+
+    pub(crate) fn as_2parts(&self) -> (&T, &T) {
+        (&self.data[0], &self.data[1])
+    }
 }
 
 impl<'a> LineData<'a> {
@@ -338,39 +514,63 @@ impl<'a> LineData<'a> {
         LineData::Bytes(&[])
     }
 
-    fn as_str(&self) -> (Cow<str>, Cow<str>) {
+    fn as_str_parts(&self) -> LineParts<Cow<str>> {
         match self {
-            LineData::Bytes(v) => (String::from_utf8_lossy(v), Cow::Borrowed("")),
-            LineData::GapBytes(v) => v.as_str(),
-            LineData::Own(v) => (String::from_utf8_lossy(v), Cow::Borrowed("")),
+            LineData::Own(v) => LineParts::from_1(String::from_utf8_lossy(v)),
+            LineData::Bytes(v) => LineParts::from_1(String::from_utf8_lossy(v)),
+            LineData::GapBytes(v) => LineParts::from_2(v.as_str_parts().0, v.as_str_parts().1),
+            LineData::GapBlockBytes(v1, v2) => LineParts::from_4(
+                v1.as_str_parts().0,
+                v1.as_str_parts().1,
+                v2.as_str_parts().0,
+                v2.as_str_parts().1,
+            ),
         }
     }
 
-    fn as_slice(&self) -> (&[u8], &[u8]) {
+    fn as_slice(&self) -> LineParts<&[u8]> {
         match self {
-            LineData::Bytes(v) => (v, &[]),
-            LineData::GapBytes(v) => v.as_slice(),
-            LineData::Own(v) => (v.as_slice(), &[]),
+            LineData::Own(v) => LineParts::from_1(v.as_slice()),
+            LineData::Bytes(v) => LineParts::from_1(v),
+            LineData::GapBytes(v) => {
+                let (l, r) = v.as_slice();
+                LineParts::from_2(l, r)
+            }
+            LineData::GapBlockBytes(v1, v2) => {
+                let (l1, r1) = v1.as_slice();
+                let (l2, r2) = v2.as_slice();
+                LineParts::from_4(l1, r1, l2, r2)
+            }
         }
+
+        // match self {
+        //     LineData::Bytes(v) => (v, &[]),
+        //     LineData::GapBytes(v) => v.as_slice(),
+        //     LineData::Own(v) => (v.as_slice(), &[]),
+        // }
     }
 
     fn len(&self) -> usize {
         match self {
+            LineData::Own(v) => v.len(),
             LineData::Bytes(v) => v.len(),
             LineData::GapBytes(v) => v.len(),
-            LineData::Own(v) => v.len(),
+            LineData::GapBlockBytes(v1, v2) => v1.len() + v2.len(),
         }
     }
 
     fn char_indices(&self) -> LineDataCharIter<'_> {
         match self {
+            LineData::Own(v) => LineDataCharIter::CharIter(v.char_indices()),
             LineData::Bytes(v) => LineDataCharIter::CharIter(v.char_indices()),
             LineData::GapBytes(v) => LineDataCharIter::GapCharIter(v.char_indices()),
-            LineData::Own(v) => LineDataCharIter::CharIter(v.char_indices()),
+            LineData::GapBlockBytes(v1, v2) => LineDataCharIter::GapBlockCharIter(
+                GapBytesBlockCharIter::new(v1.char_indices(), v2.char_indices()),
+            ),
         }
     }
 
-    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> LineData<'a> {
+    fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> LineData<'a> {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
             std::ops::Bound::Excluded(&start) => start + 1,
@@ -384,26 +584,73 @@ impl<'a> LineData<'a> {
         assert!(start <= end);
 
         match self {
+            LineData::Own(v) => LineData::Own(v[start..end].to_vec()),
             LineData::Bytes(v) => LineData::Bytes(&v[start..end]),
             LineData::GapBytes(v) => LineData::GapBytes(v.text(range)),
-            LineData::Own(v) => LineData::Own(v[start..end].to_vec()),
+            LineData::GapBlockBytes(v1, v2) => {
+                LineData::GapBlockBytes(v1.text(range.clone()), v2.text(range))
+            }
         }
     }
 }
 
 pub struct LineStr<'a> {
-    pub(crate) line_data: LineData<'a>,
-    pub(crate) line_file_start: usize,
-    pub(crate) line_file_end: usize,
+    pub(crate) line_data: LineData<'a>, //行数据
+    pub(crate) line_file_start: usize,  //行在文件开始位置
+    pub(crate) line_file_end: usize,    //行在文件结束的位置
 }
 
-impl<'a> LineStr<'a> {
+impl<'a> Line<'a> for LineStr<'a> {
     fn text_len(&self) -> usize {
         self.line_data.len()
     }
-
-    fn text(&self, range: impl std::ops::RangeBounds<usize>) -> LineData<'a> {
+    fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> LineData<'a> {
         self.line_data.text(range)
+    }
+
+    fn get_line_file_start(&self) -> usize {
+        self.line_file_start
+    }
+
+    fn get_line_file_end(&self) -> usize {
+        self.line_file_end
+    }
+}
+
+impl<'a> LineStr<'a> {
+    fn empty() -> LineStr<'a> {
+        LineStr {
+            line_data: LineData::empty(),
+            line_file_start: 0,
+            line_file_end: 0,
+        }
+    }
+}
+
+//一行数据 这行数据可能是在两个块中
+pub(crate) struct LineBlockStr<'a>([LineStr<'a>; 2]);
+
+impl<'a> Line<'a> for LineBlockStr<'a> {
+    fn text_len(&self) -> usize {
+        self.0[0].line_data.len() + self.0[1].line_data.len()
+    }
+    fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> LineData<'a> {
+        match (&self.0[0].line_data, &self.0[1].line_data) {
+            (LineData::GapBytes(v1), LineData::GapBytes(v2)) => {
+                LineData::GapBlockBytes(v1.text(range.clone()), v2.text(range))
+            }
+            _ => {
+                panic!("LineBlockStr 只能是 GapBytes 类型");
+            }
+        }
+    }
+
+    fn get_line_file_start(&self) -> usize {
+        self.0[0].line_file_start
+    }
+
+    fn get_line_file_end(&self) -> usize {
+        self.0[1].line_file_end
     }
 }
 
@@ -460,7 +707,17 @@ pub(crate) trait TextOper {
     fn get_file_size(&self) -> usize;
 }
 
+pub(crate) trait Line<'a> {
+    fn text_len(&self) -> usize;
+    fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> LineData<'a>;
+    fn get_line_file_start(&self) -> usize;
+    fn get_line_file_end(&self) -> usize;
+}
+
 pub(crate) trait Text {
+    type LineItem<'a>: Line<'a>
+    where
+        Self: 'a;
     fn get_file_size(&self) -> usize;
 
     //是否有下一行
@@ -472,19 +729,21 @@ pub(crate) trait Text {
         line_index: usize,
         line_start: usize,
         line_end: usize,
-    ) -> LineStr<'a>;
+    ) -> Self::LineItem<'a>;
 
     //获取行的文本长度
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize;
 
+    //获取选中文本
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8>;
 
+    //迭代一行数据
     fn iter<'a>(
         &'a mut self,
         line_index: usize,
         line_offset: usize,
         line_file_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>>;
+    ) -> impl Iterator<Item = Self::LineItem<'a>>;
 
     //反向迭代
     fn iter_rev<'a>(
@@ -492,8 +751,9 @@ pub(crate) trait Text {
         line_index: usize,
         line_offset: usize,
         line_file_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>>;
+    ) -> impl Iterator<Item = Self::LineItem<'a>>;
 
+    //迭代字节数据
     fn iter_u8<'a>(
         &'a mut self,
         line_index: usize,
@@ -508,6 +768,9 @@ pub(crate) trait TextIndex {
 }
 
 pub(crate) trait EditText {
+    // cursor_y: 行号 从0开始
+    // bytes_cursor: 字节偏移 从0开始
+    // line_meta: 当前行的元信息
     fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &EditLineMeta, c: char);
     fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta);
     fn backspace(
@@ -747,8 +1010,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
     ) -> TextWarp<T> {
         TextWarp {
             lines: UnsafeCell::new(lines),
-            cache_lines: UnsafeCell::new(RingVec::new(height)),
-            cache_line_meta: UnsafeCell::new(RingVec::new(height)),
+            cache_lines: UnsafeCell::new(RingVec::with_capacity(height)),
+            cache_line_meta: UnsafeCell::new(RingVec::with_capacity(height)),
             // page_offset_list: UnsafeCell::new(vec![PageOffset {
             //     line_index: 0,
             //     line_offset: 0,
@@ -1154,8 +1417,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn set_line_char_txt<'a, F, I: TextIndex>(
-        line_str: LineStr<'a>,         // 行内容
+    fn set_line_char_txt<'a, F, I: TextIndex, L: Line<'a>>(
+        line_str: L,                   // 行内容
         line_index: usize,             // 行索引
         line_start: usize,             // 行起始位置
         with: usize,                   // 每行宽度
@@ -1197,8 +1460,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         *line_num,
                         line_index,
                         0,
-                        line_str.line_file_start,
-                        line_str.line_file_end,
+                        line_str.get_line_file_start(),
+                        line_str.get_line_file_end(),
                     ),
                 );
             }
@@ -1212,7 +1475,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     PageOffset {
                         line_index: line_index + 1,
                         line_offset: 0,
-                        line_file_start: line_str.line_file_end,
+                        line_file_start: line_str.get_line_file_end(),
                         start_line_num: 0,
                         start_page_num: 0,
                     },
@@ -1273,8 +1536,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn no_warp<'a, F, I: TextIndex>(
-        line_str: LineStr<'a>,
+    fn no_warp<'a, F, I: TextIndex, L: Line<'a>>(
+        line_str: L,
         line_index: usize,
         line_start: usize,
         with: usize,
@@ -1309,8 +1572,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     *line_num,
                     line_index,
                     line_start + 0,
-                    line_str.line_file_start,
-                    line_str.line_file_end,
+                    line_str.get_line_file_start(),
+                    line_str.get_line_file_end(),
                 ),
             );
         }
@@ -1323,7 +1586,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 PageOffset {
                     line_index,
                     line_offset: line_start + 0,
-                    line_file_start: line_str.line_file_end,
+                    line_file_start: line_str.get_line_file_end(),
                     start_line_num: 0,
                     start_page_num: 0,
                 },
@@ -1341,8 +1604,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn get_last_sort_warp_line<'a, F, I: TextIndex>(
-        line_str: LineStr<'a>,
+    fn get_last_sort_warp_line<'a, F, I: TextIndex, L: Line<'a>>(
+        line_str: L,
         line_index: usize,
         line_start: usize,
         with: usize,
@@ -1394,14 +1657,15 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 *line_num,
                 line_index,
                 line_offset,
-                line_str.line_file_start,
-                line_str.line_file_end,
+                line_str.get_line_file_start(),
+                line_str.get_line_file_end(),
             ),
         );
     }
 
-    fn sort_warp_desc<'a, F, I: TextIndex>(
-        line_str: LineStr<'a>,
+    // 软换行
+    fn sort_warp_desc<'a, F, I: TextIndex, L: Line<'a>>(
+        line_str: L,
         line_index: usize,
         line_start: usize,
         with: usize,
@@ -1456,37 +1720,11 @@ impl<T: Text + TextIndex> TextWarp<T> {
                                 *line_num,
                                 line_index,
                                 meta_line_offset,
-                                line_str.line_file_start,
-                                line_str.line_file_end,
+                                line_str.get_line_file_start(),
+                                line_str.get_line_file_end(),
                             ),
                         );
                     }
-                    // if *line_num % height == 0 && !is_rev {
-                    //     //到达一页
-                    //     *page_num += 1; //页数加1
-                    //     text_index.set_page_offset(
-                    //         *page_num,
-                    //         PageOffset {
-                    //             line_index,
-                    //             line_offset: line_start + byte_index,
-                    //             line_file_start: line_str.line_file_start,
-                    //             start_line_num: 0,
-                    //             start_page_num: 0,
-                    //         },
-                    //     );
-                    // let m = *page_num / PAGE_GROUP;
-                    // let n = *page_num % PAGE_GROUP;
-                    // if n == 0 && m > page_offset_list.len() - 1 {
-                    //     //保存页数的偏移量
-                    //     page_offset_list.push(PageOffset {
-                    //         line_index,
-                    //         line_offset: line_start + byte_index,
-                    //         line_file_start: line_str.line_file_start,
-                    //         start_line_num: 0,
-                    //         start_page_num: 0,
-                    //     });
-                    // }
-                    //}
                     if *cur_line_count >= line_count {
                         return;
                     }
@@ -1503,11 +1741,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
             if current_bytes > 0 {
                 *line_num = (*line_num).saturating_sub(1); //行数减1
                 if *line_num >= skip_line {
-                    // let txt = if is_rev {
-                    //     line_txt.text(..)
-                    // } else {
-                    //     line_txt.text(line_offset..)
-                    // };
                     let txt = line_txt.text(..);
                     *cur_line_count += 1;
                     let len = txt.len();
@@ -1526,37 +1759,11 @@ impl<T: Text + TextIndex> TextWarp<T> {
                             *line_num,
                             line_index,
                             meta_line_offset,
-                            line_str.line_file_start,
-                            line_str.line_file_end,
+                            line_str.get_line_file_start(),
+                            line_str.get_line_file_end(),
                         ),
                     );
                 }
-                // if *line_num % height == 0 && !is_rev {
-                //     *page_num += 1; //页数加1
-                //     text_index.set_page_offset(
-                //         *page_num,
-                //         PageOffset {
-                //             line_index: line_index + 1,
-                //             line_offset: 0,
-                //             line_file_start: line_str.line_file_end,
-                //             start_line_num: 0,
-                //             start_page_num: 0,
-                //         },
-                //     );
-
-                //     // let m = *page_num / PAGE_GROUP;
-                //     // let n = *page_num % PAGE_GROUP;
-                //     // if n == 0 && m > page_offset_list.len() - 1 {
-                //     //     //保存页数的偏移量
-                //     //     page_offset_list.push(PageOffset {
-                //     //         line_index: line_index + 1,
-                //     //         line_offset: 0,
-                //     //         line_file_start: line_str.line_file_end,
-                //     //         start_line_num: 0,
-                //     //         start_page_num: 0,
-                //     //     });
-                //     // }
-                // }
                 if *cur_line_count >= line_count {
                     return;
                 }
@@ -1581,8 +1788,9 @@ impl<T: Text + TextIndex> TextWarp<T> {
         };
     }
 
-    fn sort_warp_asc<'a, F, I: TextIndex>(
-        line_str: LineStr<'a>,
+    // 软换行
+    fn sort_warp_asc<'a, F, I: TextIndex, L: Line<'a>>(
+        line_str: L,
         line_index: usize,
         line_start: usize,
         with: usize,
@@ -1605,12 +1813,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
         let mut char_index = 0; // 当前行字符索引
         let mut char_count = 0; // 当前行字符数
 
-        // let iter = if is_rev {
-        //     Either::Left(line_txt.char_indices().rev().enumerate())
-        // } else {
-        //     Either::Right(line_txt.char_indices().enumerate())
-        // };
-
         for (i, (byte_index, ch)) in line_txt.char_indices().enumerate() {
             let ch_width = ch.width().unwrap_or(0);
             //检查是否超过屏幕宽度
@@ -1631,8 +1833,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
                             *line_num,
                             line_index,
                             meta_line_offset,
-                            line_str.line_file_start,
-                            line_str.line_file_end,
+                            line_str.get_line_file_start(),
+                            line_str.get_line_file_end(),
                         ),
                     );
                 }
@@ -1644,7 +1846,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         PageOffset {
                             line_index,
                             line_offset: line_start + byte_index,
-                            line_file_start: line_str.line_file_start,
+                            line_file_start: line_str.get_line_file_start(),
                             start_line_num: 0,
                             start_page_num: 0,
                         },
@@ -1691,8 +1893,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         *line_num,
                         line_index,
                         meta_line_offset,
-                        line_str.line_file_start,
-                        line_str.line_file_end,
+                        line_str.get_line_file_start(),
+                        line_str.get_line_file_end(),
                     ),
                 );
             }
@@ -1703,7 +1905,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     PageOffset {
                         line_index: line_index + 1,
                         line_offset: 0,
-                        line_file_start: line_str.line_file_end,
+                        line_file_start: line_str.get_line_file_end(),
                         start_line_num: 0,
                         start_page_num: 0,
                     },
@@ -1728,8 +1930,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn sort_warp<'a, F, I: TextIndex>(
-        line_str: LineStr<'a>,
+    fn sort_warp<'a, F, I: TextIndex, L: Line<'a>>(
+        line_str: L,
         line_index: usize,
         line_start: usize,
         with: usize,

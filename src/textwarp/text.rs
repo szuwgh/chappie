@@ -8,7 +8,7 @@ use crate::textwarp::PageOffset;
 use crate::textwarp::Path;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
-use crate::tui::TextSelect;
+use crate::textwarp::TextSelect;
 use memmap2::Mmap;
 pub(crate) struct MmapText {
     mmap: Mmap,
@@ -85,6 +85,7 @@ impl TextIndex for MmapText {
 }
 
 impl Text for MmapText {
+    type LineItem<'a> = LineStr<'a>;
     fn get_file_size(&self) -> usize {
         self.mmap.len()
     }

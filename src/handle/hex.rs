@@ -8,8 +8,7 @@ use crate::textwarp::hex::HEX_WITH;
 use crate::textwarp::EditLineMeta;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
-
-use crate::tui::TextSelect;
+use crate::textwarp::TextSelect;
 use crate::ChapTui;
 
 use std::fs::File;

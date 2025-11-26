@@ -3,7 +3,7 @@ use crate::byteutil::Endian;
 use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
 use crate::textwarp::EditLineMeta;
-use crate::tui::TextSelect;
+use crate::textwarp::TextSelect;
 use const_hex::Buffer;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
@@ -196,7 +196,8 @@ pub(crate) fn get_hex_content<'a>(
 
     // 处理每一行文本
     for (i, txt) in txts.iter().enumerate() {
-        let (slice1, slice2) = txt.as_slice();
+        let part = txt.as_slice();
+        let (slice1, slice2) = part.as_2parts();
         let line_start = line_meta
             .get(i)
             .map(|meta| meta.get_line_file_start())

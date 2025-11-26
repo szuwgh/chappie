@@ -2,7 +2,6 @@ pub(crate) mod csv;
 pub(crate) mod edit;
 pub(crate) mod hex;
 pub(crate) mod text;
-
 use crate::byteutil::Endian;
 use crate::cli::UIType;
 use crate::common::error::ChapResult;
@@ -19,6 +18,7 @@ use crate::textwarp::EditLineMeta;
 use crate::textwarp::EditTextWarp;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
+use crate::textwarp::TextSelect;
 use crate::textwarp::TextWarp;
 use crate::textwarp::TextWarpType;
 use crate::tui::edit::get_edit_content;
@@ -26,12 +26,9 @@ use crate::tui::hex::get_data_inspector_content;
 use crate::tui::hex::get_hex_content;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
-use crossterm::execute;
-use crossterm::terminal::LeaveAlternateScreen;
 use crossterm::{
     cursor,
     event::{self, KeyCode},
-    ExecutableCommand,
 };
 use ratatui::init;
 use ratatui::prelude::Constraint;
@@ -48,7 +45,6 @@ use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io;
 use std::path::Path;
-use std::process::exit;
 use tokio::sync::mpsc;
 //use vectorbase::collection::Collection;
 
@@ -57,79 +53,6 @@ pub(crate) enum ChapMod {
     Hex,    //16进制编辑器模式
     Text,   //大文本浏览模式
     Vector, //向量分析模式
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct TextSelect(usize, usize);
-
-impl TextSelect {
-    fn new() -> Self {
-        TextSelect(0, 0)
-    }
-
-    pub(crate) fn from_select(start: usize, end: usize) -> Self {
-        TextSelect(start, end)
-    }
-
-    fn start(&self) -> usize {
-        self.0
-    }
-    fn end(&self) -> usize {
-        self.1
-    }
-
-    fn len(&self) -> usize {
-        self.end() - self.start()
-    }
-
-    fn inc_end(&mut self) {
-        self.1 += 1;
-    }
-
-    fn has_selected(&self) -> bool {
-        self.start() < self.end()
-    }
-
-    fn is_selected(&self, pos: usize) -> bool {
-        pos >= self.start() && pos <= self.end()
-    }
-
-    // 递减end
-    fn dec_end(&mut self) {
-        if self.1 > self.0 {
-            self.1 -= 1;
-        }
-    }
-
-    pub(crate) fn reset_to_start(&mut self) {
-        self.1 = self.0;
-    }
-
-    pub(crate) fn set_pos(&mut self, pos: usize) {
-        self.0 = pos;
-        self.1 = pos;
-    }
-
-    pub(crate) fn get_start(&self) -> usize {
-        self.0
-    }
-
-    pub(crate) fn get_end(&self) -> usize {
-        self.1
-    }
-
-    pub(crate) fn set_start(&mut self, start: usize) {
-        self.0 = start;
-    }
-
-    pub(crate) fn set_end(&mut self, end: usize) {
-        self.1 = end;
-    }
-
-    pub(crate) fn set_select(&mut self, start: usize, end: usize) {
-        self.0 = start;
-        self.1 = end;
-    }
 }
 
 pub(crate) struct Navigation {
@@ -338,7 +261,7 @@ pub(crate) struct ChapTui {
     pub(crate) start_line_num: usize,    // 起始行号
     pub(crate) is_last_line: bool,       // 是否是最后一行
     pub(crate) endian: Endian,           // 字节序
-    pub(crate) assist_tv2_data: String,
+    pub(crate) assist_tv2_data: String,  // 辅助窗口2数据
 }
 
 impl ChapTui {
@@ -549,468 +472,468 @@ impl ChapTui {
         Ok(line_meta)
     }
 
-    pub(crate) fn handle_ctrl_c(&mut self) -> ChapResult<()> {
-        crossterm::terminal::disable_raw_mode()?;
-        execute!(
-            self.terminal.backend_mut(),
-            LeaveAlternateScreen // 离开备用屏幕
-        )?;
-        io::stdout().execute(cursor::Show)?;
-        exit(0);
-    }
+    // pub(crate) fn handle_ctrl_c(&mut self) -> ChapResult<()> {
+    //     crossterm::terminal::disable_raw_mode()?;
+    //     execute!(
+    //         self.terminal.backend_mut(),
+    //         LeaveAlternateScreen // 离开备用屏幕
+    //     )?;
+    //     io::stdout().execute(cursor::Show)?;
+    //     exit(0);
+    // }
 
-    pub(crate) fn handle_ctrl_s<P: AsRef<Path>>(
-        &mut self,
-        p: P,
-        td: &mut TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                self.elem.cmd_inp.clear();
-                //保存
-                if let Ok(_) = td.save(&p) {
-                    self.elem.cmd_inp.push_str("saved");
-                } else {
-                    self.elem.cmd_inp.push_str("save fail");
-                }
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                todo!()
-                // is_last = false;
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // pub(crate) fn handle_ctrl_s<P: AsRef<Path>>(
+    //     &mut self,
+    //     p: P,
+    //     td: &mut TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             self.elem.cmd_inp.clear();
+    //             //保存
+    //             if let Ok(_) = td.save(&p) {
+    //                 self.elem.cmd_inp.push_str("saved");
+    //             } else {
+    //                 self.elem.cmd_inp.push_str("save fail");
+    //             }
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             todo!()
+    //             // is_last = false;
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    pub(crate) fn handle_char(
-        &mut self,
-        c: char,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        offset: &mut usize,
-        is_last: &mut bool,
-        start_line_num: usize,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                self.elem.cmd_inp.clear();
-                if *cursor_x == 0 && *is_last {
-                    td.insert(
-                        *cursor_y - 1,
-                        self.elem.tv.get_width(),
-                        line_meta.get(*cursor_y - 1).unwrap(),
-                        c,
-                    )?;
-                    *is_last = false;
-                } else {
-                    td.insert(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap(), c)?;
-                }
-                if *cursor_x < self.elem.tv.get_width() {
-                    *cursor_x += 1;
-                    if *cursor_x >= self.elem.tv.get_width()
-                        && *cursor_y < self.elem.tv.get_height()
-                    {
-                        //不断添加字符 还是续接上一行
-                        *is_last = true;
-                        *cursor_x = 0;
-                        *cursor_y += 1;
-                    }
-                }
-                td.get_one_page(start_line_num)?;
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                todo!()
-                // is_last = false;
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // pub(crate) fn handle_char(
+    //     &mut self,
+    //     c: char,
+    //     cursor_x: &mut usize,
+    //     cursor_y: &mut usize,
+    //     offset: &mut usize,
+    //     is_last: &mut bool,
+    //     start_line_num: usize,
+    //     line_meta: &RingVec<EditLineMeta>,
+    //     td: &TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             self.elem.cmd_inp.clear();
+    //             if *cursor_x == 0 && *is_last {
+    //                 td.insert(
+    //                     *cursor_y - 1,
+    //                     self.elem.tv.get_width(),
+    //                     line_meta.get(*cursor_y - 1).unwrap(),
+    //                     c,
+    //                 )?;
+    //                 *is_last = false;
+    //             } else {
+    //                 td.insert(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap(), c)?;
+    //             }
+    //             if *cursor_x < self.elem.tv.get_width() {
+    //                 *cursor_x += 1;
+    //                 if *cursor_x >= self.elem.tv.get_width()
+    //                     && *cursor_y < self.elem.tv.get_height()
+    //                 {
+    //                     //不断添加字符 还是续接上一行
+    //                     *is_last = true;
+    //                     *cursor_x = 0;
+    //                     *cursor_y += 1;
+    //                 }
+    //             }
+    //             td.get_one_page(start_line_num)?;
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             todo!()
+    //             // is_last = false;
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    fn handle_backspace(
-        &mut self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        start_line_num: usize,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                self.elem.cmd_inp.clear();
-                if *cursor_y == 0 && *cursor_x == 0 {
-                    return Ok(());
-                }
-                td.backspace(
-                    *cursor_y,
-                    self.bytes_cursor,
-                    self.bytes_cursor_size,
-                    line_meta.get(*cursor_y).unwrap(),
-                )?;
-                if *cursor_x == 0 {
-                    *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_txt_len();
-                    *cursor_y = cursor_y.saturating_sub(1);
-                } else {
-                    *cursor_x = cursor_x.saturating_sub(1);
-                }
-                td.get_one_page(start_line_num)?;
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                todo!()
-                // is_last = false;
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // fn handle_backspace(
+    //     &mut self,
+    //     cursor_x: &mut usize,
+    //     cursor_y: &mut usize,
+    //     start_line_num: usize,
+    //     line_meta: &RingVec<EditLineMeta>,
+    //     td: &TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             self.elem.cmd_inp.clear();
+    //             if *cursor_y == 0 && *cursor_x == 0 {
+    //                 return Ok(());
+    //             }
+    //             td.backspace(
+    //                 *cursor_y,
+    //                 self.bytes_cursor,
+    //                 self.bytes_cursor_size,
+    //                 line_meta.get(*cursor_y).unwrap(),
+    //             )?;
+    //             if *cursor_x == 0 {
+    //                 *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_txt_len();
+    //                 *cursor_y = cursor_y.saturating_sub(1);
+    //             } else {
+    //                 *cursor_x = cursor_x.saturating_sub(1);
+    //             }
+    //             td.get_one_page(start_line_num)?;
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             todo!()
+    //             // is_last = false;
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    pub(crate) fn handle_enter<'a>(
-        &mut self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        start_line_num: usize,
-        line_meta: &'a RingVec<EditLineMeta>,
-        td: &'a TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                self.elem.cmd_inp.clear();
-                td.insert_newline(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
-                if *cursor_y < self.elem.tv.get_height() - 1 {
-                    *cursor_y += 1;
-                }
-                *cursor_x = 0;
-                td.get_one_page(start_line_num)?;
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                todo!()
-                // is_last = false;
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // pub(crate) fn handle_enter<'a>(
+    //     &mut self,
+    //     cursor_x: &mut usize,
+    //     cursor_y: &mut usize,
+    //     start_line_num: usize,
+    //     line_meta: &'a RingVec<EditLineMeta>,
+    //     td: &'a TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             self.elem.cmd_inp.clear();
+    //             td.insert_newline(*cursor_y, *cursor_x, line_meta.get(*cursor_y).unwrap())?;
+    //             if *cursor_y < self.elem.tv.get_height() - 1 {
+    //                 *cursor_y += 1;
+    //             }
+    //             *cursor_x = 0;
+    //             td.get_one_page(start_line_num)?;
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             todo!()
+    //             // is_last = false;
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    pub(crate) fn handle_up<'a>(
-        &self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        offset: &mut usize,
-        is_last: &mut bool,
-        mut line_meta: &'a RingVec<EditLineMeta>,
-        td: &'a TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                match self.warp_type {
-                    TextWarpType::NoWrap => {
-                        if *cursor_y == 0 {
-                            //滚动上一行
-                            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
-                            line_meta = td.get_current_line_meta()?;
-                        }
-                        *cursor_y = cursor_y.saturating_sub(1);
-                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
-                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
-                        }
-                        let meta = line_meta.get(*cursor_y).unwrap();
-                        if *offset >= meta.get_char_len() {
-                            *offset = meta.get_char_len();
-                        }
-                        *is_last = false;
-                    }
-                    TextWarpType::SoftWrap => {
-                        if *cursor_y == 0 {
-                            //滚动上一行
-                            td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
-                            line_meta = td.get_current_line_meta()?;
-                        }
-                        *cursor_y = cursor_y.saturating_sub(1);
-                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
-                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
-                        }
+    // pub(crate) fn handle_up<'a>(
+    //     &self,
+    //     cursor_x: &mut usize,
+    //     cursor_y: &mut usize,
+    //     offset: &mut usize,
+    //     is_last: &mut bool,
+    //     mut line_meta: &'a RingVec<EditLineMeta>,
+    //     td: &'a TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             match self.warp_type {
+    //                 TextWarpType::NoWrap => {
+    //                     if *cursor_y == 0 {
+    //                         //滚动上一行
+    //                         td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+    //                         line_meta = td.get_current_line_meta()?;
+    //                     }
+    //                     *cursor_y = cursor_y.saturating_sub(1);
+    //                     if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+    //                         *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+    //                     }
+    //                     let meta = line_meta.get(*cursor_y).unwrap();
+    //                     if *offset >= meta.get_char_len() {
+    //                         *offset = meta.get_char_len();
+    //                     }
+    //                     *is_last = false;
+    //                 }
+    //                 TextWarpType::SoftWrap => {
+    //                     if *cursor_y == 0 {
+    //                         //滚动上一行
+    //                         td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+    //                         line_meta = td.get_current_line_meta()?;
+    //                     }
+    //                     *cursor_y = cursor_y.saturating_sub(1);
+    //                     if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+    //                         *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+    //                     }
 
-                        *is_last = false;
-                    }
-                }
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                if *cursor_y == 0 {
-                    //滚动上一行
-                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
-                    line_meta = td.get_current_line_meta()?;
-                }
-                *cursor_y = cursor_y.saturating_sub(1);
-                if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_hex_len() {
-                    *cursor_x = line_meta.get(*cursor_y).unwrap().get_hex_len();
-                }
-            }
-            _ => {}
-        };
-        return Ok(());
-    }
+    //                     *is_last = false;
+    //                 }
+    //             }
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             if *cursor_y == 0 {
+    //                 //滚动上一行
+    //                 td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+    //                 line_meta = td.get_current_line_meta()?;
+    //             }
+    //             *cursor_y = cursor_y.saturating_sub(1);
+    //             if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_hex_len() {
+    //                 *cursor_x = line_meta.get(*cursor_y).unwrap().get_hex_len();
+    //             }
+    //         }
+    //         _ => {}
+    //     };
+    //     return Ok(());
+    // }
 
-    pub(crate) fn handle_down<'a>(
-        &self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        offset: &mut usize,
-        is_last: &mut bool,
-        mut line_meta: &'a RingVec<EditLineMeta>,
-        td: &'a TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                match self.warp_type {
-                    TextWarpType::NoWrap => {
-                        if *cursor_y < self.elem.tv.get_height() - 1 {
-                            *cursor_y += 1;
-                        } else {
-                            //滚动下一行
-                            td.scroll_next_one_line(line_meta.last().unwrap())?;
-                            line_meta = td.get_current_line_meta()?;
-                        }
-                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
-                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
-                        }
-                        let meta = line_meta.get(*cursor_y).unwrap();
-                        if *offset >= meta.get_char_len() {
-                            *offset = meta.get_char_len();
-                        }
-                        *is_last = false;
-                    }
-                    TextWarpType::SoftWrap => {
-                        if *cursor_y < self.elem.tv.get_height() - 1 {
-                            *cursor_y += 1;
-                        } else {
-                            //滚动下一行
-                            td.scroll_next_one_line(line_meta.last().unwrap())?;
-                            line_meta = td.get_current_line_meta()?;
-                        }
-                        if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
-                            *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
-                        }
-                        *is_last = false;
-                    }
-                }
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                if *cursor_y < line_meta.len() - 1 {
-                    *cursor_y += 1;
-                } else {
-                    //滚动下一行
-                    td.scroll_next_one_line(line_meta.last().unwrap())?;
-                    line_meta = td.get_current_line_meta()?;
-                }
-                if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_hex_len() {
-                    *cursor_x = line_meta.get(*cursor_y).unwrap().get_hex_len();
-                };
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // pub(crate) fn handle_down<'a>(
+    //     &self,
+    //     cursor_x: &mut usize,
+    //     cursor_y: &mut usize,
+    //     offset: &mut usize,
+    //     is_last: &mut bool,
+    //     mut line_meta: &'a RingVec<EditLineMeta>,
+    //     td: &'a TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             match self.warp_type {
+    //                 TextWarpType::NoWrap => {
+    //                     if *cursor_y < self.elem.tv.get_height() - 1 {
+    //                         *cursor_y += 1;
+    //                     } else {
+    //                         //滚动下一行
+    //                         td.scroll_next_one_line(line_meta.last().unwrap())?;
+    //                         line_meta = td.get_current_line_meta()?;
+    //                     }
+    //                     if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+    //                         *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+    //                     }
+    //                     let meta = line_meta.get(*cursor_y).unwrap();
+    //                     if *offset >= meta.get_char_len() {
+    //                         *offset = meta.get_char_len();
+    //                     }
+    //                     *is_last = false;
+    //                 }
+    //                 TextWarpType::SoftWrap => {
+    //                     if *cursor_y < self.elem.tv.get_height() - 1 {
+    //                         *cursor_y += 1;
+    //                     } else {
+    //                         //滚动下一行
+    //                         td.scroll_next_one_line(line_meta.last().unwrap())?;
+    //                         line_meta = td.get_current_line_meta()?;
+    //                     }
+    //                     if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_char_len() {
+    //                         *cursor_x = line_meta.get(*cursor_y).unwrap().get_char_len();
+    //                     }
+    //                     *is_last = false;
+    //                 }
+    //             }
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             if *cursor_y < line_meta.len() - 1 {
+    //                 *cursor_y += 1;
+    //             } else {
+    //                 //滚动下一行
+    //                 td.scroll_next_one_line(line_meta.last().unwrap())?;
+    //                 line_meta = td.get_current_line_meta()?;
+    //             }
+    //             if *cursor_x >= line_meta.get(*cursor_y).unwrap().get_hex_len() {
+    //                 *cursor_x = line_meta.get(*cursor_y).unwrap().get_hex_len();
+    //             };
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    pub(crate) fn handle_left(
-        &self,
-        cursor_x: &mut usize,
-        cursor_y: &mut usize,
-        offset: &mut usize,
-        is_last: &mut bool,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                match self.warp_type {
-                    TextWarpType::NoWrap => {
-                        *cursor_x = cursor_x.saturating_sub(1);
-                        *offset = offset.saturating_sub(1);
-                    }
-                    TextWarpType::SoftWrap => {
-                        if *cursor_x == 0 {
-                            // 这个判断说明当前行已经读完了
-                            if line_meta.get(*cursor_y).unwrap().get_line_offset() == 0 {
-                                //无需操作
-                            } else {
-                                *cursor_x =
-                                    line_meta.get(*cursor_y - 1).unwrap().get_char_len() - 1;
-                                *cursor_y = cursor_y.saturating_sub(1);
-                            }
-                        } else {
-                            *cursor_x = cursor_x.saturating_sub(1);
-                        }
-                        *is_last = false;
-                    }
-                }
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                if *cursor_x == 0 {
-                    // 这个判断说明当前行已经读完了
-                    if line_meta.get(*cursor_y).unwrap().get_line_offset() == 0 {
-                        //无需操作
-                    } else {
-                        *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_char_len() - 1;
-                        *cursor_y = cursor_y.saturating_sub(1);
-                    }
-                } else {
-                    *cursor_x = cursor_x.saturating_sub(1);
-                }
-                // is_last = false;
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // pub(crate) fn handle_left(
+    //     &self,
+    //     cursor_x: &mut usize,
+    //     cursor_y: &mut usize,
+    //     offset: &mut usize,
+    //     is_last: &mut bool,
+    //     line_meta: &RingVec<EditLineMeta>,
+    //     td: &TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             match self.warp_type {
+    //                 TextWarpType::NoWrap => {
+    //                     *cursor_x = cursor_x.saturating_sub(1);
+    //                     *offset = offset.saturating_sub(1);
+    //                 }
+    //                 TextWarpType::SoftWrap => {
+    //                     if *cursor_x == 0 {
+    //                         // 这个判断说明当前行已经读完了
+    //                         if line_meta.get(*cursor_y).unwrap().get_line_offset() == 0 {
+    //                             //无需操作
+    //                         } else {
+    //                             *cursor_x =
+    //                                 line_meta.get(*cursor_y - 1).unwrap().get_char_len() - 1;
+    //                             *cursor_y = cursor_y.saturating_sub(1);
+    //                         }
+    //                     } else {
+    //                         *cursor_x = cursor_x.saturating_sub(1);
+    //                     }
+    //                     *is_last = false;
+    //                 }
+    //             }
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             if *cursor_x == 0 {
+    //                 // 这个判断说明当前行已经读完了
+    //                 if line_meta.get(*cursor_y).unwrap().get_line_offset() == 0 {
+    //                     //无需操作
+    //                 } else {
+    //                     *cursor_x = line_meta.get(*cursor_y - 1).unwrap().get_char_len() - 1;
+    //                     *cursor_y = cursor_y.saturating_sub(1);
+    //                 }
+    //             } else {
+    //                 *cursor_x = cursor_x.saturating_sub(1);
+    //             }
+    //             // is_last = false;
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    fn handle_right_shift(
-        &self,
-        chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                todo!()
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
-                    chap_tui.cursor_x += 1;
-                }
-                chap_tui.txt_sel.set_end(
-                    line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_line_file_start()
-                        + chap_tui.cursor_x,
-                );
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // fn handle_right_shift(
+    //     &self,
+    //     chap_tui: &mut ChapTui,
+    //     line_meta: &RingVec<EditLineMeta>,
+    //     td: &TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             todo!()
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+    //                 chap_tui.cursor_x += 1;
+    //             }
+    //             chap_tui.txt_sel.set_end(
+    //                 line_meta
+    //                     .get(chap_tui.cursor_y)
+    //                     .unwrap()
+    //                     .get_line_file_start()
+    //                     + chap_tui.cursor_x,
+    //             );
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    fn handle_left_shift(
-        &self,
-        chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                todo!()
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
-                    chap_tui.cursor_x += 1;
-                }
-                chap_tui.txt_sel.set_end(
-                    line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_line_file_start()
-                        + chap_tui.cursor_x,
-                );
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    // fn handle_left_shift(
+    //     &self,
+    //     chap_tui: &mut ChapTui,
+    //     line_meta: &RingVec<EditLineMeta>,
+    //     td: &TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             todo!()
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_hex_len() {
+    //                 chap_tui.cursor_x += 1;
+    //             }
+    //             chap_tui.txt_sel.set_end(
+    //                 line_meta
+    //                     .get(chap_tui.cursor_y)
+    //                     .unwrap()
+    //                     .get_line_file_start()
+    //                     + chap_tui.cursor_x,
+    //             );
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
-    fn handle_right(
-        &self,
-        chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        match self.chap_mod {
-            ChapMod::Edit => {
-                match self.warp_type {
-                    TextWarpType::NoWrap => {
-                        let meta = line_meta.get(chap_tui.cursor_y).unwrap();
-                        if chap_tui.cursor_x < meta.get_char_len()
-                            && chap_tui.cursor_x < self.elem.tv.width
-                        {
-                            chap_tui.cursor_x += 1;
-                        }
-                        if chap_tui.column_offset <= meta.get_char_len() {
-                            chap_tui.column_offset += 1;
-                        }
-                    }
-                    TextWarpType::SoftWrap => {
-                        if chap_tui.cursor_x
-                            < line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
-                        {
-                            chap_tui.cursor_x += 1;
+    // fn handle_right(
+    //     &self,
+    //     chap_tui: &mut ChapTui,
+    //     line_meta: &RingVec<EditLineMeta>,
+    //     td: &TextDisplay,
+    // ) -> ChapResult<()> {
+    //     match self.chap_mod {
+    //         ChapMod::Edit => {
+    //             match self.warp_type {
+    //                 TextWarpType::NoWrap => {
+    //                     let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+    //                     if chap_tui.cursor_x < meta.get_char_len()
+    //                         && chap_tui.cursor_x < self.elem.tv.width
+    //                     {
+    //                         chap_tui.cursor_x += 1;
+    //                     }
+    //                     if chap_tui.column_offset <= meta.get_char_len() {
+    //                         chap_tui.column_offset += 1;
+    //                     }
+    //                 }
+    //                 TextWarpType::SoftWrap => {
+    //                     if chap_tui.cursor_x
+    //                         < line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+    //                     {
+    //                         chap_tui.cursor_x += 1;
 
-                            if chap_tui.cursor_x
-                                >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
-                                && chap_tui.cursor_y < self.elem.tv.get_height()
-                            {
-                                //判断当前行是否读完
-                                if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
-                                    < td.get_text_len_from_index(
-                                        line_meta.get(chap_tui.cursor_y).unwrap().get_line_index(),
-                                    )
-                                {
-                                    chap_tui.cursor_x = 0;
-                                    chap_tui.cursor_y += 1;
-                                }
-                            }
-                        }
-                        chap_tui.is_last_line = false;
-                    }
-                }
-            }
-            ChapMod::Text => {
-                todo!()
-            }
-            ChapMod::Hex => {
-                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() {
-                    chap_tui.cursor_x += 1;
-                }
-                chap_tui.txt_sel.set_pos(
-                    line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_line_file_start()
-                        + chap_tui.cursor_x,
-                );
-            }
-            _ => {}
-        };
-        Ok(())
-    }
+    //                         if chap_tui.cursor_x
+    //                             >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
+    //                             && chap_tui.cursor_y < self.elem.tv.get_height()
+    //                         {
+    //                             //判断当前行是否读完
+    //                             if line_meta.get(chap_tui.cursor_y).unwrap().get_line_end()
+    //                                 < td.get_text_len_from_index(
+    //                                     line_meta.get(chap_tui.cursor_y).unwrap().get_line_index(),
+    //                                 )
+    //                             {
+    //                                 chap_tui.cursor_x = 0;
+    //                                 chap_tui.cursor_y += 1;
+    //                             }
+    //                         }
+    //                     }
+    //                     chap_tui.is_last_line = false;
+    //                 }
+    //             }
+    //         }
+    //         ChapMod::Text => {
+    //             todo!()
+    //         }
+    //         ChapMod::Hex => {
+    //             if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_txt_len() {
+    //                 chap_tui.cursor_x += 1;
+    //             }
+    //             chap_tui.txt_sel.set_pos(
+    //                 line_meta
+    //                     .get(chap_tui.cursor_y)
+    //                     .unwrap()
+    //                     .get_line_file_start()
+    //                     + chap_tui.cursor_x,
+    //             );
+    //         }
+    //         _ => {}
+    //     };
+    //     Ok(())
+    // }
 
     pub(crate) async fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
         &mut self,
@@ -1054,7 +977,7 @@ impl ChapTui {
                     HexText::from_file_path(&p, self.elem.tv.get_height() - 2)?,
                     self.elem.tv.get_height() - 2,
                     self.elem.tv.get_width(),
-                    twy,
+                    TextWarpType::NoWrap,
                 )),
                 _ => {
                     todo!()

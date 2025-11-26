@@ -5,7 +5,7 @@ pub(crate) struct RingVec<T> {
 }
 
 impl<T> RingVec<T> {
-    pub(crate) fn new(size: usize) -> Self {
+    pub(crate) fn with_capacity(size: usize) -> Self {
         RingVec {
             cache: Vec::with_capacity(size),
             start: 0,
