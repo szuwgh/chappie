@@ -12,6 +12,7 @@ use crate::handle::HandleHex;
 use crate::handle::HandleImpl;
 use crate::lua::LuaPlugin;
 use crate::textwarp::edit::GapText;
+use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
 use crate::textwarp::EditLineMeta;
@@ -46,13 +47,13 @@ use ratatui::Terminal;
 use std::io;
 use std::path::Path;
 use tokio::sync::mpsc;
-//use vectorbase::collection::Collection;
 
 pub(crate) enum ChapMod {
-    Edit,   //普通编辑器模式
-    Hex,    //16进制编辑器模式
-    Text,   //大文本浏览模式
-    Vector, //向量分析模式
+    Edit,      //普通编辑器模式
+    EditBlock, //普通编辑器模式
+    Hex,       //16进制编辑器模式
+    Text,      //大文本浏览模式
+    Vector,    //向量分析模式
 }
 
 pub(crate) struct Navigation {
@@ -309,6 +310,7 @@ impl ChapTui {
         };
 
         let nav_with = match chap_mod {
+            ChapMod::EditBlock => 5,
             ChapMod::Edit => 5,
             ChapMod::Hex => 8,
             ChapMod::Text => 5,
@@ -325,6 +327,7 @@ impl ChapTui {
         let max_line = (tui_height - 3) as usize;
         let hex_with = if 82 < tui_width { 82 } else { tui_width };
         let p = match chap_mod {
+            ChapMod::EditBlock => 100,
             ChapMod::Edit => 100,
             ChapMod::Hex => ((hex_with as f32 / tui_width as f32) * 100.0) as u16,
             ChapMod::Text => 0,
@@ -942,6 +945,7 @@ impl ChapTui {
     ) -> ChapResult<()> {
         let hand = match self.chap_mod {
             ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
+            ChapMod::EditBlock => HandleImpl::Edit(HandleEdit::new()),
             ChapMod::Text => todo!(),
             ChapMod::Hex => HandleImpl::Hex(HandleHex::new(LuaPlugin::new(plugin))),
             _ => {
@@ -958,8 +962,8 @@ impl ChapTui {
             let twy = self.warp_type;
             log::info!("with {:?}", self.elem.tv.get_width());
             let mut td: TextDisplay = match self.chap_mod {
-                ChapMod::Edit => TextDisplay::Edit(EditTextWarp::new(
-                    GapText::from_file_path(&p)?,
+                ChapMod::EditBlock => TextDisplay::EditBlock(EditTextWarp::new(
+                    GapBlockText::from_file_path(&p)?,
                     self.elem.tv.get_height(),
                     self.elem.tv.get_width(),
                     twy,
@@ -979,6 +983,12 @@ impl ChapTui {
                     self.elem.tv.get_width(),
                     TextWarpType::NoWrap,
                 )),
+                ChapMod::Edit => TextDisplay::Edit(EditTextWarp::new(
+                    GapText::from_file_path(&p)?,
+                    self.elem.tv.get_height(),
+                    self.elem.tv.get_width(),
+                    twy,
+                )),
                 _ => {
                     todo!()
                 }
@@ -992,6 +1002,9 @@ impl ChapTui {
                 }
                 let line_meta = match self.chap_mod {
                     ChapMod::Edit => {
+                        self.render_edit(self.cursor_x, self.cursor_y, self.column_offset, &td)?
+                    }
+                    ChapMod::EditBlock => {
                         self.render_edit(self.cursor_x, self.cursor_y, self.column_offset, &td)?
                     }
                     ChapMod::Text => {

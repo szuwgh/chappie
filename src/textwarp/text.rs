@@ -51,7 +51,7 @@ impl<'a> Iterator for MmapTextIter<'a> {
         let line_start = self.line_file_start;
         self.line_file_start += end + 1;
         Some(LineStr {
-            line_data: LineData::GapBytes(GapBytes::new(line, &[])),
+            data: LineData::GapBytes(GapBytes::new(line, &[])),
             line_file_start: line_start,
             line_file_end: line_start + end,
         })
@@ -102,7 +102,7 @@ impl Text for MmapText {
     ) -> LineStr<'a> {
         let line = &self.mmap[line_file_start..line_file_end];
         LineStr {
-            line_data: LineData::GapBytes(GapBytes::new(line, &[])),
+            data: LineData::GapBytes(GapBytes::new(line, &[])),
             line_file_start: line_file_start,
             line_file_end: line_file_end,
         }
@@ -124,6 +124,8 @@ impl Text for MmapText {
     fn iter<'a>(
         &'a mut self,
         line_index: usize,
+        block_num: usize,    //块编号
+        block_offset: usize, //块内偏移
         line_offset: usize,
         line_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
@@ -133,10 +135,18 @@ impl Text for MmapText {
     fn iter_rev<'a>(
         &'a mut self,
         line_index: usize,
+        block_num: usize,    //块编号
+        block_offset: usize, //块内偏移
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
-        self.iter(line_index, line_offset, line_file_start)
+        self.iter(
+            line_index,
+            block_num,
+            block_offset,
+            line_offset,
+            line_file_start,
+        )
     }
 
     fn iter_u8<'a>(

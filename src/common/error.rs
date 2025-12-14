@@ -8,6 +8,8 @@ pub type ChapResult<T> = Result<T, ChapError>;
 
 #[derive(Error, Debug)]
 pub enum ChapError {
+    #[error("EOF")]
+    EOF,
     #[error("Unexpected: {0}")]
     Unexpected(String),
     #[error("Unexpected IO: {0}")]

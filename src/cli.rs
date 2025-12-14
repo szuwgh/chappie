@@ -89,7 +89,7 @@ impl Cli {
 
     pub(crate) fn get_chap_mod(&self) -> ChapMod {
         if self.insert {
-            return ChapMod::Edit;
+            return ChapMod::EditBlock;
         } else if self.hex {
             return ChapMod::Hex;
         } else if self.vector {

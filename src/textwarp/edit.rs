@@ -5,7 +5,6 @@ use crate::textwarp::GapBuffer;
 use crate::textwarp::LineData;
 use crate::textwarp::LineStr;
 use crate::textwarp::PageOffset;
-use crate::textwarp::RingVec;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
@@ -146,14 +145,13 @@ impl Text for GapText {
     fn get_line<'a>(
         &'a mut self,
         line_index: usize,
-        line_start: usize,
-        line_end: usize,
+        line_file_start: usize,
+        line_file_end: usize,
     ) -> LineStr<'a> {
         LineStr {
-            // line: self.text(..),
-            line_data: LineData::GapBytes(self.borrow_lines_mut()[line_index].text(..)),
-            line_file_start: 0,
-            line_file_end: 0,
+            data: LineData::GapBytes(self.borrow_lines_mut()[line_index].text(..)),
+            line_file_start: line_file_start,
+            line_file_end: line_file_end,
         }
     }
 
@@ -164,6 +162,8 @@ impl Text for GapText {
     fn iter<'a>(
         &'a mut self,
         line_index: usize,
+        block_num: usize,
+        block_offset: usize,
         line_offset: usize,
         line_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
@@ -173,6 +173,8 @@ impl Text for GapText {
     fn iter_rev<'a>(
         &'a mut self,
         line_index: usize,
+        block_num: usize,
+        block_offset: usize,
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
@@ -233,15 +235,10 @@ impl EditText for GapText {
             line_meta.get_line_index(),
             line_meta.get_line_offset() + bytes_cursor,
         );
-        log::debug!("line_offset:{}", line_offset);
+        //log::debug!("line_offset:{}", line_offset);
         let mut buf = [0u8; 4]; // 一个 char 最多需要 4 个字节存储 UTF-8 编码
         let s: &str = c.encode_utf8(&mut buf);
         let line = &mut self.borrow_lines_mut()[line_index];
-        //如果line_offset大于文本长度 要填充空格
-        // if line_offset > line.text_len() {
-        //     let gap_len = line_offset - line.text_len();
-        //     line.insert(line.text_len(), " ".repeat(gap_len).as_bytes());
-        // }
         line.insert(line_offset, s.as_bytes());
     }
 
@@ -298,7 +295,7 @@ impl<'a> Iterator for GapTextIter<'a> {
     type Item = LineStr<'a>;
     fn next(&mut self) -> Option<LineStr<'a>> {
         self.lines.next().map(|line| LineStr {
-            line_data: LineData::GapBytes(line.text(..)),
+            data: LineData::GapBytes(line.text(..)),
             line_file_start: 0,
             line_file_end: 0,
         })
@@ -321,7 +318,7 @@ impl<'a> Iterator for GapTextIterRev<'a> {
     type Item = LineStr<'a>;
     fn next(&mut self) -> Option<LineStr<'a>> {
         self.lines.next().map(|line| LineStr {
-            line_data: LineData::GapBytes(line.text(..)),
+            data: LineData::GapBytes(line.text(..)),
             line_file_start: 0,
             line_file_end: 0,
         })

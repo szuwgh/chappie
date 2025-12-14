@@ -71,7 +71,7 @@ pub(crate) fn get_edit_content<'a>(
                 .iter()
                 .map(|s| String::from_utf8_lossy(*s).to_string())
                 .collect::<Vec<String>>();
-            log::debug!("get_edit_content: line {}, parts: {:?}", i, parts_str);
+            //log::debug!("get_edit_content: line {}, parts: {:?}", i, parts_str);
             //计算part数组叠加的字符数量
             let mut char_count = LineParts::<usize>::empty();
             let mut char_curosr_index = 0; // 判断光标在那个 part中
@@ -122,12 +122,12 @@ fn build_cursor_line<'a>(
     let mut spans = Vec::new();
     let mut last_char_bytes_size: usize = 0;
     let byte_cursor;
-    log::debug!(
-        "build_cursor_line: cursor_x: {}, char_curosr_index: {}, char_count: {:?}",
-        cursor_x,
-        char_curosr_index,
-        char_count
-    );
+    // log::debug!(
+    //     "build_cursor_line: cursor_x: {}, char_curosr_index: {}, char_count: {:?}",
+    //     cursor_x,
+    //     char_curosr_index,
+    //     char_count
+    // );
     let (a, b, c) = if char_curosr_index == 0 {
         let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(str_parts[0], cursor_x);
         last_char_bytes_size = last_csz;
@@ -153,13 +153,13 @@ fn build_cursor_line<'a>(
         }
         (a, b, c)
     };
-    log::debug!(
-        "build_cursor_line: last_char_bytes_size:{}, a: {:?}, b: {:?}, c: {:?}",
-        last_char_bytes_size,
-        String::from_utf8_lossy(a),
-        String::from_utf8_lossy(b),
-        String::from_utf8_lossy(c),
-    );
+    // log::debug!(
+    //     "build_cursor_line: last_char_bytes_size:{}, a: {:?}, b: {:?}, c: {:?}",
+    //     last_char_bytes_size,
+    //     String::from_utf8_lossy(a),
+    //     String::from_utf8_lossy(b),
+    //     String::from_utf8_lossy(c),
+    // );
     if b.len() > 0 {
         byte_cursor = if char_curosr_index == 0 {
             a.len()

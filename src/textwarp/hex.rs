@@ -262,8 +262,10 @@ impl TextIndex for HexText {
         let start_line_num = (start_page_num * self.height).saturating_sub(1);
         let line_file_start = start_line_num * HEX_WITH;
         PageOffset {
-            line_index: 0,                    //第多少行
-            line_offset: 0,                   //行在总行的起始位置
+            line_index: 0,  //第多少行
+            line_offset: 0, //行在总行的起始位置
+            block_num: 0,
+            block_offset: 0,
             line_file_start: line_file_start, //这一行在整个文件的起始位置
             start_line_num: start_line_num,
             start_page_num: start_page_num, //这一行在第几页开始
@@ -336,7 +338,7 @@ impl Text for HexText {
                             v.extend_from_slice(buf1.left());
                             v.extend_from_slice(buf1.right());
                             return LineStr {
-                                line_data: LineData::Own(v),
+                                data: LineData::Own(v),
                                 line_file_start: line_start,
                                 line_file_end: line_start + len + buf1.len(),
                             };
@@ -345,28 +347,28 @@ impl Text for HexText {
                             v.extend_from_slice(buf2.left());
                             v.extend_from_slice(buf2.right());
                             return LineStr {
-                                line_data: LineData::Own(v),
+                                data: LineData::Own(v),
                                 line_file_start: line_start,
                                 line_file_end: line_start + with,
                             };
                         }
                     } else {
                         return LineStr {
-                            line_data: LineData::GapBytes(buffer),
+                            data: LineData::GapBytes(buffer),
                             line_file_start: line_start,
                             line_file_end: line_file_end,
                         };
                     }
                 } else {
                     return LineStr {
-                        line_data: LineData::GapBytes(buffer),
+                        data: LineData::GapBytes(buffer),
                         line_file_start: line_start,
                         line_file_end: line_start + len,
                     };
                 }
             } else {
                 return LineStr {
-                    line_data: LineData::GapBytes(buffer.text(..with)),
+                    data: LineData::GapBytes(buffer.text(..with)),
                     line_file_start: line_start,
                     line_file_end: line_start + with,
                 };
@@ -374,7 +376,7 @@ impl Text for HexText {
         }
         return LineStr {
             // line: buffer,
-            line_data: LineData::Bytes(&[]),
+            data: LineData::Bytes(&[]),
             line_file_start: 0,
             line_file_end: 0,
         };
@@ -394,15 +396,19 @@ impl Text for HexText {
     fn iter_rev<'a>(
         &'a mut self,
         line_index: usize,
+        block_num: usize,
+        block_offset: usize,
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
-        self.iter(line_index, line_offset, line_file_start)
+        self.iter(line_index, 0, 0, line_offset, line_file_start)
     }
 
     fn iter<'a>(
         &'a mut self,
         line_index: usize,
+        block_num: usize,    //块编号
+        block_offset: usize, //块内偏移
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = LineStr<'a>> {
@@ -419,15 +425,16 @@ impl Text for HexText {
             }
             if let Some(j) = j {
                 if j == 0 {
-                    //读取上一个块 把最后一个块弹出
                     let mut last_chunk = self.chunks.get(0).unwrap().file_start;
                     if last_chunk == 0 {
+                        //已经是第一个块无需弹出
                         return HexTextIter::new(
                             [self.chunks.get(0), self.chunks.get(1)],
                             HEX_WITH,
                             line_file_start,
                         );
                     } else {
+                        //读取上一个块 把最后一个块弹出
                         last_chunk = last_chunk.saturating_sub(HEX_CHUNK_SIZE);
 
                         self.read_last_chunk(last_chunk).unwrap();
@@ -604,7 +611,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 v.extend_from_slice(buf1.right());
                                 self.line_file_start += len + buf1.len();
                                 return Some(LineStr {
-                                    line_data: LineData::Own(v),
+                                    data: LineData::Own(v),
                                     line_file_start: line_start,
                                     line_file_end: line_start + len + buf1.len(),
                                 });
@@ -614,7 +621,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 v.extend_from_slice(buf2.left());
                                 v.extend_from_slice(buf2.right());
                                 return Some(LineStr {
-                                    line_data: LineData::Own(v),
+                                    data: LineData::Own(v),
                                     line_file_start: line_start,
                                     line_file_end: line_start + self.with,
                                 });
@@ -622,7 +629,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                         } else {
                             self.line_file_start += len;
                             return Some(LineStr {
-                                line_data: LineData::GapBytes(buffer),
+                                data: LineData::GapBytes(buffer),
                                 line_file_start: line_start,
                                 line_file_end: line_start + len,
                             });
@@ -630,7 +637,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                     } else {
                         self.line_file_start += len;
                         return Some(LineStr {
-                            line_data: LineData::GapBytes(buffer),
+                            data: LineData::GapBytes(buffer),
                             line_file_start: line_start,
                             line_file_end: line_start + len,
                         });
@@ -639,7 +646,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                     self.line_file_start += self.with;
                     return Some(LineStr {
                         // line: buffer.text(..self.with),
-                        line_data: LineData::GapBytes(buffer.text(..self.with)),
+                        data: LineData::GapBytes(buffer.text(..self.with)),
                         line_file_start: line_start,
                         line_file_end: line_start + self.with,
                     });

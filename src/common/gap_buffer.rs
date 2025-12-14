@@ -46,7 +46,7 @@ impl<'a> GapBytes<'a> {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.len(),
         };
-        if start > self.len() || end > self.len() {
+        if start > self.len() || end > self.len() || start == end {
             return GapBytes::empty();
         }
 
