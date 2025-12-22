@@ -3,6 +3,7 @@ use crate::textwarp::ChapResult;
 use crate::textwarp::EditLineMeta;
 use crate::textwarp::GapBytes;
 use crate::textwarp::LineData;
+use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
 use crate::textwarp::PageOffset;
 use crate::textwarp::Path;
@@ -94,17 +95,12 @@ impl Text for MmapText {
         todo!("Not implement text_from_sel for MmapText");
     }
 
-    fn get_line<'a>(
-        &'a mut self,
-        line_index: usize,
-        line_file_start: usize,
-        line_file_end: usize,
-    ) -> LineStr<'a> {
-        let line = &self.mmap[line_file_start..line_file_end];
+    fn get_line<'a>(&'a mut self, state: &LineState) -> LineStr<'a> {
+        let line = &self.mmap[state.line_file_start..state.line_file_end];
         LineStr {
             data: LineData::GapBytes(GapBytes::new(line, &[])),
-            line_file_start: line_file_start,
-            line_file_end: line_file_end,
+            line_file_start: state.line_file_start,
+            line_file_end: state.line_file_end,
         }
     }
 

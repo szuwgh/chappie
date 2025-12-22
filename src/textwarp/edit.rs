@@ -3,6 +3,7 @@ use crate::textwarp::EditLineMeta;
 use crate::textwarp::EditText;
 use crate::textwarp::GapBuffer;
 use crate::textwarp::LineData;
+use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
 use crate::textwarp::PageOffset;
 use crate::textwarp::Text;
@@ -142,16 +143,11 @@ impl Text for GapText {
         true
     }
 
-    fn get_line<'a>(
-        &'a mut self,
-        line_index: usize,
-        line_file_start: usize,
-        line_file_end: usize,
-    ) -> LineStr<'a> {
+    fn get_line<'a>(&'a mut self, state: &LineState) -> LineStr<'a> {
         LineStr {
-            data: LineData::GapBytes(self.borrow_lines_mut()[line_index].text(..)),
-            line_file_start: line_file_start,
-            line_file_end: line_file_end,
+            data: LineData::GapBytes(self.borrow_lines_mut()[state.line_index].text(..)),
+            line_file_start: state.line_file_start,
+            line_file_end: state.line_file_end,
         }
     }
 

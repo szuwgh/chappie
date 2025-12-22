@@ -5,6 +5,7 @@ use std::borrow::Cow;
 use utf8_iter::Utf8CharIndices;
 use utf8_iter::Utf8CharsEx;
 
+#[derive(Clone)]
 pub(crate) struct GapBytes<'a>(&'a [u8], &'a [u8]);
 
 impl Display for GapBytes<'_> {

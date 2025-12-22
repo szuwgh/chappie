@@ -4,6 +4,7 @@ use crate::common::gap_buffer::GapBytes;
 use crate::textwarp::ChapResult;
 use crate::textwarp::EditLineMeta;
 use crate::textwarp::LineData;
+use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
 use crate::textwarp::PageOffset;
 use crate::textwarp::RingVec;
@@ -312,19 +313,14 @@ impl Text for HexText {
         buf
     }
 
-    fn get_line<'a>(
-        &'a mut self,
-        line_index: usize,
-        line_file_start: usize,
-        line_file_end: usize,
-    ) -> LineStr<'a> {
-        let with = line_file_end - line_file_start;
+    fn get_line<'a>(&'a mut self, state: &LineState) -> LineStr<'a> {
+        let with = state.line_file_end - state.line_file_start;
         for (i, chunk) in self.chunks.iter().enumerate() {
-            if line_file_start > chunk.file_end || line_file_start < chunk.file_start {
+            if state.line_file_start > chunk.file_end || state.line_file_start < chunk.file_start {
                 continue;
             }
-            let buffer = chunk.text(line_file_start..);
-            let line_start = line_file_start;
+            let buffer = chunk.text(state.line_file_start..);
+            let line_start = state.line_file_start;
             if with > buffer.len() {
                 let len = buffer.len();
                 if i < self.chunks.len() - 1 {
@@ -333,7 +329,7 @@ impl Text for HexText {
                         v.extend_from_slice(buffer.left());
                         v.extend_from_slice(buffer.right());
                         let remaining = with - buffer.len();
-                        let buf1 = c1.text(line_file_start + buffer.len()..);
+                        let buf1 = c1.text(state.line_file_start + buffer.len()..);
                         if remaining >= buf1.len() {
                             v.extend_from_slice(buf1.left());
                             v.extend_from_slice(buf1.right());
@@ -356,7 +352,7 @@ impl Text for HexText {
                         return LineStr {
                             data: LineData::GapBytes(buffer),
                             line_file_start: line_start,
-                            line_file_end: line_file_end,
+                            line_file_end: state.line_file_end,
                         };
                     }
                 } else {

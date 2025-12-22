@@ -14,6 +14,7 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
+use color_eyre::owo_colors::OwoColorize;
 use inherit_methods_macro::inherit_methods;
 use mlua::Either;
 use std::borrow::Cow;
@@ -577,12 +578,6 @@ impl<'a> LineData<'a> {
                 LineParts::from_4(l1, r1, l2, r2)
             }
         }
-
-        // match self {
-        //     LineData::Bytes(v) => (v, &[]),
-        //     LineData::GapBytes(v) => v.as_slice(),
-        //     LineData::Own(v) => (v.as_slice(), &[]),
-        // }
     }
 
     fn len(&self) -> usize {
@@ -619,12 +614,21 @@ impl<'a> LineData<'a> {
         assert!(start <= end);
 
         match self {
-            LineData::Own(v) => LineData::Own(v[start..end].to_vec()),
+            LineData::Own(v) => LineData::Own(v.to_vec()),
             LineData::Bytes(v) => LineData::Bytes(&v[start..end]),
             LineData::GapBytes(v) => LineData::GapBytes(v.text(range)),
             LineData::GapBlockBytes(v1, v2) => {
                 LineData::GapBlockBytes(v1.text(range.clone()), v2.text(range))
             }
+        }
+    }
+
+    fn as_ref(&self) -> LineData<'a> {
+        match self {
+            LineData::Own(v) => LineData::Own(v.to_vec()),
+            LineData::Bytes(v) => LineData::Bytes(v.clone()),
+            LineData::GapBytes(v) => LineData::GapBytes(v.clone()),
+            LineData::GapBlockBytes(v1, v2) => LineData::GapBlockBytes(v1.clone(), v2.clone()),
         }
     }
 }
@@ -676,6 +680,14 @@ impl<'a> Line<'a> for LineStr<'a> {
     fn get_block_offset(&self) -> usize {
         0
     }
+
+    fn get_data(&self) -> LineData<'a> {
+        self.data.as_ref()
+    }
+
+    // fn char_indices(&self) -> LineDataCharIter {
+    //     self.data.char_indices()
+    // }
 }
 
 impl<'a> LineStr<'a> {
@@ -702,6 +714,12 @@ pub(crate) struct BlockLineData<'a> {
     block_offset: usize, //块内偏移
 }
 
+impl Default for BlockLineData<'_> {
+    fn default() -> Self {
+        BlockLineData::empty_gap_bytes()
+    }
+}
+
 impl<'a> BlockLineData<'a> {
     fn empty_gap_bytes() -> BlockLineData<'a> {
         BlockLineData {
@@ -713,33 +731,120 @@ impl<'a> BlockLineData<'a> {
 }
 
 //一行数据 这行数据可能是在两个块中
-pub(crate) struct LineBlockStr<'a>([BlockLineData<'a>; 2]);
+pub(crate) struct LineBlockStr<'a>(Option<BlockLineData<'a>>, Option<BlockLineData<'a>>);
 
 impl Display for LineBlockStr<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.0[0].data, self.0[1].data)
+        if let Some(b1) = &self.0 {
+            write!(f, "{}", b1.data);
+        }
+        if let Some(b2) = &self.1 {
+            write!(f, "{}", b2.data)
+        } else {
+            write!(f, "{}", "none")
+        }
+    }
+}
+
+impl<'a> LineBlockStr<'a> {
+    fn get_end_block_offset(&self) -> usize {
+        if let Some(b2) = &self.1 {
+            b2.block_offset + b2.data.len()
+        } else if let Some(b1) = &self.0 {
+            b1.block_offset + b1.data.len()
+        } else {
+            0
+        }
+    }
+
+    fn get_end_block_num(&self) -> usize {
+        if let Some(b2) = &self.1 {
+            b2.block_num
+        } else if let Some(b1) = &self.0 {
+            b1.block_num
+        } else {
+            0
+        }
+    }
+
+    fn get_len1(&self) -> usize {
+        self.0
+            .as_ref()
+            .unwrap_or(&BlockLineData::default())
+            .data
+            .len()
+    }
+
+    fn get_len2(&self) -> usize {
+        self.1
+            .as_ref()
+            .unwrap_or(&BlockLineData::default())
+            .data
+            .len()
     }
 }
 
 impl<'a> Line<'a> for LineBlockStr<'a> {
     fn text_len(&self) -> usize {
-        self.0[0].data.len() + self.0[1].data.len()
+        self.get_len1() + self.get_len2()
     }
-    fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> Self {
-        match (&self.0[0].data, &self.0[1].data) {
-            (LineData::GapBytes(v1), LineData::GapBytes(v2)) => {
-                let data1 = v1.text(range.clone());
-                let data2 = v2.text(range);
 
-                BlockLineData
-            }
-            // (LineData::GapBytes(v1), LineData::Bytes(v2)) => {
-            //     LineData::GapBlockBytes(v1.text(range.clone()), v2.text(range))
-            // }
-            _ => {
-                panic!("LineBlockStr 只能是 GapBytes 类型");
-            }
+    fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> Self {
+        let len1 = self.get_len1();
+        let len2 = self.get_len2();
+        let total_len = self.text_len();
+        let start = match range.start_bound() {
+            std::ops::Bound::Included(&start) => start,
+            std::ops::Bound::Excluded(&start) => start + 1,
+            std::ops::Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Included(&end) => end,
+            std::ops::Bound::Excluded(&end) => end,
+            std::ops::Bound::Unbounded => self.text_len(),
+        };
+        if start > end || end > total_len {
+            return LineBlockStr(None, None);
         }
+
+        // 然后清晰地处理每种有效情况
+        let (start1, end1, start2, end2) = if end <= len1 {
+            // 范围完全在第一个块内
+            (start, end, 0, 0)
+        } else if start < len1 {
+            // 范围跨越两个块
+            (start, len1, 0, end - len1)
+        } else {
+            // 范围完全在第二个块内
+            (0, 0, start - len1, end - len1)
+        };
+        // 定义处理块的匿名函数（闭包）
+        let process_block = |block: Option<&BlockLineData<'a>>,
+                             range_start: usize,
+                             range_end: usize|
+         -> Option<BlockLineData<'a>> {
+            if range_start >= range_end {
+                return None;
+            }
+
+            block.and_then(|block_data| match &block_data.data {
+                LineData::GapBytes(v) => {
+                    let data = v.text(range_start..range_end);
+                    Some(BlockLineData {
+                        data: LineData::GapBytes(data),
+                        block_num: block_data.block_num,
+                        block_offset: block_data.block_offset + range_start,
+                    })
+                }
+                _ => None,
+            })
+        };
+
+        // 使用闭包处理两个块
+        let new_block1 = process_block(self.0.as_ref(), start1, end1);
+        let new_block2 = process_block(self.1.as_ref(), start2, end2);
+
+        LineBlockStr(new_block1, new_block2)
     }
 
     fn get_line_file_start(&self) -> usize {
@@ -751,11 +856,49 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
     }
 
     fn get_block_num(&self) -> usize {
-        self.0[0].block_num
+        if let Some(b1) = &self.0 {
+            b1.block_num
+        } else if let Some(b2) = &self.1 {
+            b2.block_num
+        } else {
+            0
+        }
     }
 
     fn get_block_offset(&self) -> usize {
-        self.0[0].block_offset
+        if let Some(b1) = &self.0 {
+            b1.block_offset
+        } else if let Some(b2) = &self.1 {
+            b2.block_offset
+        } else {
+            0
+        }
+    }
+
+    fn get_data(&self) -> LineData<'a> {
+        // match (&self.0.data, &self.1.data) {
+        //     (LineData::GapBytes(v1), LineData::GapBytes(v2)) => {
+        //         LineData::GapBlockBytes(v1.clone(), v2.clone())
+        //     }
+        //     _ => {
+        //         panic!("LineBlockStr 只能是 GapBytes 类型");
+        //     }
+        // }
+        let get_gap_bytes = |block: &Option<BlockLineData<'a>>| -> GapBytes<'a> {
+            if let Some(block_data) = block {
+                match &block_data.data {
+                    LineData::GapBytes(v) => v.clone(),
+                    _ => panic!("LineBlockStr 的块必须是 GapBytes 类型"),
+                }
+            } else {
+                GapBytes::empty() // 或者 GapBytes::default()，取决于您的实现
+            }
+        };
+
+        let v1 = get_gap_bytes(&self.0);
+        let v2 = get_gap_bytes(&self.1);
+
+        LineData::GapBlockBytes(v1, v2)
     }
 }
 
@@ -819,6 +962,15 @@ pub(crate) trait Line<'a> {
     fn get_line_file_end(&self) -> usize;
     fn get_block_num(&self) -> usize;
     fn get_block_offset(&self) -> usize;
+    fn get_data(&self) -> LineData<'a>;
+}
+
+pub(crate) struct LineState {
+    pub(crate) line_index: usize,
+    pub(crate) block_num: usize,
+    pub(crate) block_offset: usize,
+    pub(crate) line_file_start: usize,
+    pub(crate) line_file_end: usize,
 }
 
 pub(crate) trait Text {
@@ -831,12 +983,7 @@ pub(crate) trait Text {
     fn has_next_line(&self, meta: &EditLineMeta) -> bool;
 
     //获取一行
-    fn get_line<'a>(
-        &'a mut self,
-        line_index: usize,
-        line_file_start: usize,
-        line_file_end: usize,
-    ) -> Self::LineItem<'a>;
+    fn get_line<'a>(&'a mut self, state: &LineState) -> Self::LineItem<'a>;
 
     //获取行的文本长度
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize;
@@ -1331,10 +1478,14 @@ impl<T: Text + TextIndex> TextWarp<T> {
         if !self.borrow_lines().has_next_line(meta) {
             return (None, EditLineMeta::default());
         }
-
-        let line =
-            self.borrow_lines_mut()
-                .get_line(line_index, meta.line_file_start, meta.line_file_end); //&self.borrow_lines()[line_index];
+        let state = LineState {
+            line_index,
+            block_num: 0,
+            block_offset: 0,
+            line_file_start,
+            line_file_end: meta.get_line_file_end(),
+        };
+        let line = self.borrow_lines_mut().get_line(&state); //&self.borrow_lines()[line_index];
 
         //这行已经读完 开始下一行
         if line_end == line.text_len() {
@@ -1470,21 +1621,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
         self.get_char_text_fn(&page_offset, line_count, skip_line, false, &mut f);
     }
 
-    // fn get_hex_text_fn<'a, F>(
-    //     &'a self,
-    //     page_offset: &PageOffset,
-    //     line_count: usize,
-    //     start_line_num: usize,
-    //     start_page_num: usize,
-    //     skip_line: usize,
-    //     f: &mut F,
-    // ) where
-    //     // 使用高阶 trait bound，允许闭包接受任意较短生命周期的 &str
-    //     F: FnMut(&'a [u8], EditLineMeta),
-    // {
-    //     todo!()
-    // }
-
     fn get_char_text_fn<'a, F>(
         &'a self,
         page_offset: &PageOffset,
@@ -1551,7 +1687,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn set_line_char_txt<'a, F, I: TextIndex, L: Line<'a>>(
+    fn set_line_char_txt<'a, F, I: TextIndex, L: Line<'a> + 'a>(
         line_str: L,                   // 行内容
         line_index: usize,             // 行索引
         line_start: usize,             // 行起始位置
@@ -1674,7 +1810,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn no_warp<'a, F, I: TextIndex, L: Line<'a>>(
+    fn no_warp<'a, F, I: TextIndex, L: Line<'a> + 'a>(
         line_str: L,
         line_index: usize,
         line_start: usize,
@@ -1700,9 +1836,9 @@ impl<T: Text + TextIndex> TextWarp<T> {
         if *line_num >= skip_line {
             *cur_line_count += 1;
             let len = line_txt.text_len();
-            let char_len = line_txt.char_indices().count();
+            let char_len = line_txt.get_data().char_indices().count();
             f(
-                line_txt,
+                line_txt.get_data(),
                 EditLineMeta::new(
                     len,
                     char_len,
@@ -1769,7 +1905,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         let mut char_index = 0; // 当前行字符索引
         let mut char_count = 0; // 当前行字符数
         let mut last_offset = 0;
-        for (i, (byte_index, ch)) in line_txt.char_indices().enumerate() {
+        for (i, (byte_index, ch)) in line_txt.get_data().char_indices().enumerate() {
             let ch_width = ch.width().unwrap_or(0);
             //检查是否超过屏幕宽度
             if current_width + ch_width > with {
@@ -1789,9 +1925,9 @@ impl<T: Text + TextIndex> TextWarp<T> {
         } else {
             line_txt.text(last_offset..)
         };
-        let len = txt.len();
+        let len = txt.text_len();
         f(
-            txt,
+            txt.get_data(),
             EditLineMeta::new(
                 len,
                 char_count - char_index, //计算char 个数
@@ -1833,30 +1969,30 @@ impl<T: Text + TextIndex> TextWarp<T> {
             let mut current_bytes = 0; //当前行字节数
             let mut char_index = 0; // 当前行字符索引
             let mut char_count = 0; // 当前行字符数
-
+            let data = line_txt.get_data();
             let iter = if line_start > 0 {
-                Either::Left(line_txt.char_indices().rev().enumerate())
+                Either::Left(data.char_indices().rev().enumerate())
             } else {
-                Either::Right(line_txt.char_indices().enumerate()) //要正向迭代 取出最后一行的数据 才是正确的
+                Either::Right(data.char_indices().enumerate()) //要正向迭代 取出最后一行的数据 才是正确的
             };
 
             for (i, (byte_index, ch)) in iter {
                 let ch_width = ch.width().unwrap_or(0);
                 //检查是否超过屏幕宽度
                 if current_width + ch_width > with {
-                    let end = (line_offset + current_bytes).min(line_txt.len());
+                    let end = (line_offset + current_bytes).min(line_txt.text_len());
                     *line_num = (*line_num).saturating_sub(1); //行数减1
                     if *line_num >= skip_line {
                         *cur_line_count += 1;
-                        let txt = line_txt.text((line_txt.len() - end)..);
-                        let len: usize = txt.len();
+                        let txt = line_txt.text((line_txt.text_len() - end)..);
+                        let len: usize = txt.text_len();
                         let meta_line_offset = if line_start > 0 {
                             line_start - (line_offset + current_bytes)
                         } else {
-                            line_txt.len() - (line_offset + current_bytes)
+                            line_txt.text_len() - (line_offset + current_bytes)
                         };
                         f(
-                            txt,
+                            txt.get_data(),
                             EditLineMeta::new(
                                 len,
                                 char_count - char_index,
@@ -1889,7 +2025,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 if *line_num >= skip_line {
                     let txt = line_txt.text(..);
                     *cur_line_count += 1;
-                    let len = txt.len();
+                    let len = txt.text_len();
                     let meta_line_offset = if line_start > 0 {
                         line_start - (line_offset + current_bytes)
                     } else {
@@ -1897,7 +2033,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     };
 
                     f(
-                        txt,
+                        txt.get_data(),
                         EditLineMeta::new(
                             len,
                             char_count - char_index,
@@ -1961,19 +2097,19 @@ impl<T: Text + TextIndex> TextWarp<T> {
         let mut char_index = 0; // 当前行字符索引
         let mut char_count = 0; // 当前行字符数
 
-        for (i, (byte_index, ch)) in line_txt.char_indices().enumerate() {
+        for (i, (byte_index, ch)) in line_txt.get_data().char_indices().enumerate() {
             let ch_width = ch.width().unwrap_or(0);
             //检查是否超过屏幕宽度
             if current_width + ch_width > with {
-                let end = (line_offset + current_bytes).min(line_txt.len());
+                let end = (line_offset + current_bytes).min(line_txt.text_len());
                 *line_num += 1; //行数加1
                 if *line_num >= skip_line {
                     *cur_line_count += 1;
                     let txt = line_txt.text(line_offset..end);
-                    let len: usize = txt.len();
+                    let len: usize = txt.text_len();
                     let meta_line_offset = line_start + line_offset;
                     f(
-                        txt,
+                        txt.get_data(),
                         EditLineMeta::new(
                             len,
                             i - char_index,
@@ -2037,7 +2173,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 let len = txt.text_len();
                 let meta_line_offset = line_start + line_offset;
                 f(
-                    txt,
+                    txt.get_data(),
                     EditLineMeta::new(
                         len,
                         char_count - char_index,
@@ -2086,7 +2222,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
     }
 
-    fn sort_warp<'a, F, I: TextIndex, L: Line<'a>>(
+    fn sort_warp<'a, F, I: TextIndex, L: Line<'a> + 'a>(
         line_str: L,
         line_index: usize,
         line_start: usize,
