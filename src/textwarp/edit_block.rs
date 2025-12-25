@@ -576,13 +576,16 @@ impl Text for GapBlockText {
         self.file_size
     }
 
-    fn get_line<'a>(&'a mut self, state: &LineState) -> Self::LineItem<'a> {
-        todo!()
-        // LineStr {
-        //     line_data: LineData::GapBytes(self.borrow_lines_mut()[line_index].text(..)),
-        //     line_file_start: line_file_start,
-        //     line_file_end: line_file_end,
-        // }
+    fn get_line<'a>(&'a mut self, state: &LineState) -> Option<Self::LineItem<'a>> {
+        let block_num = state.block_num;
+        let block_offset = state.block_offset;
+        let mut iter = GapBlockTextIter {
+            blocks: [self.blocks.get(block_num), self.blocks.get(block_num + 1)],
+            block_indexs: &self.block_indexs,
+            cur_block_num: block_num,
+            cur_block_offset: block_offset,
+        };
+        iter.next()
     }
 
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
@@ -673,12 +676,6 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
                     return None;
                 }
                 let line_info = option_line_info.unwrap();
-
-                // let line_in_block_index = self.cur_line_index - block_index.start_line_index;
-                // if line_in_block_index >= block_index.lines_index.len() {
-                //     return None;
-                // }
-                // let line_info = &block_index.lines_index[line_in_block_index];
                 let line_str1 = BlockLineData {
                     data: LineData::GapBytes(
                         b.data.text(line_info.block_start..line_info.block_end),

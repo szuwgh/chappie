@@ -983,7 +983,7 @@ pub(crate) trait Text {
     fn has_next_line(&self, meta: &EditLineMeta) -> bool;
 
     //获取一行
-    fn get_line<'a>(&'a mut self, state: &LineState) -> Self::LineItem<'a>;
+    fn get_line<'a>(&'a mut self, state: &LineState) -> Option<Self::LineItem<'a>>;
 
     //获取行的文本长度
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize;
@@ -1485,7 +1485,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
             line_file_start,
             line_file_end: meta.get_line_file_end(),
         };
-        let line = self.borrow_lines_mut().get_line(&state); //&self.borrow_lines()[line_index];
+        let line = self.borrow_lines_mut().get_line(&state).unwrap(); //&self.borrow_lines()[line_index];
 
         //这行已经读完 开始下一行
         if line_end == line.text_len() {
