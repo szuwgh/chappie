@@ -5,7 +5,7 @@ use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
 use crate::plugin::Plugin;
 use crate::textwarp::hex::HEX_WITH;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextSelect;
@@ -28,7 +28,7 @@ impl<T: Plugin> HandleHex<T> {
     fn jump_to_address(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         addr: usize,
         td: &TextDisplay,
     ) -> ChapResult<()> {
@@ -51,7 +51,7 @@ impl<T: Plugin> HandleHex<T> {
     fn find_jump(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
         seek_start: usize,
         pattern: &[u8],
@@ -83,7 +83,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -122,7 +122,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -162,7 +162,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_left<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -213,7 +213,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -246,7 +246,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_enter<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         //todo!("Handle enter in hex mode");
@@ -342,7 +342,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_shift_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -392,7 +392,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_shift_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -435,7 +435,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -472,7 +472,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_shift_left(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         if line_meta.is_empty() {
@@ -517,7 +517,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_backspace<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.pop();
@@ -527,7 +527,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
     fn handle_char<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
@@ -543,7 +543,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
 //     fn handle_esc(
 //         &self,
 //         chap_tui: &mut ChapTui,
-//         line_meta: &RingVec<EditLineMeta>,
+//         line_meta: &RingVec<LineState>,
 //         td: &TextDisplay,
 //     ) {
 //         // Implement text mode ESC handling
@@ -552,7 +552,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
 //     fn handle_ctrl_c(
 //         &self,
 //         chap_tui: &mut ChapTui,
-//         line_meta: &RingVec<EditLineMeta>,
+//         line_meta: &RingVec<LineState>,
 //         td: &TextDisplay,
 //     ) {
 //         // Implement text mode Ctrl+C handling

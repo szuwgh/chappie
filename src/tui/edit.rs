@@ -1,6 +1,6 @@
 use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::LineState;
 use crate::textwarp::LineParts;
 use ratatui::style::Color;
 use ratatui::style::Style;
@@ -10,7 +10,7 @@ use ratatui::text::Text;
 use utf8_iter::Utf8CharsEx;
 pub(crate) struct EditUI<'a> {
     txts: RingVec<CacheStr>,
-    line_meta: RingVec<EditLineMeta>,
+    line_meta: RingVec<LineState>,
     line_spans: Vec<Span<'a>>,
 }
 
@@ -50,7 +50,7 @@ fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usi
 
 pub(crate) fn get_edit_content<'a>(
     txts: &'a RingVec<CacheStr>,
-    line_meta: &'a RingVec<EditLineMeta>,
+    line_meta: &'a RingVec<LineState>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
     height: usize,
@@ -258,7 +258,7 @@ fn append_padding_lines(
 }
 
 /// 构建行号导航文本
-fn build_nav_text(line_meta: &RingVec<EditLineMeta>, height: usize) -> Text {
+fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text {
     let nav_lines: Vec<Line> = (0..height)
         .map(|i| {
             line_meta.get(i).map_or_else(
@@ -277,7 +277,7 @@ fn build_nav_text(line_meta: &RingVec<EditLineMeta>, height: usize) -> Text {
 
 // pub(crate) fn get_edit_content<'a>(
 //     txts: &'a RingVec<CacheStr>,
-//     line_meta: &'a RingVec<EditLineMeta>,
+//     line_meta: &'a RingVec<LineState>,
 //     cur_line: usize,
 //     select_line: &Option<(usize, usize)>,
 //     height: usize,

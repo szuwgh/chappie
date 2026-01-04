@@ -2,7 +2,7 @@ use crate::byteutil::ByteView;
 use crate::byteutil::Endian;
 use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::LineState;
 use crate::textwarp::TextSelect;
 use const_hex::Buffer;
 use ratatui::style::Color;
@@ -174,7 +174,7 @@ const HEX_TOP: &'static str = "00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F 
 
 pub(crate) fn get_hex_content<'a>(
     txts: &'a RingVec<CacheStr>,
-    line_meta: &'a RingVec<EditLineMeta>,
+    line_meta: &'a RingVec<LineState>,
     cur_line: usize,
     hex_sel: &TextSelect,
     height: usize,
@@ -336,7 +336,7 @@ fn add_cursor_padding(lines: &mut Vec<Line>, cursor_y: usize, line_count: usize,
 }
 
 /// 创建左侧导航地址文本
-fn create_navigation_text(height: usize, line_meta: &RingVec<EditLineMeta>) -> Text<'_> {
+fn create_navigation_text(height: usize, line_meta: &RingVec<LineState>) -> Text<'_> {
     Text::from(
         (0..height)
             .enumerate()

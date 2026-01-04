@@ -373,6 +373,15 @@ impl GapBuffer {
         self.gap_start = self.gap_start.saturating_sub(len)
     }
 
+    /// 删除最后len个字符
+    pub(crate) fn delete_last(&mut self, len: usize) {
+        let text_len = self.text_len();
+        if text_len == 0 {
+            return;
+        }
+        self.delete(text_len, len);
+    }
+
     // Move the gap to the end of the buffer
     // pub(crate) fn text(&mut self) -> &str {
     //     self.move_gap_to_last();

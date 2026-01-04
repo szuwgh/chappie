@@ -4,7 +4,7 @@ use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::execute;
 use crate::lua::LuaPlugin;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::ChapTui;
 use crossterm::cursor::Show;
@@ -37,7 +37,7 @@ impl Handle for HandleImpl {
     fn handle_up(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -49,7 +49,7 @@ impl Handle for HandleImpl {
     fn handle_shift_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -61,7 +61,7 @@ impl Handle for HandleImpl {
     fn handle_shift_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -73,7 +73,7 @@ impl Handle for HandleImpl {
     fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -85,7 +85,7 @@ impl Handle for HandleImpl {
     fn handle_shift_left(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -97,7 +97,7 @@ impl Handle for HandleImpl {
     fn handle_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -109,7 +109,7 @@ impl Handle for HandleImpl {
     fn handle_left<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -121,7 +121,7 @@ impl Handle for HandleImpl {
     fn handle_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -133,7 +133,7 @@ impl Handle for HandleImpl {
     fn handle_enter<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -145,7 +145,7 @@ impl Handle for HandleImpl {
     fn handle_backspace<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match self {
@@ -157,7 +157,7 @@ impl Handle for HandleImpl {
     fn handle_char<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
@@ -201,77 +201,77 @@ pub(crate) trait Handle {
     fn handle_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_shift_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_shift_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_shift_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_shift_left(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_left<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_enter<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_backspace<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()>;
 
     fn handle_char<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()>;

@@ -96,4 +96,13 @@ impl<T> RingVec<T> {
             .skip(self.start)
             .take(self.cache.len())
     }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        let start = self.start;
+        // let len = self.cache.len();
+        // 使用 split_at_mut 安全分割切片
+        let (second, first) = self.cache.split_at_mut(start);
+        // 总是返回 Chain 迭代器，保证类型一致
+        first.iter_mut().chain(second.iter_mut())
+    }
 }

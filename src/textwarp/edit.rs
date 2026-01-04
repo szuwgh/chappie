@@ -1,11 +1,9 @@
 use crate::textwarp::ChapResult;
-use crate::textwarp::EditLineMeta;
 use crate::textwarp::EditText;
 use crate::textwarp::GapBuffer;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
-use crate::textwarp::PageOffset;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
@@ -20,9 +18,9 @@ use std::path::PathBuf;
 const CHAR_GAP_SIZE: usize = 128;
 
 pub(crate) struct GapText {
-    lines: Vec<GapBuffer>,             // 每128字节使用 GapBuffer 存储
-    file_size: usize,                  // 文件大小
-    page_offset_list: Vec<PageOffset>, // 分页偏移列表
+    lines: Vec<GapBuffer>,            // 每128字节使用 GapBuffer 存储
+    file_size: usize,                 // 文件大小
+    page_offset_list: Vec<LineState>, // 分页偏移列表
 }
 
 impl GapText {
@@ -115,11 +113,11 @@ impl GapText {
 }
 
 impl TextIndex for GapText {
-    fn get_page_offset(&self, line_num: usize) -> PageOffset {
-        PageOffset::new()
+    fn get_page_offset(&self, line_num: usize) -> LineState {
+        LineState::default()
     }
 
-    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset) {
+    fn set_page_offset(&mut self, page_num: usize, page_offset: LineState) {
         // GapText 不支持分页偏移
     }
 }
@@ -134,7 +132,14 @@ impl Text for GapText {
         todo!("Not implement text_from_sel for GapText");
     }
 
-    fn has_next_line(&self, meta: &EditLineMeta) -> bool {
+    fn has_pre_line(&self, meta: &LineState) -> bool {
+        if meta.get_line_index() == 0 && meta.get_line_end() == 0 {
+            return false;
+        }
+        true
+    }
+
+    fn has_next_line(&self, meta: &LineState) -> bool {
         let line_index = meta.get_line_index();
         let line_end = meta.get_line_end();
         if line_index == self.lines.len() - 1 && line_end == self.get_text_len(line_index) {
@@ -143,38 +148,32 @@ impl Text for GapText {
         true
     }
 
-    fn get_line<'a>(&'a mut self, state: &LineState) -> LineStr<'a> {
-        LineStr {
-            data: LineData::GapBytes(self.borrow_lines_mut()[state.line_index].text(..)),
+    fn get_next_line_state(&self, state: &LineState) -> Option<LineState> {
+        None
+    }
+
+    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+        None
+    }
+
+    fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
+        Some(LineStr {
+            data: LineData::GapBytes(self.borrow_lines()[state.line_index].text(..)),
             line_file_start: state.line_file_start,
             line_file_end: state.line_file_end,
-        }
+        })
     }
 
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize {
         self.borrow_lines()[line_index].text_len()
     }
 
-    fn iter<'a>(
-        &'a mut self,
-        line_index: usize,
-        block_num: usize,
-        block_offset: usize,
-        line_offset: usize,
-        line_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>> {
-        self.get_iter(line_index)
+    fn iter<'a>(&'a mut self, line_state: &LineState) -> impl Iterator<Item = LineStr<'a>> {
+        self.get_iter(line_state.line_index)
     }
 
-    fn iter_rev<'a>(
-        &'a mut self,
-        line_index: usize,
-        block_num: usize,
-        block_offset: usize,
-        line_offset: usize,
-        line_file_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>> {
-        self.get_iter_rev(line_index)
+    fn iter_rev<'a>(&'a mut self, line_state: &LineState) -> impl Iterator<Item = LineStr<'a>> {
+        self.get_iter_rev(line_state.line_index)
     }
 
     fn iter_u8<'a>(
@@ -193,7 +192,7 @@ impl EditText for GapText {
         cursor_y: usize,
         bytes_cursor: usize,
         count: usize,
-        line_meta: &EditLineMeta,
+        line_meta: &LineState,
     ) {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
@@ -226,7 +225,7 @@ impl EditText for GapText {
         self.borrow_lines_mut()[line_index].backspace(line_offset, count);
     }
 
-    fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &EditLineMeta, c: char) {
+    fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &LineState, c: char) {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
             line_meta.get_line_offset() + bytes_cursor,
@@ -238,7 +237,7 @@ impl EditText for GapText {
         line.insert(line_offset, s.as_bytes());
     }
 
-    fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &EditLineMeta) {
+    fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &LineState) {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
             line_meta.get_line_offset() + cursor_x,

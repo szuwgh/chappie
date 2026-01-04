@@ -2,11 +2,10 @@ use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::gap_buffer::GapBytes;
 use crate::textwarp::ChapResult;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::Line;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
-use crate::textwarp::PageOffset;
 use crate::textwarp::RingVec;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
@@ -258,22 +257,24 @@ impl HexText {
 }
 
 impl TextIndex for HexText {
-    fn get_page_offset(&self, line_num: usize) -> PageOffset {
+    fn get_page_offset(&self, line_num: usize) -> LineState {
         let start_page_num = line_num / self.height;
         let start_line_num = (start_page_num * self.height).saturating_sub(1);
         let line_file_start = start_line_num * HEX_WITH;
-        PageOffset {
-            line_index: 0,  //第多少行
-            line_offset: 0, //行在总行的起始位置
-            block_num: 0,
-            block_offset: 0,
-            line_file_start: line_file_start, //这一行在整个文件的起始位置
-            start_line_num: start_line_num,
-            start_page_num: start_page_num, //这一行在第几页开始
-        }
+        let state = LineState::builder()
+            .line_index(0)
+            .line_offset(0)
+            .block_num(0)
+            .block_line_index(0)
+            .block_offset(0)
+            .line_file_start(line_file_start)
+            .start_line_num(start_line_num)
+            .start_page_num(start_page_num)
+            .build();
+        state
     }
 
-    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset) {
+    fn set_page_offset(&mut self, page_num: usize, page_offset: LineState) {
         // 这里可以实现设置页偏移的逻辑
         // 目前没有具体实现
     }
@@ -283,6 +284,39 @@ impl Text for HexText {
     type LineItem<'a> = LineStr<'a>;
     fn get_file_size(&self) -> usize {
         self.file_size
+    }
+
+    fn get_next_line_state(&self, state: &LineState) -> Option<LineState> {
+        let mut line_index = state.get_line_index();
+        let mut line_end = state.get_line_end();
+        let mut line_file_start = state.get_line_file_start();
+
+        let line = self.get_line(&state).unwrap();
+        if state.get_line_end() == line.text_len() {
+            line_file_start = state.get_line_file_end();
+            line_end = 0;
+            line_index += 1;
+        }
+
+        let p = LineState::builder()
+            .line_index(line_index)
+            .line_offset(line_end)
+            .line_file_start(line_file_start)
+            .start_line_num(state.get_line_num())
+            // .start_page_num(state.get_line_num() / self.height)
+            .build();
+        Some(p)
+    }
+
+    fn has_pre_line(&self, meta: &LineState) -> bool {
+        if meta.get_line_index() == 0 && meta.get_line_end() == 0 {
+            return false;
+        }
+        true
+    }
+
+    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+        None
     }
 
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
@@ -313,7 +347,7 @@ impl Text for HexText {
         buf
     }
 
-    fn get_line<'a>(&'a mut self, state: &LineState) -> LineStr<'a> {
+    fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
         let with = state.line_file_end - state.line_file_start;
         for (i, chunk) in self.chunks.iter().enumerate() {
             if state.line_file_start > chunk.file_end || state.line_file_start < chunk.file_start {
@@ -333,88 +367,76 @@ impl Text for HexText {
                         if remaining >= buf1.len() {
                             v.extend_from_slice(buf1.left());
                             v.extend_from_slice(buf1.right());
-                            return LineStr {
+                            return Some(LineStr {
                                 data: LineData::Own(v),
                                 line_file_start: line_start,
                                 line_file_end: line_start + len + buf1.len(),
-                            };
+                            });
                         } else {
                             let buf2 = buf1.text(..remaining);
                             v.extend_from_slice(buf2.left());
                             v.extend_from_slice(buf2.right());
-                            return LineStr {
+                            return Some(LineStr {
                                 data: LineData::Own(v),
                                 line_file_start: line_start,
                                 line_file_end: line_start + with,
-                            };
+                            });
                         }
                     } else {
-                        return LineStr {
+                        return Some(LineStr {
                             data: LineData::GapBytes(buffer),
                             line_file_start: line_start,
                             line_file_end: state.line_file_end,
-                        };
+                        });
                     }
                 } else {
-                    return LineStr {
+                    return Some(LineStr {
                         data: LineData::GapBytes(buffer),
                         line_file_start: line_start,
                         line_file_end: line_start + len,
-                    };
+                    });
                 }
             } else {
-                return LineStr {
+                return Some(LineStr {
                     data: LineData::GapBytes(buffer.text(..with)),
                     line_file_start: line_start,
                     line_file_end: line_start + with,
-                };
+                });
             }
         }
-        return LineStr {
+        return Some(LineStr {
             // line: buffer,
             data: LineData::Bytes(&[]),
             line_file_start: 0,
             line_file_end: 0,
-        };
+        });
     }
 
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize {
         line_end - line_start
     }
 
-    fn has_next_line(&self, meta: &EditLineMeta) -> bool {
+    fn has_next_line(&self, meta: &LineState) -> bool {
         if meta.line_file_end >= self.file_size {
             return false;
         }
         return true;
     }
 
-    fn iter_rev<'a>(
-        &'a mut self,
-        line_index: usize,
-        block_num: usize,
-        block_offset: usize,
-        line_offset: usize,
-        line_file_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>> {
-        self.iter(line_index, 0, 0, line_offset, line_file_start)
+    fn iter_rev<'a>(&'a mut self, line_state: &LineState) -> impl Iterator<Item = LineStr<'a>> {
+        self.iter(line_state)
     }
 
-    fn iter<'a>(
-        &'a mut self,
-        line_index: usize,
-        block_num: usize,    //块编号
-        block_offset: usize, //块内偏移
-        line_offset: usize,
-        line_file_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>> {
+    fn iter<'a>(&'a mut self, line_state: &LineState) -> impl Iterator<Item = LineStr<'a>> {
         let mut j = None;
         loop {
-            if line_file_start >= self.file_size {
-                return HexTextIter::new([None, None], HEX_WITH, line_file_start);
+            if line_state.line_file_start >= self.file_size {
+                return HexTextIter::new([None, None], HEX_WITH, line_state.line_file_start);
             }
             for (i, chunk) in self.chunks.iter().enumerate() {
-                if line_file_start >= chunk.file_start && line_file_start < chunk.file_end {
+                if line_state.line_file_start >= chunk.file_start
+                    && line_state.line_file_start < chunk.file_end
+                {
                     j = Some(i);
                     break;
                 }
@@ -427,7 +449,7 @@ impl Text for HexText {
                         return HexTextIter::new(
                             [self.chunks.get(0), self.chunks.get(1)],
                             HEX_WITH,
-                            line_file_start,
+                            line_state.line_file_start,
                         );
                     } else {
                         //读取上一个块 把最后一个块弹出
@@ -438,7 +460,7 @@ impl Text for HexText {
                         return HexTextIter::new(
                             [self.chunks.get(1), self.chunks.get(2)],
                             HEX_WITH,
-                            line_file_start,
+                            line_state.line_file_start,
                         );
                     }
                 } else if j == self.chunks.len() - 1 {
@@ -449,14 +471,14 @@ impl Text for HexText {
                         return HexTextIter::new(
                             [self.chunks.get(j), None],
                             HEX_WITH,
-                            line_file_start,
+                            line_state.line_file_start,
                         );
                     } else {
                         self.read_next_chunk(next_file_seek).unwrap();
                         return HexTextIter::new(
                             [self.chunks.get(j - 1), self.chunks.get(j)],
                             HEX_WITH,
-                            line_file_start,
+                            line_state.line_file_start,
                         );
                     }
                 } else {
@@ -464,11 +486,11 @@ impl Text for HexText {
                     return HexTextIter::new(
                         [self.chunks.get(j), self.chunks.get(j + 1)],
                         HEX_WITH,
-                        line_file_start,
+                        line_state.line_file_start,
                     );
                 }
             }
-            self.reset_chunks(line_file_start);
+            self.reset_chunks(line_state.line_file_start);
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarpType;
@@ -36,7 +36,7 @@ impl Handle for HandleEdit {
     fn handle_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match chap_tui.warp_type {
@@ -76,7 +76,7 @@ impl Handle for HandleEdit {
     fn handle_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<EditLineMeta>,
+        mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match chap_tui.warp_type {
@@ -117,7 +117,7 @@ impl Handle for HandleEdit {
     fn handle_left<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match chap_tui.warp_type {
@@ -147,7 +147,7 @@ impl Handle for HandleEdit {
     fn handle_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         match chap_tui.warp_type {
@@ -192,13 +192,13 @@ impl Handle for HandleEdit {
     fn handle_enter<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.clear();
         td.insert_newline(
             chap_tui.cursor_y,
-            chap_tui.cursor_x,
+            chap_tui.bytes_cursor,
             line_meta.get(chap_tui.cursor_y).unwrap(),
         )?;
         if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
@@ -212,7 +212,7 @@ impl Handle for HandleEdit {
     fn handle_backspace<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.clear();
@@ -240,7 +240,7 @@ impl Handle for HandleEdit {
     fn handle_char<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
@@ -279,7 +279,7 @@ impl Handle for HandleEdit {
     fn handle_shift_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         Ok(())
@@ -288,7 +288,7 @@ impl Handle for HandleEdit {
     fn handle_shift_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &'a RingVec<EditLineMeta>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         Ok(())
@@ -297,7 +297,7 @@ impl Handle for HandleEdit {
     fn handle_shift_right(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         Ok(())
@@ -306,7 +306,7 @@ impl Handle for HandleEdit {
     fn handle_shift_left(
         &self,
         chap_tui: &mut ChapTui,
-        line_meta: &RingVec<EditLineMeta>,
+        line_meta: &RingVec<LineState>,
         td: &TextDisplay,
     ) -> ChapResult<()> {
         Ok(())

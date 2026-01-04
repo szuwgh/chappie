@@ -12,8 +12,8 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
-use crate::textwarp::EditLineMeta;
 use crate::textwarp::EditTextWarp;
+use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarp;
@@ -721,7 +721,7 @@ impl ChatInput {
 
 // fn get_hex_content<'a>(
 //     txts: &'a RingVec<CacheStr>,
-//     line_meta: &'a RingVec<EditLineMeta>,
+//     line_meta: &'a RingVec<LineState>,
 //     cur_line: usize,
 //     hex_sel: &TextSelect,
 //     height: usize,
@@ -979,7 +979,7 @@ impl ChatInput {
 
 // fn get_edit_content<'a>(
 //     txts: &'a RingVec<CacheStr>,
-//     line_meta: &'a RingVec<EditLineMeta>,
+//     line_meta: &'a RingVec<LineState>,
 //     cur_line: usize,
 //     select_line: &Option<(usize, usize)>,
 //     height: usize,
@@ -1090,7 +1090,7 @@ impl ChatInput {
 
 // fn get_content<'a>(
 //     txts: &'a Vec<&str>,
-//     line_meta: &'a Vec<EditLineMeta>,
+//     line_meta: &'a Vec<LineState>,
 //     cur_line: usize,
 //     select_line: &Option<(usize, usize)>,
 //     height: usize,

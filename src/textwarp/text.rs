@@ -1,11 +1,9 @@
 use crate::common::util::mmap_file;
 use crate::textwarp::ChapResult;
-use crate::textwarp::EditLineMeta;
 use crate::textwarp::GapBytes;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
-use crate::textwarp::PageOffset;
 use crate::textwarp::Path;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
@@ -76,11 +74,11 @@ impl<'a> MmapTextIter<'a> {
 }
 
 impl TextIndex for MmapText {
-    fn get_page_offset(&self, line_num: usize) -> PageOffset {
-        PageOffset::new()
+    fn get_page_offset(&self, line_num: usize) -> LineState {
+        LineState::builder().build()
     }
 
-    fn set_page_offset(&mut self, page_num: usize, page_offset: PageOffset) {
+    fn set_page_offset(&mut self, page_num: usize, page_offset: LineState) {
         // MmapText 不支持分页偏移
     }
 }
@@ -95,20 +93,35 @@ impl Text for MmapText {
         todo!("Not implement text_from_sel for MmapText");
     }
 
-    fn get_line<'a>(&'a mut self, state: &LineState) -> LineStr<'a> {
+    fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
         let line = &self.mmap[state.line_file_start..state.line_file_end];
-        LineStr {
+        Some(LineStr {
             data: LineData::GapBytes(GapBytes::new(line, &[])),
             line_file_start: state.line_file_start,
             line_file_end: state.line_file_end,
+        })
+    }
+
+    fn has_pre_line(&self, meta: &LineState) -> bool {
+        if meta.get_line_file_start() == 0 && meta.get_line_offset() == 0 {
+            return false;
         }
+        true
+    }
+
+    fn get_next_line_state(&self, state: &LineState) -> Option<LineState> {
+        None
+    }
+
+    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+        None
     }
 
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize {
         line_end - line_start
     }
 
-    fn has_next_line(&self, meta: &EditLineMeta) -> bool {
+    fn has_next_line(&self, meta: &LineState) -> bool {
         if meta.get_line_file_start() + meta.get_line_offset() + meta.get_txt_len()
             >= self.mmap.len() - 1
         {
@@ -117,32 +130,17 @@ impl Text for MmapText {
         true
     }
 
-    fn iter<'a>(
-        &'a mut self,
-        line_index: usize,
-        block_num: usize,    //块编号
-        block_offset: usize, //块内偏移
-        line_offset: usize,
-        line_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>> {
-        MmapTextIter::new(&self.mmap, line_index, line_start, self.mmap.len())
+    fn iter<'a>(&'a mut self, line_state: &LineState) -> impl Iterator<Item = LineStr<'a>> {
+        MmapTextIter::new(
+            &self.mmap,
+            line_state.line_index,
+            line_state.line_file_start,
+            self.mmap.len(),
+        )
     }
 
-    fn iter_rev<'a>(
-        &'a mut self,
-        line_index: usize,
-        block_num: usize,    //块编号
-        block_offset: usize, //块内偏移
-        line_offset: usize,
-        line_file_start: usize,
-    ) -> impl Iterator<Item = LineStr<'a>> {
-        self.iter(
-            line_index,
-            block_num,
-            block_offset,
-            line_offset,
-            line_file_start,
-        )
+    fn iter_rev<'a>(&'a mut self, line_state: &LineState) -> impl Iterator<Item = LineStr<'a>> {
+        self.iter(line_state)
     }
 
     fn iter_u8<'a>(

@@ -15,7 +15,7 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
-use crate::textwarp::EditLineMeta;
+use crate::textwarp::LineState;
 use crate::textwarp::EditTextWarp;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
@@ -422,7 +422,7 @@ impl ChapTui {
         cursor_y: usize,
         hex_sel: TextSelect,
         td: &'a TextDisplay,
-    ) -> ChapResult<&'a RingVec<EditLineMeta>> {
+    ) -> ChapResult<&'a RingVec<LineState>> {
         let line_meta = {
             let (content, meta) = td.get_current_page()?;
             self.terminal.draw(|f| {
@@ -520,7 +520,7 @@ impl ChapTui {
     //     offset: &mut usize,
     //     is_last: &mut bool,
     //     start_line_num: usize,
-    //     line_meta: &RingVec<EditLineMeta>,
+    //     line_meta: &RingVec<LineState>,
     //     td: &TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -567,7 +567,7 @@ impl ChapTui {
     //     cursor_x: &mut usize,
     //     cursor_y: &mut usize,
     //     start_line_num: usize,
-    //     line_meta: &RingVec<EditLineMeta>,
+    //     line_meta: &RingVec<LineState>,
     //     td: &TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -607,7 +607,7 @@ impl ChapTui {
     //     cursor_x: &mut usize,
     //     cursor_y: &mut usize,
     //     start_line_num: usize,
-    //     line_meta: &'a RingVec<EditLineMeta>,
+    //     line_meta: &'a RingVec<LineState>,
     //     td: &'a TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -638,7 +638,7 @@ impl ChapTui {
     //     cursor_y: &mut usize,
     //     offset: &mut usize,
     //     is_last: &mut bool,
-    //     mut line_meta: &'a RingVec<EditLineMeta>,
+    //     mut line_meta: &'a RingVec<LineState>,
     //     td: &'a TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -700,7 +700,7 @@ impl ChapTui {
     //     cursor_y: &mut usize,
     //     offset: &mut usize,
     //     is_last: &mut bool,
-    //     mut line_meta: &'a RingVec<EditLineMeta>,
+    //     mut line_meta: &'a RingVec<LineState>,
     //     td: &'a TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -764,7 +764,7 @@ impl ChapTui {
     //     cursor_y: &mut usize,
     //     offset: &mut usize,
     //     is_last: &mut bool,
-    //     line_meta: &RingVec<EditLineMeta>,
+    //     line_meta: &RingVec<LineState>,
     //     td: &TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -816,7 +816,7 @@ impl ChapTui {
     // fn handle_right_shift(
     //     &self,
     //     chap_tui: &mut ChapTui,
-    //     line_meta: &RingVec<EditLineMeta>,
+    //     line_meta: &RingVec<LineState>,
     //     td: &TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -846,7 +846,7 @@ impl ChapTui {
     // fn handle_left_shift(
     //     &self,
     //     chap_tui: &mut ChapTui,
-    //     line_meta: &RingVec<EditLineMeta>,
+    //     line_meta: &RingVec<LineState>,
     //     td: &TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -876,7 +876,7 @@ impl ChapTui {
     // fn handle_right(
     //     &self,
     //     chap_tui: &mut ChapTui,
-    //     line_meta: &RingVec<EditLineMeta>,
+    //     line_meta: &RingVec<LineState>,
     //     td: &TextDisplay,
     // ) -> ChapResult<()> {
     //     match self.chap_mod {
@@ -1109,7 +1109,7 @@ impl ChapTui {
         cursor_y: usize,
         offset: usize,
         td: &'a TextDisplay,
-    ) -> ChapResult<&'a RingVec<EditLineMeta>> {
+    ) -> ChapResult<&'a RingVec<LineState>> {
         let line_meta = {
             let (content, meta) = td.get_current_page()?;
             self.terminal.draw(|f| {
