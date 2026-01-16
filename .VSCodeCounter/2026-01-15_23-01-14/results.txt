@@ -1,0 +1,75 @@
+Date : 2026-01-15 23:01:14
+Directory : /home/postgres/rsproject/chappie/src
+Total : 42 files,  8897 codes, 2736 comments, 1136 blanks, all 12769 lines
+
+Languages
++----------+------------+------------+------------+------------+------------+
+| language | files      | code       | comment    | blank      | total      |
++----------+------------+------------+------------+------------+------------+
+| Rust     |         42 |      8,897 |      2,736 |      1,136 |     12,769 |
++----------+------------+------------+------------+------------+------------+
+
+Directories
++-------------------------------------------------------------+------------+------------+------------+------------+------------+
+| path                                                        | files      | code       | comment    | blank      | total      |
++-------------------------------------------------------------+------------+------------+------------+------------+------------+
+| .                                                           |         42 |      8,897 |      2,736 |      1,136 |     12,769 |
+| . (Files)                                                   |         10 |      1,173 |      1,093 |        261 |      2,527 |
+| chatapi                                                     |          3 |        174 |          8 |         35 |        217 |
+| common                                                      |          5 |        517 |         54 |         77 |        648 |
+| fuzzy                                                       |          5 |        757 |         48 |         83 |        888 |
+| handle                                                      |          3 |      1,027 |         50 |         81 |      1,158 |
+| textwarp                                                    |          6 |      4,084 |        379 |        447 |      4,910 |
+| tui                                                         |          6 |      1,163 |      1,103 |        148 |      2,414 |
+| undo                                                        |          2 |          0 |          0 |          2 |          2 |
+| vb                                                          |          2 |          2 |          1 |          2 |          5 |
++-------------------------------------------------------------+------------+------------+------------+------------+------------+
+
+Files
++-------------------------------------------------------------+----------+------------+------------+------------+------------+
+| filename                                                    | language | code       | comment    | blank      | total      |
++-------------------------------------------------------------+----------+------------+------------+------------+------------+
+| /home/postgres/rsproject/chappie/src/byteutil.rs            | Rust     |        237 |         47 |         45 |        329 |
+| /home/postgres/rsproject/chappie/src/chap.rs                | Rust     |         68 |         42 |         10 |        120 |
+| /home/postgres/rsproject/chappie/src/chatapi/gemini.rs      | Rust     |         30 |          0 |          6 |         36 |
+| /home/postgres/rsproject/chappie/src/chatapi/grop.rs        | Rust     |        100 |          0 |         16 |        116 |
+| /home/postgres/rsproject/chappie/src/chatapi/mod.rs         | Rust     |         44 |          8 |         13 |         65 |
+| /home/postgres/rsproject/chappie/src/cli.rs                 | Rust     |         82 |          0 |         20 |        102 |
+| /home/postgres/rsproject/chappie/src/command.rs             | Rust     |        142 |          0 |         10 |        152 |
+| /home/postgres/rsproject/chappie/src/common/error.rs        | Rust     |         55 |          2 |          9 |         66 |
+| /home/postgres/rsproject/chappie/src/common/gap_buffer.rs   | Rust     |        341 |         41 |         50 |        432 |
+| /home/postgres/rsproject/chappie/src/common/mod.rs          | Rust     |          4 |          0 |          1 |          5 |
+| /home/postgres/rsproject/chappie/src/common/ring_vec.rs     | Rust     |         94 |          6 |         14 |        114 |
+| /home/postgres/rsproject/chappie/src/common/util.rs         | Rust     |         23 |          5 |          3 |         31 |
+| /home/postgres/rsproject/chappie/src/function.rs            | Rust     |         64 |         25 |         13 |        102 |
+| /home/postgres/rsproject/chappie/src/fuzzy/bitap.rs         | Rust     |        156 |         10 |         16 |        182 |
+| /home/postgres/rsproject/chappie/src/fuzzy/boyermoore.rs    | Rust     |        162 |         19 |         18 |        199 |
+| /home/postgres/rsproject/chappie/src/fuzzy/levenshtein.rs   | Rust     |        100 |          5 |          6 |        111 |
+| /home/postgres/rsproject/chappie/src/fuzzy/mod.rs           | Rust     |        124 |          4 |         11 |        139 |
+| /home/postgres/rsproject/chappie/src/fuzzy/smithwaterman.rs | Rust     |        215 |         10 |         32 |        257 |
+| /home/postgres/rsproject/chappie/src/handle/edit.rs         | Rust     |        289 |          9 |         18 |        316 |
+| /home/postgres/rsproject/chappie/src/handle/hex.rs          | Rust     |        489 |         41 |         33 |        563 |
+| /home/postgres/rsproject/chappie/src/handle/mod.rs          | Rust     |        249 |          0 |         30 |        279 |
+| /home/postgres/rsproject/chappie/src/lua.rs                 | Rust     |        119 |          7 |         16 |        142 |
+| /home/postgres/rsproject/chappie/src/main.rs                | Rust     |         46 |          3 |          5 |         54 |
+| /home/postgres/rsproject/chappie/src/pg.rs                  | Rust     |        278 |         26 |         21 |        325 |
+| /home/postgres/rsproject/chappie/src/plugin.rs              | Rust     |          5 |          0 |          1 |          6 |
+| /home/postgres/rsproject/chappie/src/textwarp/csv.rs        | Rust     |          0 |          0 |          2 |          2 |
+| /home/postgres/rsproject/chappie/src/textwarp/edit.rs       | Rust     |        274 |          8 |         39 |        321 |
+| /home/postgres/rsproject/chappie/src/textwarp/edit_block.rs | Rust     |        985 |         66 |         68 |      1,119 |
+| /home/postgres/rsproject/chappie/src/textwarp/hex.rs        | Rust     |        598 |         36 |         43 |        677 |
+| /home/postgres/rsproject/chappie/src/textwarp/mod.rs        | Rust     |      2,092 |        268 |        276 |      2,636 |
+| /home/postgres/rsproject/chappie/src/textwarp/text.rs       | Rust     |        135 |          1 |         19 |        155 |
+| /home/postgres/rsproject/chappie/src/tui/csv.rs             | Rust     |          0 |          0 |          2 |          2 |
+| /home/postgres/rsproject/chappie/src/tui/edit.rs            | Rust     |        241 |        122 |         15 |        378 |
+| /home/postgres/rsproject/chappie/src/tui/hex.rs             | Rust     |        313 |         13 |         32 |        358 |
+| /home/postgres/rsproject/chappie/src/tui/mod.rs             | Rust     |        609 |        968 |         95 |      1,672 |
+| /home/postgres/rsproject/chappie/src/tui/text.rs            | Rust     |          0 |          0 |          2 |          2 |
+| /home/postgres/rsproject/chappie/src/tui/vector.rs          | Rust     |          0 |          0 |          2 |          2 |
+| /home/postgres/rsproject/chappie/src/tui_bak.rs             | Rust     |        132 |        943 |        120 |      1,195 |
+| /home/postgres/rsproject/chappie/src/undo/mod.rs            | Rust     |          0 |          0 |          1 |          1 |
+| /home/postgres/rsproject/chappie/src/undo/undo.rs           | Rust     |          0 |          0 |          1 |          1 |
+| /home/postgres/rsproject/chappie/src/vb/mod.rs              | Rust     |          1 |          0 |          1 |          2 |
+| /home/postgres/rsproject/chappie/src/vb/vectorbase.rs       | Rust     |          1 |          1 |          1 |          3 |
+| Total                                                       |          |      8,897 |      2,736 |      1,136 |     12,769 |
++-------------------------------------------------------------+----------+------------+------------+------------+------------+

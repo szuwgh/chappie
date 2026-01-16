@@ -55,7 +55,7 @@ impl<'a> GapBytes<'a> {
             if end <= self.left().len() {
                 GapBytes::new(&self.0[start..end], &[])
             } else {
-                GapBytes(self.0, &self.1[..end - self.left().len()])
+                GapBytes(&self.0[start..], &self.1[..end - self.left().len()])
             }
         } else if self.right().len() > 0 {
             GapBytes(
@@ -251,7 +251,7 @@ impl GapBuffer {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.text_len(),
         };
-        if start > end || end > self.text_len() {
+        if start == end || start > end || end > self.text_len() {
             return GapBytes::empty();
         }
         if start < self.gap_start {

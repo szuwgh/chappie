@@ -63,8 +63,18 @@ impl Handle for HandleEdit {
                     line_meta = td.get_current_line_meta()?;
                 }
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
-                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
-                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                if chap_tui.cursor_x
+                    >= line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1)
+                {
+                    chap_tui.cursor_x = line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1);
                 }
 
                 chap_tui.is_last_line = false;
@@ -88,8 +98,18 @@ impl Handle for HandleEdit {
                     td.scroll_next_one_line(line_meta.last().unwrap())?;
                     line_meta = td.get_current_line_meta()?;
                 }
-                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
-                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                if chap_tui.cursor_x
+                    >= line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1)
+                {
+                    chap_tui.cursor_x = line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1);
                 }
                 let meta = line_meta.get(chap_tui.cursor_y).unwrap();
                 if chap_tui.column_offset >= meta.get_char_len() {
@@ -98,15 +118,25 @@ impl Handle for HandleEdit {
                 chap_tui.is_last_line = false;
             }
             TextWarpType::SoftWrap => {
-                if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
+                if chap_tui.cursor_y < chap_tui.elem.tv.get_height().saturating_sub(1) {
                     chap_tui.cursor_y += 1;
                 } else {
                     //滚动下一行
                     td.scroll_next_one_line(line_meta.last().unwrap())?;
                     line_meta = td.get_current_line_meta()?;
                 }
-                if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
-                    chap_tui.cursor_x = line_meta.get(chap_tui.cursor_y).unwrap().get_char_len();
+                if chap_tui.cursor_x
+                    >= line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1)
+                {
+                    chap_tui.cursor_x = line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1);
                 }
                 chap_tui.is_last_line = false;
             }
@@ -131,8 +161,11 @@ impl Handle for HandleEdit {
                     if line_meta.get(chap_tui.cursor_y).unwrap().get_line_offset() == 0 {
                         //无需操作
                     } else {
-                        chap_tui.cursor_x =
-                            line_meta.get(chap_tui.cursor_y - 1).unwrap().get_char_len() - 1;
+                        chap_tui.cursor_x = line_meta
+                            .get(chap_tui.cursor_y - 1)
+                            .unwrap()
+                            .get_char_len()
+                            .saturating_sub(1);
                         chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
                     }
                 } else {
@@ -166,7 +199,13 @@ impl Handle for HandleEdit {
                 }
             }
             TextWarpType::SoftWrap => {
-                if chap_tui.cursor_x < line_meta.get(chap_tui.cursor_y).unwrap().get_char_len() {
+                if chap_tui.cursor_x
+                    < line_meta
+                        .get(chap_tui.cursor_y)
+                        .unwrap()
+                        .get_char_len()
+                        .saturating_sub(1)
+                {
                     chap_tui.cursor_x += 1;
 
                     if chap_tui.cursor_x >= line_meta.get(chap_tui.cursor_y).unwrap().get_char_len()
@@ -219,6 +258,15 @@ impl Handle for HandleEdit {
         if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
             return Ok(());
         }
+        let prev_line_char_len = if chap_tui.cursor_y == 0 {
+            0
+        } else {
+            line_meta
+                .get(chap_tui.cursor_y - 1)
+                .unwrap()
+                .get_char_len()
+                .saturating_sub(1)
+        };
         td.backspace(
             chap_tui.cursor_y,
             chap_tui.bytes_cursor,
@@ -228,7 +276,11 @@ impl Handle for HandleEdit {
         td.get_one_page(chap_tui.start_line_num)?;
         if chap_tui.cursor_x == 0 {
             let cursor_y = chap_tui.cursor_y.saturating_sub(1);
-            chap_tui.cursor_x = line_meta.get(cursor_y).unwrap().get_txt_len();
+            if prev_line_char_len > 0 {
+                chap_tui.cursor_x = prev_line_char_len;
+            } else {
+                chap_tui.cursor_x = 0;
+            }
             chap_tui.cursor_y = cursor_y;
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);

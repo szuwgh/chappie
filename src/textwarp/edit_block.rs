@@ -14,14 +14,16 @@ use crate::textwarp::TextSelect;
 use crate::ChapError;
 use crc::Crc;
 use crc::CRC_32_ISO_HDLC;
-use ratatui::symbols::block;
+use ratatui::symbols::line;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
+use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
+use std::io::Write;
 use std::iter;
 use std::path::Path;
 
@@ -50,6 +52,7 @@ impl LineIndex {
 //按块加载文件 每个块4KB大小
 struct Block {
     data: GapBuffer,   //每一个块使用 GapBuffer 存储
+    file_start: usize, //
     block_num: usize,  //块编号
     is_modified: bool, //块是否被修改
 }
@@ -109,29 +112,28 @@ impl Block {
                     break;
                 }
                 let is_complete = line_buf.ends_with(&[b'\n']);
+
                 let end = block_offset + bytes_read;
+                //let end_line = if is_complete { end - 1 } else { end };
                 let index = LineIndex {
                     index_num: index_num,
                     is_complete: is_complete,
                     block_start: block_offset,
                     block_end: end,
-                    // line_offset: last_line_size,
                 };
 
                 if is_complete {
                     line_count += 1;
-                    //last_line_size = 0;
                 } else {
-                    //last_line_size += bytes_read;
                 }
                 block_offset = end;
                 index_num += 1;
                 lines_index.push(index);
             }
+
             Some(BlockIndex {
                 file_start: file_start, //块在文件开始位置
                 block_num: block_num,
-                // start_line_index: 0,      //块内的起始行号在整个文件中
                 line_count: line_count,   //块内的行数
                 block_size: actual_len,   //块的大小
                 lines_index: lines_index, //块内的行索引
@@ -143,6 +145,7 @@ impl Block {
 
         let block = Block {
             data: GapBuffer::from_bytes(valid_data, CHAR_GAP_SIZE),
+            file_start: file_start,
             block_num: block_num,
             is_modified: false,
         };
@@ -184,7 +187,7 @@ impl BlockIndex {
 
     fn get_line_index(&self, block_offset: usize) -> Option<&LineIndex> {
         for l in self.lines_index.iter() {
-            if block_offset >= l.block_start && block_offset < l.block_end {
+            if block_offset >= l.block_start && block_offset <= l.block_end {
                 return Some(l);
             }
         }
@@ -235,15 +238,12 @@ impl GapBlockText {
         let mut block_start_offset: usize = 0;
         let mut start_line_index: usize = 0;
         let mut block_indexs = Vec::with_capacity(BLOKK_NUM * 2);
-        // let mut line_offset: usize = 0;
-        // let mut line_buf = Vec::new();
         for i in 0..BLOKK_NUM {
             block_num += i;
             if let Ok((block, Some(block_index))) =
                 Block::from_reader(reader, &mut buf, block_start_offset, i, None)
             {
                 blocks.push(block);
-                //  block_index.start_line_index = start_line_index;
                 let size = block_index.block_size;
                 let line_count = block_index.line_count;
                 let last_line_index = block_index.lines_index.last().unwrap();
@@ -255,7 +255,6 @@ impl GapBlockText {
                     //不是完整行
                     start_line_index += line_count - 1;
                 }
-                //  last_line_size = last_line_index.line_size();
                 block_start_offset += size;
                 block_indexs.push(block_index);
             } else {
@@ -271,19 +270,28 @@ impl GapBlockText {
         block_num: usize,
         check_sum: Option<u32>,
     ) -> ChapResult<(Block, Option<BlockIndex>)> {
+        if self.cache.contains_key(&file_start) {
+            let o = self.cache.remove(&file_start).unwrap();
+            return Ok((o, None));
+        }
         let mut buf = [0u8; BLOCK_SIZE];
         Block::from_reader(&mut self.reader, &mut buf, file_start, block_num, check_sum)
     }
 
     //获取上一个block 并弹入列表中
-    fn read_last_block(
+    fn read_prev_block(
         &mut self,
         file_start: usize,
         block_num: usize,
         check_sum: Option<u32>,
     ) -> ChapResult<()> {
-        let (block, block_index) = self.read_one_block(file_start, block_num, check_sum)?;
-        self.blocks.push_front(block);
+        let (block, _) = self.read_one_block(file_start, block_num, check_sum)?;
+        let old = self.blocks.push_front(block);
+        if let Some(o) = old {
+            if o.is_modified {
+                self.cache.insert(file_start, o);
+            }
+        }
         Ok(())
     }
 
@@ -295,70 +303,19 @@ impl GapBlockText {
         no_index: bool,
     ) -> ChapResult<()> {
         let (block, block_index) = self.read_one_block(file_start, block_num, check_sum)?;
-        self.blocks.push(block);
+        let old = self.blocks.push(block);
         if let Some(index) = block_index {
             if no_index {
                 self.block_indexs.push(index);
             }
         }
+        if let Some(o) = old {
+            if o.is_modified {
+                self.cache.insert(file_start, o);
+            }
+        }
         Ok(())
     }
-
-    // fn get_block_from_line<'a>(&'a self, line_index: usize) -> Option<&'a Block> {
-    //     for block in self.blocks.iter() {
-    //         let block_index = self.block_indexs.get(block.block_num).unwrap();
-    //         if line_index >= block_index.start_line_index
-    //             && line_index < block_index.start_line_index + block_index.line_count
-    //         {
-    //             return Some(block);
-    //         }
-    //     }
-    //     None
-    // }
-
-    // fn get_block_line<'a>(
-    //     &'a self,
-    //     line_index: usize,
-    //     line_offset: usize,
-    // ) -> Option<LineBlockStr<'a>> {
-    //     let block = self.get_block_from_line(line_index)?;
-    //     let block_index = self.block_indexs.get(block.block_num).unwrap();
-    //     let line_in_block_index = line_index - block_index.start_line_index;
-    //     let line_info = &block_index.lines_index[line_in_block_index];
-
-    //     let line_str1 = LineStr {
-    //         line_data: LineData::GapBytes(
-    //             block.data.text(line_info.block_start..line_info.block_end),
-    //         ),
-    //         line_file_start: block_index.file_start + line_info.block_start,
-    //         line_file_end: block_index.file_start + line_info.block_end,
-    //     };
-    //     if line_info.is_complete {
-    //         //是完整的行
-    //         return Some(LineBlockStr([line_str1, LineStr::empty()]));
-    //     } else {
-    //         //不完整行 需要合并一行的下部分 一行的下一个部分在 下一个 block中
-    //         //获取下一个block
-    //         let next_block_num = block.block_num + 1;
-    //         let next_block_index = self.block_indexs.get(next_block_num).unwrap();
-    //         if let Some(next_block) = self.blocks.get(next_block_num) {
-    //             if !next_block_index.lines_index.is_empty() {
-    //                 let next_line_info = &next_block_index.lines_index[0];
-    //                 let line_str2 = LineStr {
-    //                     line_data: LineData::GapBytes(
-    //                         next_block
-    //                             .data
-    //                             .text(next_line_info.block_start..next_line_info.block_end),
-    //                     ),
-    //                     line_file_start: next_block_index.file_start + next_line_info.block_start,
-    //                     line_file_end: next_block_index.file_start + next_line_info.block_end,
-    //                 };
-    //                 return Some(LineBlockStr([line_str1, line_str2]));
-    //             }
-    //         }
-    //     }
-    //     None
-    // }
 
     fn get_iter_rev(
         &mut self,
@@ -372,7 +329,6 @@ impl GapBlockText {
             cur_block_num: block_num,
             cur_block_line_index: block_line_index,
             cur_block_offset: block_offset,
-            // cur_line_index: line_index,
         })
     }
 
@@ -400,12 +356,10 @@ impl GapBlockText {
                             blocks: [self.blocks.get(0), self.blocks.get(1), self.blocks.get(2)],
                             block_indexs: &self.block_indexs,
                         });
-
-                        // cur_line_index: line_index,
                     } else {
                         //读取上一个块 把最后一个块弹出
                         let last_block_index = self.block_indexs.get(block.block_num - 1).unwrap();
-                        self.read_last_block(
+                        self.read_prev_block(
                             last_block_index.file_start,
                             block.block_num - 1,
                             Some(last_block_index.check_sum),
@@ -487,137 +441,7 @@ impl GapBlockText {
             cur_block_num: block_num,
             cur_block_line_index: block_line_index,
             cur_block_offset: block_offset,
-            // cur_line_index: line_index,
         })
-        // let mut j = None;
-        // //查找当前line_index是否在block列表中
-        // loop {
-        //     for (i, block) in self.blocks.iter().enumerate() {
-        //         let block_index = self.block_indexs.get(block.block_num).unwrap();
-        //         if block_num == block_index.block_num {
-        //             j = Some(i);
-        //             break;
-        //         }
-        //     }
-        //     if let Some(i) = j {
-        //         let block = self.blocks.get(i).unwrap();
-        //         if i == 0 {
-        //             if block.block_num == 0 {
-        //                 return Ok(GapBlockTextIter {
-        //                     blocks: Block3 {
-        //                         blocks: [
-        //                             self.blocks.get(0),
-        //                             self.blocks.get(1),
-        //                             self.blocks.get(2),
-        //                         ],
-        //                         block_indexs: &self.block_indexs,
-        //                     },
-        //                     cur_block_num: block_num,
-        //                     cur_block_line_index: block_line_index,
-        //                     cur_block_offset: block_offset,
-        //                     // cur_line_index: line_index,
-        //                 });
-        //             } else {
-        //                 //读取上一个块 把最后一个块弹出
-        //                 let last_block_index = self.block_indexs.get(block.block_num - 1).unwrap();
-        //                 self.read_last_block(
-        //                     last_block_index.file_start,
-        //                     block.block_num - 1,
-        //                     Some(last_block_index.check_sum),
-        //                 )?;
-        //                 return Ok(GapBlockTextIter {
-        //                     blocks: Block3 {
-        //                         blocks: [
-        //                             self.blocks.get(1),
-        //                             self.blocks.get(2),
-        //                             self.blocks.get(3),
-        //                         ],
-        //                         block_indexs: &self.block_indexs,
-        //                     },
-        //                     cur_block_num: block_num,
-        //                     cur_block_line_index: block_line_index,
-        //                     cur_block_offset: block_offset,
-        //                     //cur_line_index: line_index,
-        //                 });
-        //             }
-        //         } else if i == self.blocks.len() - 1 {
-        //             //最后一个块 弹出第一个快 取下一个块
-        //             //之前已经取过了
-        //             if let Some(next_block_index) = self.block_indexs.get(block.block_num + 1) {
-        //                 self.read_next_block(
-        //                     next_block_index.file_start,
-        //                     block.block_num + 1,
-        //                     Some(next_block_index.check_sum),
-        //                     false,
-        //                 )?;
-        //                 return Ok(GapBlockTextIter {
-        //                     blocks: Block3 {
-        //                         blocks: [
-        //                             self.blocks.get(i - 1),
-        //                             self.blocks.get(i),
-        //                             self.blocks.get(i + 1),
-        //                         ],
-        //                         block_indexs: &self.block_indexs,
-        //                     },
-        //                     cur_block_num: block_num,
-        //                     cur_block_line_index: block_line_index,
-        //                     cur_block_offset: block_offset,
-        //                 });
-        //             } else {
-        //                 //从磁盘上取
-        //                 let block_index = self.block_indexs.get(block.block_num).unwrap();
-        //                 let next_block_file_start = block_index.file_end();
-        //                 if next_block_file_start >= self.file_size {
-        //                     return Ok(GapBlockTextIter {
-        //                         blocks: Block3 {
-        //                             blocks: [self.blocks.get(i), None, None],
-        //                             block_indexs: &self.block_indexs,
-        //                         },
-        //                         cur_block_num: block_num,
-        //                         cur_block_line_index: block_line_index,
-        //                         cur_block_offset: block_offset,
-        //                     });
-        //                 }
-        //                 self.read_next_block(
-        //                     next_block_file_start,
-        //                     block.block_num + 1,
-        //                     None,
-        //                     true,
-        //                 )?;
-        //                 return Ok(GapBlockTextIter {
-        //                     blocks: Block3 {
-        //                         blocks: [
-        //                             self.blocks.get(i - 1),
-        //                             self.blocks.get(i),
-        //                             self.blocks.get(i + 1),
-        //                         ],
-        //                         block_indexs: &self.block_indexs,
-        //                     },
-        //                     cur_block_num: block_num,
-        //                     cur_block_line_index: block_line_index,
-        //                     cur_block_offset: block_offset,
-        //                 });
-        //             }
-        //         } else {
-        //             //不是最后一个块
-        //             return Ok(GapBlockTextIter {
-        //                 blocks: Block3 {
-        //                     blocks: [
-        //                         self.blocks.get(i),
-        //                         self.blocks.get(i + 1),
-        //                         self.blocks.get(i + 2),
-        //                     ],
-        //                     block_indexs: &self.block_indexs,
-        //                 },
-        //                 cur_block_num: block_num,
-        //                 cur_block_line_index: block_line_index,
-        //                 cur_block_offset: block_offset,
-        //             });
-        //         }
-        //     }
-        //     //如果找不到行数 则要重置 block 列表
-        //     self.reset_blocks(block_num)?;
-        // }
     }
 
     fn find_block_index(&self, block_num: usize) -> Option<&BlockIndex> {
@@ -625,6 +449,16 @@ impl GapBlockText {
         for block_index in self.block_indexs.iter() {
             if block_num == block_index.block_num {
                 return Some(block_index);
+            }
+        }
+        None
+    }
+
+    fn find_block(&self, file_start: usize) -> Option<&Block> {
+        // 未找到匹配块
+        for b in self.blocks.iter() {
+            if file_start == b.file_start {
+                return Some(b);
             }
         }
         None
@@ -655,12 +489,10 @@ impl GapBlockText {
                     &mut self.reader,
                     last_block_index.file_end(),
                     last_block_index.block_num + 1,
-                    //  last_line_size,
                 )?;
                 self.blocks = blocks;
                 self.block_indexs.extend(block_indexs);
                 for (_, block) in self.blocks.iter().enumerate() {
-                    //let block_index = self.block_indexs.get(block.block_num).unwrap();
                     if block_num == block.block_num {
                         break 'out;
                     }
@@ -748,13 +580,6 @@ impl Text for GapBlockText {
         let mut block_num = state.get_block_num();
         let mut block_line_index = state.get_block_line_index();
         let mut block_offset = state.get_block_offset();
-        // log::debug!(
-        //     "get_pre_line_state block_num:{} block_line_index:{} block_offset:{},line_num:{}",
-        //     block_num,
-        //     block_line_index,
-        //     block_offset,
-        //     state.get_line_num()
-        // );
         if block_line_index > 0 {
             let last_block_line_index = block_line_index.saturating_sub(1);
             let block = self.block_indexs.get(block_num)?;
@@ -882,6 +707,9 @@ impl Text for GapBlockText {
 }
 
 impl EditText for GapBlockText {
+    fn rollback() -> ChapResult<()> {
+        Ok(())
+    }
     fn backspace(
         &mut self,
         cursor_y: usize,
@@ -892,15 +720,17 @@ impl EditText for GapBlockText {
         let block_num = line_meta.get_block_num();
         let block_offset = line_meta.get_block_offset();
         let block_line_index = line_meta.get_block_line_index();
+        log::debug!(
+            "backspace merge line_meta.line_offset :{}, line block_num:{} block_line_index:{} block_offset:{} bytes_cursor:{}: count:{}",
+            line_meta.line_offset,
+            block_num,
+            block_line_index,
+            block_offset,
+            bytes_cursor,
+            count,
+        );
         //合并行
         if line_meta.line_offset == 0 && bytes_cursor == 0 {
-            log::debug!(
-                "backspace merge line block_num:{} block_line_index:{} block_offset:{} bytes_cursor:{}",
-                block_num,
-                block_line_index,
-                block_offset,
-                bytes_cursor
-            );
             //在行首 需要合并上一行
             if block_offset > 0 {
                 let block = self
@@ -956,6 +786,9 @@ impl EditText for GapBlockText {
                     b.block_end = b.block_end.saturating_sub(count);
                 }
             }
+            // if line_meta.line_offset == 0 && bytes_cursor == 1 {
+            //     self.insert(cursor_y, 0, line_meta, '\n');
+            // }
         }
     }
 
@@ -1018,8 +851,38 @@ impl EditText for GapBlockText {
         }
     }
 
-    fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
-        todo!()
+    fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
+        let mut buf = [0u8; BLOCK_SIZE];
+        let mut file_start = 0;
+        let file = std::fs::File::create(backup_name).unwrap();
+        let mut w = std::io::BufWriter::new(&file);
+        loop {
+            if self.cache.contains_key(&file_start) {
+                let block = self.cache.get(&file_start).unwrap();
+                let txt = block.data.text(..);
+                let buf = txt.as_slice();
+                w.write(buf.0)?;
+                w.write(buf.1)?;
+            } else {
+                let block = self.find_block(file_start);
+                if let Some(b) = block {
+                    let txt = b.data.text(..);
+                    let buf = txt.as_slice();
+                    w.write(buf.0)?;
+                    w.write(buf.1)?;
+                } else {
+                    self.reader.seek(SeekFrom::Start(file_start as u64))?;
+                    let n = self.reader.read(&mut buf)?;
+                    if n == 0 {
+                        break;
+                    }
+                    w.write(&buf)?;
+                }
+            }
+            file_start += BLOCK_SIZE;
+        }
+        w.flush()?;
+        Ok(())
     }
 }
 
@@ -1119,6 +982,7 @@ impl<'a> Iterator for GapBlockTextIterRev<'a> {
         let (ret, _) = self
             .blocks
             .get_line(self.cur_block_num, self.cur_block_offset)?;
+        log::debug!("LineBlockStr :{}", ret);
         Some(ret)
     }
 }
@@ -1137,6 +1001,7 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
         let (ret, block_index) = self
             .blocks
             .get_line(self.cur_block_num, self.cur_block_offset)?;
+        //log::debug!("LineBlockStr :{}", ret);
         self.cur_block_line_index += 1;
         self.cur_block_offset += ret.text_len();
         //查看是否大于当前块

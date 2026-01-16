@@ -22,8 +22,10 @@ use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::fs;
 use std::ops::Bound;
 use std::path::Path;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use unicode_width::UnicodeWidthChar;
 use utf8_iter::Utf8CharIndices;
@@ -433,6 +435,31 @@ pub enum LineData<'a> {
     GapBlockBytes(GapBytes<'a>, GapBytes<'a>),
 }
 
+impl Debug for LineData<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LineData::Own(v) => write!(f, "{}", String::from_utf8_lossy(v)),
+            LineData::Bytes(v) => write!(f, "{}", String::from_utf8_lossy(v)),
+            LineData::GapBytes(v) => write!(
+                f,
+                "{}{}",
+                v.as_str_parts().0.as_str(),
+                v.as_str_parts().1.as_str()
+            ),
+            LineData::GapBlockBytes(v1, v2) => {
+                write!(
+                    f,
+                    "{}{}{}{}",
+                    v1.as_str_parts().0.as_str(),
+                    v1.as_str_parts().1.as_str(),
+                    v2.as_str_parts().0.as_str(),
+                    v2.as_str_parts().1.as_str()
+                )
+            }
+        }
+    }
+}
+
 impl Display for LineData<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -486,12 +513,13 @@ impl LineDefault for usize {
     }
 }
 
-pub struct LineParts<T: LineDefault> {
+#[derive(Debug, Clone)]
+pub struct LineParts<T: LineDefault + Debug> {
     pub(crate) data: [T; 4],
     pub(crate) length: usize,
 }
 
-impl<T: LineDefault> LineParts<T> {
+impl<T: LineDefault + Debug> LineParts<T> {
     pub(crate) fn empty() -> Self {
         LineParts {
             data: [T::empty(), T::empty(), T::empty(), T::empty()],
@@ -722,6 +750,7 @@ impl<'a> LineStr<'a> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct BlockLineData<'a> {
     data: LineData<'a>,
     block_num: usize,        //块编号
@@ -807,7 +836,7 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
 
     fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> Self {
         let len1 = self.get_len1();
-        let len2 = self.get_len2();
+        //  let len2 = self.get_len2();
         let total_len = self.text_len();
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
@@ -819,7 +848,7 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
             std::ops::Bound::Excluded(&end) => end,
             std::ops::Bound::Unbounded => self.text_len(),
         };
-        if start > end || end > total_len {
+        if start == end || start > end || end > total_len {
             return LineBlockStr(None, None);
         }
 
@@ -827,17 +856,26 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
         let (start1, end1, start2, end2) = if end <= len1 {
             // 范围完全在第一个块内
             (start, end, 0, 0)
-        } else if start < len1 {
+        } else if start < len1 && end > len1 {
             // 范围跨越两个块
             (start, len1, 0, end - len1)
         } else {
             // 范围完全在第二个块内
             (0, 0, start - len1, end - len1)
         };
+        // log::debug!(
+        //     "len1:{}, start1: {}, end1: {}, start2: {}, end2: {}",
+        //     len1,
+        //     start1,
+        //     end1,
+        //     start2,
+        //     end2
+        // );
         // 定义处理块的匿名函数（闭包）
         let process_block = |block: Option<&BlockLineData<'a>>,
                              range_start: usize,
-                             range_end: usize|
+                             range_end: usize,
+                             prev_offset: usize|
          -> Option<BlockLineData<'a>> {
             if range_start >= range_end {
                 return None;
@@ -850,7 +888,7 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
                         data: LineData::GapBytes(data),
                         block_num: block_line_data.block_num,
                         block_line_index: block_line_data.block_line_index,
-                        block_offset: block_line_data.block_offset + range_start,
+                        block_offset: block_line_data.block_offset + prev_offset + range_start,
                     })
                 }
                 _ => None,
@@ -858,8 +896,8 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
         };
 
         // 使用闭包处理两个块
-        let new_block1 = process_block(self.0.as_ref(), start1, end1);
-        let new_block2 = process_block(self.1.as_ref(), start2, end2);
+        let new_block1 = process_block(self.0.as_ref(), start1, end1, 0);
+        let new_block2 = process_block(self.1.as_ref(), start2, end2, len1);
 
         LineBlockStr(new_block1, new_block2)
     }
@@ -1208,7 +1246,37 @@ pub(crate) trait EditText {
         count: usize,
         line_meta: &LineState,
     );
-    fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()>;
+
+    fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()>;
+
+    fn save_file<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
+        let backup_name = Self::get_backup_name(&filepath)?;
+        self.make_backup(&backup_name)?;
+        Self::rename_backup(&filepath, &backup_name)?;
+        Ok(())
+    }
+
+    fn rename_backup<P1: AsRef<Path>, P2: AsRef<Path>>(
+        filepath: P1,
+        backup_name: P2,
+    ) -> ChapResult<()> {
+        fs::rename(backup_name, filepath)?;
+        Ok(())
+    }
+
+    fn get_backup_name<P: AsRef<Path>>(filepath: P) -> ChapResult<PathBuf> {
+        let mut path = filepath.as_ref().to_path_buf();
+        if let Some(file_name) = path.file_name() {
+            path.set_file_name(format!(".{}.{}", file_name.to_string_lossy(), "chap"));
+        }
+        Ok(path)
+    }
+
+    fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
+        self.save_file(filepath)
+    }
+
+    fn rollback() -> ChapResult<()>;
 }
 
 impl LineState {
@@ -1802,10 +1870,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
         &'a self,
         line_state: &LineState,
         line_count: usize,
-        // block_num: usize,
-        // block_offset: usize,
-        // start_line_num: usize,
-        // start_page_num: usize,
         skip_line: usize,
         is_rev: bool,
         f: &mut F,
@@ -2233,7 +2297,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 }
             }
         } else {
-            //line_str.text(line_start..)
             Self::get_last_sort_warp_line(
                 line_str,
                 line_index,
@@ -2286,6 +2349,12 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 if *line_num >= skip_line {
                     *cur_line_count += 1;
                     let txt = line_txt.text(line_offset..end);
+                    log::debug!(
+                        "line_offset:{},end:{},txt:{}",
+                        line_offset,
+                        end,
+                        txt.get_data()
+                    );
                     let len: usize = txt.text_len();
                     let meta_line_offset = line_start + line_offset;
                     f(

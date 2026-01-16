@@ -610,11 +610,11 @@ impl<'a> Iterator for HexTextIter<'a> {
                 }
                 let buffer = c.text(self.line_file_start..);
                 let line_start = self.line_file_start;
-                //长度大于 buffer 说明当前chunk 不足以显示一行
+                // 长度大于 buffer 说明当前chunk 不足以显示一行
                 if self.with > buffer.len() {
                     let len = buffer.len();
                     if i == 0 {
-                        //从第一个块读取完毕
+                        // 从第一个块读取完毕
                         if let Some(c1) = self.hex_chunk[1] {
                             let mut v: Vec<u8> = Vec::with_capacity(self.with);
                             v.extend_from_slice(buffer.left());

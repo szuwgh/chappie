@@ -1,7 +1,7 @@
 use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
-use crate::textwarp::LineState;
 use crate::textwarp::LineParts;
+use crate::textwarp::LineState;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -14,36 +14,54 @@ pub(crate) struct EditUI<'a> {
     line_spans: Vec<Span<'a>>,
 }
 
+trait GetNonControlLen {
+    fn get_non_control_len(&self) -> usize;
+}
+
+impl GetNonControlLen for &[u8] {
+    fn get_non_control_len(&self) -> usize {
+        let mut len = self.len();
+        // for c in self.iter().rev() {
+        //     if *c == b'\n' {
+        //         len -= 1; // 减去控制字符的字节长度
+        //     } else {
+        //         break; // 遇到非控制字符时停止
+        //     }
+        // }
+        len
+    }
+}
+
 // 获取字符串中前 n 个非控制字符的位置，返回前三部分字符串及最后一个非控制字符的字节大小
 fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usize) {
     let mut count = 0;
     let mut start_idx = None;
     let mut end_idx = None;
     let mut last_start_idx = None;
-
-    for (idx, ch) in s.char_indices() {
-        if ch.is_control() {
-            continue;
-        }
+    let slen = s.get_non_control_len();
+    for (idx, (byte_index, ch)) in s.char_indices().enumerate() {
+        // if ch.is_control() {
+        //     continue;
+        // }
         if n > 0 && count == n - 1 {
-            last_start_idx = Some(idx);
+            //8
+            last_start_idx = Some(byte_index);
         }
         if count == n {
             // 第 n 个非控制字符
-            start_idx = Some(idx);
+            start_idx = Some(byte_index);
         }
         if count == n + 1 {
             // 第 n+1 个非控制字符
-            end_idx = Some(idx);
+            end_idx = Some(byte_index);
             break;
         }
         count += 1;
     }
-
     // 如果 never set, 默认到末尾
     let last_start = last_start_idx.unwrap_or_else(|| 0);
-    let start = start_idx.unwrap_or_else(|| s.len());
-    let end = end_idx.unwrap_or_else(|| s.len());
+    let start = start_idx.unwrap_or_else(|| slen);
+    let end = end_idx.unwrap_or_else(|| slen);
 
     (&s[..start], &s[start..end], &s[end..], start - last_start)
 }
@@ -61,42 +79,56 @@ pub(crate) fn get_edit_content<'a>(
     assert!(txts.len() == line_meta.len());
     let mut lines = Vec::with_capacity(line_meta.len());
     let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
-    let mut last_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
+    let mut prev_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
     for (i, txt) in txts.iter().enumerate() {
         //一行数据可能会分成很多个块
+        let s = txt.as_str();
+        //log::debug!("line {} content:{:?}", i, s);
         let t = txt.text(column_offset..);
         let parts = t.as_parts();
         if cursor_y == i {
-            let parts_str = parts
-                .iter()
-                .map(|s| String::from_utf8_lossy(*s).to_string())
-                .collect::<Vec<String>>();
-            //log::debug!("get_edit_content: line {}, parts: {:?}", i, parts_str);
+            //取上一行的最后一个字符char 大小
+            let mut prev_line_last_char_size = 0;
+            if cursor_x == 0 {
+                if i > 0 {
+                    parts.iter().rev().for_each(|s| {
+                        if s.len() > 0 {
+                            (*s).char_indices().rev().for_each(|(_, ch)| {
+                                if !ch.is_control() {
+                                    prev_line_last_char_size = ch.len_utf8();
+                                    return;
+                                }
+                            });
+                            return;
+                        }
+                    });
+                }
+            }
             //计算part数组叠加的字符数量
             let mut char_count = LineParts::<usize>::empty();
             let mut char_curosr_index = 0; // 判断光标在那个 part中
-            let mut char_sum_count = 0;
-            for (idx, s) in parts.iter().enumerate() {
+
+            for (_, s) in parts.iter().enumerate() {
                 let count = (*s).chars().count();
-                char_sum_count += count;
-                char_count.append(char_sum_count);
+                char_count.append(count);
             }
+            log::debug!("char_count parts:{:?}", char_count.as_parts());
+            let mut char_sum_count = 0;
             for (idx, s) in char_count.as_parts().iter().enumerate() {
-                if cursor_x < *s {
+                char_sum_count += *s;
+                if char_sum_count > 0 && cursor_x <= char_sum_count.saturating_sub(1) {
                     char_curosr_index = idx;
                     break;
                 }
             }
             let (spans, byte_pos, last_csz) =
                 build_cursor_line(parts, cursor_x, char_count.as_parts(), char_curosr_index);
-            //let char_count1 = str_left.chars().count();
-            // let (spans, byte_pos, last_csz) = if cursor_x < char_count1 {
-            //     build_cursor_line(parts, cursor_x, char_count1, true)
-            // } else {
-            //     build_cursor_line(parts, cursor_x, char_count1, false)
-            // };
             byte_cursor = byte_pos;
-            last_char_bytes_size = last_csz;
+            if cursor_x > 0 {
+                prev_char_bytes_size = last_csz;
+            } else {
+                prev_char_bytes_size = prev_line_last_char_size;
+            }
             lines.push(Line::from(spans));
         } else {
             let spans = parts
@@ -109,7 +141,7 @@ pub(crate) fn get_edit_content<'a>(
     append_padding_lines(&mut lines, cursor_y, cursor_x, line_meta.len());
     let nav_text = build_nav_text(line_meta, height);
     let text = Text::from(lines);
-    (nav_text, text, byte_cursor, last_char_bytes_size)
+    (nav_text, text, byte_cursor, prev_char_bytes_size)
 }
 
 fn build_cursor_line<'a>(
@@ -122,30 +154,23 @@ fn build_cursor_line<'a>(
     let mut spans = Vec::new();
     let mut last_char_bytes_size: usize = 0;
     let byte_cursor;
-    // log::debug!(
-    //     "build_cursor_line: cursor_x: {}, char_curosr_index: {}, char_count: {:?}",
-    //     cursor_x,
-    //     char_curosr_index,
-    //     char_count
-    // );
+    for (i, x) in str_parts.iter().enumerate() {
+        log::debug!("i:{} | part content:{:?}", i, String::from_utf8_lossy(x));
+    }
     let (a, b, c) = if char_curosr_index == 0 {
         let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(str_parts[0], cursor_x);
         last_char_bytes_size = last_csz;
         (a, b, c)
     } else {
-        //let mut sum_count = 0;
-        // for i in 0..char_curosr_index {
-        //     sum_count += char_count[i];
-        // }
         let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(
             str_parts[char_curosr_index],
-            cursor_x.saturating_sub(char_count[char_curosr_index - 1]),
+            cursor_x.saturating_sub(char_count[..char_curosr_index].iter().sum()),
         );
         //如果上一个字符大小是0则光标可能在第一个字符那里
         if last_csz == 0 {
             let (_, _, _, sz) = n_chars_skip_control_mem_opt(
                 str_parts[char_curosr_index - 1],
-                char_count[char_curosr_index - 1],
+                char_count[..char_curosr_index].iter().sum(),
             );
             last_char_bytes_size = sz;
         } else {
@@ -153,21 +178,11 @@ fn build_cursor_line<'a>(
         }
         (a, b, c)
     };
-    // log::debug!(
-    //     "build_cursor_line: last_char_bytes_size:{}, a: {:?}, b: {:?}, c: {:?}",
-    //     last_char_bytes_size,
-    //     String::from_utf8_lossy(a),
-    //     String::from_utf8_lossy(b),
-    //     String::from_utf8_lossy(c),
-    // );
     if b.len() > 0 {
+        log::debug!("highlight char found:{:?}", b);
         byte_cursor = if char_curosr_index == 0 {
-            a.len()
+            a.get_non_control_len()
         } else {
-            // let mut byte_pos = 0;
-            // for i in 0..char_curosr_index {
-            //     byte_pos += str_parts[i].len();
-            // }
             for j in 0..char_curosr_index {
                 spans.push(Span::raw(String::from_utf8_lossy(str_parts[j])));
             }
@@ -175,64 +190,46 @@ fn build_cursor_line<'a>(
                 .iter()
                 .filter(|s| !s.is_empty())
                 .fold(0, |acc, s| acc + s.len())
-                + a.len()
+                + a.get_non_control_len()
+        };
+        let (display, color) = if b == b"\n" {
+            (" ", Color::LightBlue)
+        } else {
+            (str::from_utf8(b).unwrap_or(""), Color::LightRed)
         };
 
-        spans.push(Span::raw(String::from_utf8_lossy(a)));
-        spans.push(Span::styled(
-            String::from_utf8_lossy(b),
-            Style::default().bg(Color::LightRed),
-        ));
-        spans.push(Span::raw(String::from_utf8_lossy(c)));
+        spans.push(Span::raw(str::from_utf8(a).unwrap_or("")));
+        spans.push(Span::styled(display, Style::default().bg(color)));
+        spans.push(Span::raw(str::from_utf8(c).unwrap_or("")));
         for j in (char_curosr_index + 1)..str_parts.len() {
-            spans.push(Span::raw(String::from_utf8_lossy(str_parts[j])));
+            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("")));
         }
-        // byte_cursor = if !is_str1 {
-        //     spans.push(Span::raw(str_left));
-        //     a.len() + str_left.len()
-        // } else {
-        //     a.len()
-        // };
-        // spans.push(Span::raw(a.to_string()));
-        // spans.push(Span::styled(
-        //     b.to_string(),
-        //     Style::default().bg(Color::LightRed),
-        // ));
-        // spans.push(Span::raw(c.to_string()));
     } else {
         byte_cursor = if char_curosr_index == 0 {
-            str_parts[0].len()
+            str_parts[0].get_non_control_len()
         } else {
-            // let mut byte_pos = 0;
-            // for i in 0..str_parts.len() {
-            //     byte_pos += str_parts[i].len();
-            // }
             str_parts[..char_curosr_index]
                 .iter()
                 .filter(|s| !s.is_empty())
                 .fold(0, |acc, s| acc + s.len())
+                + str_parts[char_curosr_index].get_non_control_len()
         };
         for j in 0..str_parts.len() {
-            spans.push(Span::raw(String::from_utf8_lossy(str_parts[j])));
+            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("")));
         }
-        let diff = cursor_x.saturating_sub(char_count.last().copied().unwrap_or(0));
+        let diff = cursor_x.saturating_sub(char_count.iter().sum());
         let padding = " ".repeat(diff);
         spans.push(Span::raw(padding));
         // 在填充后显示高亮的光标
         spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
-        // byte_cursor = if !is_str1 {
-        //     str_left.len() + str_right.len()
-        // } else {
-        //     str_left.len()
-        // };
-        // spans.push(Span::raw(str_left));
-        // spans.push(Span::raw(str_right));
-        // let diff = cursor_x.saturating_sub(str_left.len() + str_right.len());
-        // let padding = " ".repeat(diff);
-        // spans.push(Span::raw(padding));
-        // // 在填充后显示高亮的光标
-        // spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
     }
+    log::debug!(
+        "cursor_x:{}, byte_cursor:{}, last_char_bytes_size:{},char_curosr_index:{}",
+        cursor_x,
+        byte_cursor,
+        last_char_bytes_size,
+        char_curosr_index
+    );
     (spans, byte_cursor, last_char_bytes_size)
 }
 

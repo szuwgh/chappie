@@ -36,20 +36,23 @@ impl<T> RingVec<T> {
         Some(item)
     }
 
-    pub(crate) fn push_front(&mut self, item: T) {
+    pub(crate) fn push_front(&mut self, item: T) -> Option<T> {
         if self.cache.len() < self.size {
             self.cache.insert(self.start, item);
+            None
         } else {
             if self.start == 0 {
                 self.start = self.size - 1;
             } else {
                 self.start = (self.start - 1) % self.size;
             }
-            self.cache[self.start] = item;
+            // 替换并返回旧值
+            let old = std::mem::replace(&mut self.cache[self.start], item);
+            Some(old)
         }
     }
 
-    pub(crate) fn push(&mut self, item: T) {
+    pub(crate) fn push(&mut self, item: T) -> Option<T> {
         if self.cache.len() < self.size {
             if self.start == 0 {
                 self.cache.push(item);
@@ -58,9 +61,11 @@ impl<T> RingVec<T> {
                 self.cache.insert(end, item);
                 self.start = (self.start + 1) % self.cache.len();
             }
+            None
         } else {
-            self.cache[self.start] = item;
+            let old = std::mem::replace(&mut self.cache[self.start], item);
             self.start = (self.start + 1) % self.size;
+            Some(old)
         }
     }
 

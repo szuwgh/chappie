@@ -15,8 +15,8 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
-use crate::textwarp::LineState;
 use crate::textwarp::EditTextWarp;
+use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextSelect;
@@ -1123,6 +1123,7 @@ impl ChapTui {
                     cursor_y,
                     cursor_x,
                 );
+                log::debug!("last_char_bytes_size:{}", last_char_bytes_size);
                 self.bytes_cursor = byte_cursor;
                 self.bytes_cursor_size = last_char_bytes_size;
                 let text_para = Paragraph::new(visible_content)

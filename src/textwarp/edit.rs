@@ -96,20 +96,6 @@ impl GapText {
         }
         Ok(path)
     }
-
-    fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
-        // 备份文件
-        let file = std::fs::File::create(backup_name).unwrap();
-        let mut w = std::io::BufWriter::new(&file);
-        for line in self.borrow_lines_mut().iter_mut() {
-            let txt = line.text(..);
-            w.write(txt.left()).unwrap();
-            w.write(txt.right()).unwrap();
-            w.write(b"\n").unwrap();
-        }
-        w.flush()?;
-        Ok(())
-    }
 }
 
 impl TextIndex for GapText {
@@ -187,6 +173,9 @@ impl Text for GapText {
 }
 
 impl EditText for GapText {
+    fn rollback() -> ChapResult<()> {
+        Ok(())
+    }
     fn backspace(
         &mut self,
         cursor_y: usize,
@@ -251,7 +240,7 @@ impl EditText for GapText {
                 self.borrow_lines_mut()
                     .insert(line_index + 1, new_gap_buffer);
             } else {
-                let b = &line_txt.text((line_offset..));
+                let b = &line_txt.text(line_offset..);
                 let mut new_gap_buffer = GapBuffer::new(b.len() + 5);
                 new_gap_buffer.insert(0, b.left());
                 new_gap_buffer.insert(new_gap_buffer.text_len(), b.left());
@@ -269,8 +258,18 @@ impl EditText for GapText {
         }
     }
 
-    fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
-        self.save_file(filepath)
+    fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
+        // 备份文件
+        let file = std::fs::File::create(backup_name).unwrap();
+        let mut w = std::io::BufWriter::new(&file);
+        for line in self.borrow_lines_mut().iter_mut() {
+            let txt = line.text(..);
+            w.write(txt.left()).unwrap();
+            w.write(txt.right()).unwrap();
+            w.write(b"\n").unwrap();
+        }
+        w.flush()?;
+        Ok(())
     }
 }
 
