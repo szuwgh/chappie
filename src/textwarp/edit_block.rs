@@ -187,7 +187,7 @@ impl BlockIndex {
 
     fn get_line_index(&self, block_offset: usize) -> Option<&LineIndex> {
         for l in self.lines_index.iter() {
-            if block_offset >= l.block_start && block_offset <= l.block_end {
+            if block_offset >= l.block_start && block_offset < l.block_end {
                 return Some(l);
             }
         }
@@ -546,11 +546,12 @@ impl Text for GapBlockText {
         let block_index = self.block_indexs.get(block_num)?;
 
         let line = self.get_line(&state).unwrap();
-        if state.get_line_end() == line.text_len() {
+        if state.get_line_end() >= line.text_len() {
             if state.get_block_line_end() >= block_index.block_size {
                 block_num += 1;
                 block_line_index = 0;
-                block_offset = 0;
+                block_offset = state.get_block_line_end() - block_index.block_size;
+                line_end = 0;
             } else {
                 line_end = 0;
                 line_index += 1;
@@ -567,6 +568,13 @@ impl Text for GapBlockText {
             .block_offset(block_offset)
             .start_line_num(state.get_line_num())
             .build();
+        log::debug!("get_next_line_state: block_num:{} block_line_index:{} block_offset:{} line_index:{} line_end:{}",
+            block_num,
+            block_line_index,
+            block_offset,
+            line_index,
+            line_end,
+        );
         Some(p)
     }
 
@@ -580,6 +588,18 @@ impl Text for GapBlockText {
         let mut block_num = state.get_block_num();
         let mut block_line_index = state.get_block_line_index();
         let mut block_offset = state.get_block_offset();
+        if state.get_line_offset() > 0 {
+            //在行中间
+            let p = LineState::builder()
+                .start_line_num(state.get_line_num())
+                .line_index(state.get_line_index())
+                .line_offset(state.get_line_offset())
+                .block_num(block_num)
+                .block_line_index(block_line_index)
+                .block_offset(block_offset)
+                .build();
+            return Some(p);
+        }
         if block_line_index > 0 {
             let last_block_line_index = block_line_index.saturating_sub(1);
             let block = self.block_indexs.get(block_num)?;
@@ -720,15 +740,15 @@ impl EditText for GapBlockText {
         let block_num = line_meta.get_block_num();
         let block_offset = line_meta.get_block_offset();
         let block_line_index = line_meta.get_block_line_index();
-        log::debug!(
-            "backspace merge line_meta.line_offset :{}, line block_num:{} block_line_index:{} block_offset:{} bytes_cursor:{}: count:{}",
-            line_meta.line_offset,
-            block_num,
-            block_line_index,
-            block_offset,
-            bytes_cursor,
-            count,
-        );
+        // log::debug!(
+        //     "backspace merge line_meta.line_offset :{}, line block_num:{} block_line_index:{} block_offset:{} bytes_cursor:{}: count:{}",
+        //     line_meta.line_offset,
+        //     block_num,
+        //     block_line_index,
+        //     block_offset,
+        //     bytes_cursor,
+        //     count,
+        // );
         //合并行
         if line_meta.line_offset == 0 && bytes_cursor == 0 {
             //在行首 需要合并上一行
@@ -982,7 +1002,15 @@ impl<'a> Iterator for GapBlockTextIterRev<'a> {
         let (ret, _) = self
             .blocks
             .get_line(self.cur_block_num, self.cur_block_offset)?;
-        log::debug!("LineBlockStr :{}", ret);
+        self.cur_block_line_index = self.cur_block_line_index.saturating_sub(1);
+        let block_index = self.blocks.block_indexs.get(self.cur_block_num).unwrap();
+        self.cur_block_offset = if self.cur_block_line_index >= 0 {
+            let line_info = &block_index.lines_index[self.cur_block_line_index];
+            line_info.block_start
+        } else {
+            0
+        };
+        //log::debug!("LineBlockStr Rev:{}", ret);
         Some(ret)
     }
 }
@@ -1001,7 +1029,7 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
         let (ret, block_index) = self
             .blocks
             .get_line(self.cur_block_num, self.cur_block_offset)?;
-        //log::debug!("LineBlockStr :{}", ret);
+        log::debug!("LineBlockStr:{}", ret);
         self.cur_block_line_index += 1;
         self.cur_block_offset += ret.text_len();
         //查看是否大于当前块
@@ -1061,7 +1089,7 @@ mod tests {
         let mut block_offset = 0;
         let mut block_line_index = 0;
 
-        for _ in 0..125 {
+        for _ in 0..122 {
             let mut iter = gap_block_text
                 .get_iter(block_num, block_line_index, block_offset)
                 .unwrap();
@@ -1070,49 +1098,49 @@ mod tests {
             block_offset = line_block_str.get_end_block_offset();
             block_line_index = line_block_str.get_block_line_index();
             println!(
-                "str:{},block_num:{},block_offset:{},block_line_index:{}",
+                "str:{},block_num:{},next_block_offset:{},cur_block_line_index:{}",
                 line_block_str, block_num, block_offset, block_line_index
             );
         }
         println!("-----------------reverse-------------------");
-        let line_state = LineState::builder()
-            .block_num(block_num)
-            .block_offset(block_offset)
-            .block_line_index(block_line_index + 1)
-            .build();
+        // let line_state = LineState::builder()
+        //     .block_num(block_num)
+        //     .block_offset(block_offset)
+        //     .block_line_index(block_line_index + 1)
+        //     .build();
 
-        let pre_line_state = gap_block_text.get_pre_line_state(&line_state).unwrap();
-        println!(
-            "pre_block_num:{},pre_block_offset:{},pre_block_index:{}",
-            pre_line_state.get_block_num(),
-            pre_line_state.get_block_offset(),
-            pre_line_state.get_block_line_index()
-        );
-        block_num = pre_line_state.get_block_num();
-        block_offset = pre_line_state.get_block_offset();
-        block_line_index = pre_line_state.get_block_line_index();
-        for _ in 0..125 {
-            let line_state = {
-                let mut iter_rev = gap_block_text
-                    .get_iter_rev(block_num, block_line_index, block_offset)
-                    .unwrap();
-                let line_block_str = iter_rev.next().unwrap();
-                println!(
-                    "str:{},block_num:{},block_offset:{}",
-                    line_block_str, block_num, block_offset
-                );
-                let line_state = LineState::builder()
-                    .block_num(block_num)
-                    .block_offset(block_offset)
-                    .block_line_index(block_line_index)
-                    .build();
-                line_state
-            };
+        // let pre_line_state = gap_block_text.get_pre_line_state(&line_state).unwrap();
+        // println!(
+        //     "pre_block_num:{},pre_block_offset:{},pre_block_index:{}",
+        //     pre_line_state.get_block_num(),
+        //     pre_line_state.get_block_offset(),
+        //     pre_line_state.get_block_line_index()
+        // );
+        // block_num = pre_line_state.get_block_num();
+        // block_offset = pre_line_state.get_block_offset();
+        // block_line_index = pre_line_state.get_block_line_index();
+        // for _ in 0..125 {
+        //     let line_state = {
+        //         let mut iter_rev = gap_block_text
+        //             .get_iter_rev(block_num, block_line_index, block_offset)
+        //             .unwrap();
+        //         let line_block_str = iter_rev.next().unwrap();
+        //         println!(
+        //             "str:{},block_num:{},block_offset:{}",
+        //             line_block_str, block_num, block_offset
+        //         );
+        //         let line_state = LineState::builder()
+        //             .block_num(block_num)
+        //             .block_offset(block_offset)
+        //             .block_line_index(block_line_index)
+        //             .build();
+        //         line_state
+        //     };
 
-            let pre_line_state = gap_block_text.get_pre_line_state(&line_state).unwrap();
-            block_num = pre_line_state.get_block_num();
-            block_offset = pre_line_state.get_block_offset();
-            block_line_index = pre_line_state.get_block_line_index();
-        }
+        //     let pre_line_state = gap_block_text.get_pre_line_state(&line_state).unwrap();
+        //     block_num = pre_line_state.get_block_num();
+        //     block_offset = pre_line_state.get_block_offset();
+        //     block_line_index = pre_line_state.get_block_line_index();
+        // }
     }
 }

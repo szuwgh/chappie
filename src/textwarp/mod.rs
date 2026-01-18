@@ -423,7 +423,7 @@ impl DoubleEndedIterator for LineDataCharIter<'_> {
         match self {
             LineDataCharIter::CharIter(iter) => iter.next_back(),
             LineDataCharIter::GapCharIter(iter) => iter.next_back(),
-            LineDataCharIter::GapBlockCharIter(iter) => todo!(),
+            LineDataCharIter::GapBlockCharIter(iter) => iter.next_back(),
         }
     }
 }
@@ -1644,6 +1644,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
 
         let pre_line_state = self.borrow_lines_mut().get_pre_line_state(meta).unwrap();
+        // log::debug!("block_offset:{}", pre_line_state.get_block_offset());
         // let mut line_index = meta.get_line_index();
         // let mut line_offset = meta.get_line_offset();
         // let mut line_file_start = meta.get_line_file_start();
@@ -2218,7 +2219,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 Either::Right(data.char_indices().enumerate()) //要正向迭代 取出最后一行的数据 才是正确的
             };
 
-            for (i, (byte_index, ch)) in iter {
+            for (i, (_, ch)) in iter {
                 let ch_width = ch.width().unwrap_or(0);
                 //检查是否超过屏幕宽度
                 if current_width + ch_width > with {
@@ -2349,12 +2350,12 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 if *line_num >= skip_line {
                     *cur_line_count += 1;
                     let txt = line_txt.text(line_offset..end);
-                    log::debug!(
-                        "line_offset:{},end:{},txt:{}",
-                        line_offset,
-                        end,
-                        txt.get_data()
-                    );
+                    // log::debug!(
+                    //     "line_offset:{},end:{},txt:{}",
+                    //     line_offset,
+                    //     end,
+                    //     txt.get_data()
+                    // );
                     let len: usize = txt.text_len();
                     let meta_line_offset = line_start + line_offset;
                     f(

@@ -128,6 +128,16 @@ impl Iterator for GapBytesBlockCharIter<'_> {
     }
 }
 
+impl DoubleEndedIterator for GapBytesBlockCharIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if let Some((index, byte)) = self.right.next_back() {
+            Some((index, byte))
+        } else {
+            self.left.next_back()
+        }
+    }
+}
+
 pub(crate) struct GapBytesCharIter<'a> {
     left: Utf8CharIndices<'a>,
     right: Utf8CharIndices<'a>,
