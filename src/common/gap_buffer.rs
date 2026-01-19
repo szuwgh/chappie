@@ -105,14 +105,20 @@ impl<'a> GapBytes<'a> {
 pub(crate) struct GapBytesBlockCharIter<'a> {
     left: GapBytesCharIter<'a>,
     right: GapBytesCharIter<'a>,
+    left_bytes: usize,
 }
 
 impl<'a> GapBytesBlockCharIter<'a> {
     pub(crate) fn new(
         left: GapBytesCharIter<'a>,
         right: GapBytesCharIter<'a>,
+        left_bytes: usize,
     ) -> GapBytesBlockCharIter<'a> {
-        GapBytesBlockCharIter { left, right }
+        GapBytesBlockCharIter {
+            left,
+            right,
+            left_bytes,
+        }
     }
 }
 
@@ -123,7 +129,9 @@ impl Iterator for GapBytesBlockCharIter<'_> {
         if let Some((index, byte)) = self.left.next() {
             Some((index, byte))
         } else {
-            self.right.next()
+            self.right
+                .next()
+                .map(|(index, byte)| (index + self.left_bytes, byte))
         }
     }
 }
@@ -131,7 +139,7 @@ impl Iterator for GapBytesBlockCharIter<'_> {
 impl DoubleEndedIterator for GapBytesBlockCharIter<'_> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if let Some((index, byte)) = self.right.next_back() {
-            Some((index, byte))
+            Some((index + self.left_bytes, byte))
         } else {
             self.left.next_back()
         }
@@ -228,6 +236,11 @@ impl GapBuffer {
             gap_start: bytes.len(),
             gap_end: size,
         }
+    }
+
+    pub(crate) fn as_continuous(&mut self) -> &[u8] {
+        self.move_gap_to_last();
+        &self.buffer[..self.gap_start]
     }
 
     pub(crate) fn new(size: usize) -> GapBuffer {

@@ -627,7 +627,7 @@ impl<'a> LineData<'a> {
             LineData::Bytes(v) => LineDataCharIter::CharIter(v.char_indices()),
             LineData::GapBytes(v) => LineDataCharIter::GapCharIter(v.char_indices()),
             LineData::GapBlockBytes(v1, v2) => LineDataCharIter::GapBlockCharIter(
-                GapBytesBlockCharIter::new(v1.char_indices(), v2.char_indices()),
+                GapBytesBlockCharIter::new(v1.char_indices(), v2.char_indices(), v1.len()),
             ),
         }
     }
@@ -863,14 +863,6 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
             // 范围完全在第二个块内
             (0, 0, start - len1, end - len1)
         };
-        // log::debug!(
-        //     "len1:{}, start1: {}, end1: {}, start2: {}, end2: {}",
-        //     len1,
-        //     start1,
-        //     end1,
-        //     start2,
-        //     end2
-        // );
         // 定义处理块的匿名函数（闭包）
         let process_block = |block: Option<&BlockLineData<'a>>,
                              range_start: usize,
@@ -975,7 +967,7 @@ pub(crate) trait TextOper {
     fn scroll_next_one_line(&self, meta: &LineState) -> ChapResult<()>;
 
     //插入
-    fn insert(
+    fn insert_char(
         &self,
         cursor_y: usize,
         bytes_cursor: usize,
@@ -983,6 +975,13 @@ pub(crate) trait TextOper {
         c: char,
     ) -> ChapResult<()>;
 
+    fn insert_bytes(
+        &self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        bytes: &[u8],
+    ) -> ChapResult<()>;
     //
     fn insert_newline(
         &self,
@@ -1033,6 +1032,7 @@ pub(crate) trait Line<'a>: Display {
 
 #[derive(Debug, Default)]
 pub(crate) struct LineState {
+    pub(crate) char_with: usize,
     pub(crate) txt_len: usize,          //文本长度
     pub(crate) char_len: usize,         //char字符大小
     pub(crate) page_num: usize,         //所在页数 从1开始
@@ -1056,6 +1056,7 @@ impl LineState {
 
 // 用于构建 LineState 的建造者结构体
 pub(crate) struct LineStateBuilder {
+    char_with: Option<usize>,
     txt_len: Option<usize>,
     char_len: Option<usize>,
     page_num: Option<usize>,
@@ -1075,6 +1076,7 @@ impl LineStateBuilder {
     /// 创建一个新的 LineStateBuilder，所有字段初始为 None
     pub(crate) fn new() -> Self {
         LineStateBuilder {
+            char_with: None,
             txt_len: None,
             char_len: None,
             page_num: None,
@@ -1163,6 +1165,7 @@ impl LineStateBuilder {
     pub(crate) fn build(self) -> LineState {
         let default = LineState::default();
         LineState {
+            char_with: self.char_with.unwrap_or(default.char_with),
             txt_len: self.txt_len.unwrap_or(default.txt_len),
             char_len: self.char_len.unwrap_or(default.char_len),
             page_num: self.page_num.unwrap_or(default.page_num),
@@ -1234,18 +1237,36 @@ pub(crate) trait TextIndex {
 }
 
 pub(crate) trait EditText {
-    // cursor_y: 行号 从0开始
-    // bytes_cursor: 字节偏移 从0开始
-    // line_meta: 当前行的元信息
-    fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &LineState, c: char);
-    fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &LineState);
+    // 插入
+    fn insert_char(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        c: char,
+    ) -> ChapResult<()>;
+    fn insert_bytes(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        c: &[u8],
+    ) -> ChapResult<()>;
+    // 插入新行
+    fn insert_newline(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()>;
+    // 删除
     fn backspace(
         &mut self,
         cursor_y: usize,
         bytes_cursor: usize,
         count: usize,
         line_meta: &LineState,
-    );
+    ) -> ChapResult<()>;
 
     fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()>;
 
@@ -1281,6 +1302,7 @@ pub(crate) trait EditText {
 
 impl LineState {
     pub(crate) fn new(
+        char_with: usize,
         txt_len: usize,
         char_len: usize,
         page_num: usize,
@@ -1294,6 +1316,7 @@ impl LineState {
         line_file_end: usize,
     ) -> LineState {
         LineState {
+            char_with,
             txt_len,
             char_len,
             page_num,
@@ -1340,6 +1363,10 @@ impl LineState {
 
     pub(crate) fn get_char_len(&self) -> usize {
         self.char_len
+    }
+
+    pub(crate) fn get_char_with(&self) -> usize {
+        self.char_with
     }
 
     pub(crate) fn get_line_file_start(&self) -> usize {
@@ -1416,7 +1443,7 @@ impl TextOper for TextDisplay {
         }
     }
 
-    fn insert(
+    fn insert_char(
         &self,
         cursor_y: usize,
         bytes_cursor: usize,
@@ -1426,8 +1453,23 @@ impl TextOper for TextDisplay {
         match self {
             TextDisplay::Text(v) => Ok(()),
             TextDisplay::Hex(v) => Ok(()),
-            TextDisplay::Edit(v) => v.insert(cursor_y, bytes_cursor, line_meta, c),
-            TextDisplay::EditBlock(v) => v.insert(cursor_y, bytes_cursor, line_meta, c),
+            TextDisplay::Edit(v) => v.insert_char(cursor_y, bytes_cursor, line_meta, c),
+            TextDisplay::EditBlock(v) => v.insert_char(cursor_y, bytes_cursor, line_meta, c),
+        }
+    }
+
+    fn insert_bytes(
+        &self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        c: &[u8],
+    ) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Edit(v) => v.insert_bytes(cursor_y, bytes_cursor, line_meta, c),
+            TextDisplay::EditBlock(v) => v.insert_bytes(cursor_y, bytes_cursor, line_meta, c),
         }
     }
 
@@ -1644,7 +1686,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
 
         let pre_line_state = self.borrow_lines_mut().get_pre_line_state(meta).unwrap();
-        // log::debug!("block_offset:{}", pre_line_state.get_block_offset());
         // let mut line_index = meta.get_line_index();
         // let mut line_offset = meta.get_line_offset();
         // let mut line_file_start = meta.get_line_file_start();
@@ -1718,27 +1759,17 @@ impl<T: Text + TextIndex> TextWarp<T> {
         let mut line_index = meta.get_line_index();
         let mut line_end = meta.get_line_end();
         let mut line_file_start = meta.get_line_file_start();
-        //log::debug!("line_file_start:{}", line_file_start);
         if !self.borrow_lines().has_next_line(meta) {
             return (None, LineState::default());
         }
-        //log::debug!("has_next_line");
-        // let state = LineState {
-        //     line_index: line_index,
-        //     block_num: meta.get_block_num(),
-        //     block_line_index: meta.get_block_line_index(),
-        //     block_offset: meta.get_block_offset(),
-        //     line_file_start: line_file_start,
-        //     line_file_end: meta.get_line_file_end(),
-        // };
         let mut next_line_state = self.borrow_lines_mut().get_next_line_state(&meta).unwrap(); //self.borrow_lines_mut().get_line(&state).unwrap(); //&self.borrow_lines()[line_index];
-                                                                                               // log::debug!("line:{}", line);
-                                                                                               //这行已经读完 开始下一行
-                                                                                               // if line_end == meta.get_txt_len() {
-                                                                                               //     line_file_start = meta.get_line_file_end();
-                                                                                               //     line_end = 0;
-                                                                                               //     line_index += 1;
-                                                                                               // }
+
+        //这行已经读完 开始下一行
+        // if line_end == meta.get_txt_len() {
+        //     line_file_start = meta.get_line_file_end();
+        //     line_end = 0;
+        //     line_index += 1;
+        // }
 
         // let p = PageOffset {
         //     line_index: line_index,
@@ -1968,6 +1999,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     LineState::new(
                         0,
                         0,
+                        0,
                         get_page_number!(*line_num, height),
                         line_str.get_block_num(),
                         line_str.get_block_line_index(),
@@ -2078,12 +2110,17 @@ impl<T: Text + TextIndex> TextWarp<T> {
         }
         if *line_num >= skip_line {
             *cur_line_count += 1;
-            let len = line_txt.text_len();
+            let txt_len = line_txt.text_len();
+            let char_with = line_txt
+                .get_data()
+                .char_indices()
+                .fold(0, |acc, (_, ch)| acc + ch.width().unwrap_or(0));
             let char_len = line_txt.get_data().char_indices().count();
             f(
                 line_txt.get_data(),
                 LineState::new(
-                    len,
+                    char_with,
+                    txt_len,
                     char_len,
                     *page_num + 1,
                     line_str.get_block_num(),
@@ -2171,6 +2208,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         f(
             txt.get_data(),
             LineState::new(
+                current_width,
                 len,
                 char_count - char_index, //计算char 个数
                 get_page_number!(*line_num, height),
@@ -2237,6 +2275,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         f(
                             txt.get_data(),
                             LineState::new(
+                                current_width,
                                 len,
                                 char_count - char_index,
                                 get_page_number!(*line_num, height),
@@ -2279,6 +2318,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     f(
                         txt.get_data(),
                         LineState::new(
+                            current_bytes,
                             len,
                             char_count - char_index,
                             get_page_number!(*line_num, height),
@@ -2350,17 +2390,12 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 if *line_num >= skip_line {
                     *cur_line_count += 1;
                     let txt = line_txt.text(line_offset..end);
-                    // log::debug!(
-                    //     "line_offset:{},end:{},txt:{}",
-                    //     line_offset,
-                    //     end,
-                    //     txt.get_data()
-                    // );
                     let len: usize = txt.text_len();
                     let meta_line_offset = line_start + line_offset;
                     f(
                         txt.get_data(),
                         LineState::new(
+                            current_width,
                             len,
                             i - char_index,
                             get_page_number!(*line_num, height),
@@ -2425,6 +2460,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 f(
                     txt.get_data(),
                     LineState::new(
+                        current_width,
                         len,
                         char_count - char_index,
                         get_page_number!(*line_num, height),
@@ -2573,7 +2609,7 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     // 插入字符
     // 计算光标所在行
     // 计算光标所在列
-    pub(crate) fn insert(
+    pub(crate) fn insert_char(
         &self,
         cursor_y: usize,
         bytes_cursor: usize,
@@ -2582,11 +2618,22 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
-            .insert(cursor_y, bytes_cursor, line_meta, c);
-        //切断page_offset_list 索引
-        // todo
-        // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
-        // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
+            .insert_char(cursor_y, bytes_cursor, line_meta, c)?;
+        self.edit_text.borrow_cache_lines_mut().clear();
+        self.edit_text.borrow_cache_line_meta_mut().clear();
+        Ok(())
+    }
+
+    pub(crate) fn insert_bytes(
+        &self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        bytes: &[u8],
+    ) -> ChapResult<()> {
+        self.edit_text
+            .borrow_lines_mut()
+            .insert_bytes(cursor_y, bytes_cursor, line_meta, bytes)?;
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
         Ok(())
@@ -2601,7 +2648,7 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
-            .insert_newline(cursor_y, cursor_x, line_meta);
+            .insert_newline(cursor_y, cursor_x, line_meta)?;
         // todo
         // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
         // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };

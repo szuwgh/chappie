@@ -182,7 +182,7 @@ impl EditText for GapText {
         bytes_cursor: usize,
         count: usize,
         line_meta: &LineState,
-    ) {
+    ) -> ChapResult<()> {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
             line_meta.get_line_offset() + bytes_cursor,
@@ -190,18 +190,18 @@ impl EditText for GapText {
         if self.borrow_lines_mut()[line_index].text_len() == 0 && line_offset == 0 {
             //删除一行
             self.borrow_lines_mut().remove(line_index);
-            return;
+            return Ok(());
         }
         //表示当前行和前一行合并
         if line_offset == 0 {
             if line_index == 0 {
-                return;
+                return Ok(());
             }
             let (pre_lines, cur_lines) = self.borrow_lines_mut().split_at_mut(line_index);
             let pre_line = &mut pre_lines[line_index - 1];
             if pre_line.text_len() == 0 {
                 self.borrow_lines_mut().remove(line_index - 1);
-                return;
+                return Ok(());
             } else {
                 let cur_line = &mut cur_lines[0];
                 let cur_line_txt = cur_line.text(..);
@@ -209,12 +209,29 @@ impl EditText for GapText {
                 pre_line.insert(pre_line.text_len(), cur_line_txt.right());
                 self.borrow_lines_mut().remove(line_index);
             }
-            return;
+            return Ok(());
         }
         self.borrow_lines_mut()[line_index].backspace(line_offset, count);
+        Ok(())
     }
 
-    fn insert(&mut self, cursor_y: usize, bytes_cursor: usize, line_meta: &LineState, c: char) {
+    fn insert_bytes(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        c: &[u8],
+    ) -> ChapResult<()> {
+        todo!()
+    }
+
+    fn insert_char(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+        c: char,
+    ) -> ChapResult<()> {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
             line_meta.get_line_offset() + bytes_cursor,
@@ -224,9 +241,15 @@ impl EditText for GapText {
         let s: &str = c.encode_utf8(&mut buf);
         let line = &mut self.borrow_lines_mut()[line_index];
         line.insert(line_offset, s.as_bytes());
+        Ok(())
     }
 
-    fn insert_newline(&mut self, cursor_y: usize, cursor_x: usize, line_meta: &LineState) {
+    fn insert_newline(
+        &mut self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()> {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
             line_meta.get_line_offset() + cursor_x,
@@ -256,6 +279,7 @@ impl EditText for GapText {
                 self.borrow_lines_mut()[line_index].delete(line_len, delete_len);
             }
         }
+        Ok(())
     }
 
     fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {

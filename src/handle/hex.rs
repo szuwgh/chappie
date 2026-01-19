@@ -537,6 +537,16 @@ impl<T: Plugin> Handle for HandleHex<T> {
         chap_tui.elem.cmd_inp.push(c);
         Ok(())
     }
+
+    fn handle_paste<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<LineState>,
+        td: &'a TextDisplay,
+        pasted_string: &str,
+    ) -> ChapResult<()> {
+        todo!("Handle paste in hex mode");
+    }
 }
 
 // impl Handle for HandleHex {

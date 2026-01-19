@@ -83,7 +83,6 @@ pub(crate) fn get_edit_content<'a>(
     for (i, txt) in txts.iter().enumerate() {
         //一行数据可能会分成很多个块
         let s = txt.as_str();
-        //log::debug!("line {} content:{:?}", i, s);
         let t = txt.text(column_offset..);
         let parts = t.as_parts();
         if cursor_y == i {
@@ -112,7 +111,6 @@ pub(crate) fn get_edit_content<'a>(
                 let count = (*s).chars().count();
                 char_count.append(count);
             }
-            // log::debug!("char_count parts:{:?}", char_count.as_parts());
             let mut char_sum_count = 0;
             for (idx, s) in char_count.as_parts().iter().enumerate() {
                 char_sum_count += *s;
@@ -154,9 +152,6 @@ fn build_cursor_line<'a>(
     let mut spans = Vec::new();
     let mut last_char_bytes_size: usize = 0;
     let byte_cursor;
-    // for (i, x) in str_parts.iter().enumerate() {
-    //     log::debug!("i:{} | part content:{:?}", i, String::from_utf8_lossy(x));
-    // }
     let (a, b, c) = if char_curosr_index == 0 {
         let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(str_parts[0], cursor_x);
         last_char_bytes_size = last_csz;
@@ -179,7 +174,6 @@ fn build_cursor_line<'a>(
         (a, b, c)
     };
     if b.len() > 0 {
-        // log::debug!("highlight char found:{:?}", b);
         byte_cursor = if char_curosr_index == 0 {
             a.get_non_control_len()
         } else {
@@ -223,13 +217,6 @@ fn build_cursor_line<'a>(
         // 在填充后显示高亮的光标
         spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
     }
-    // log::debug!(
-    //     "cursor_x:{}, byte_cursor:{}, last_char_bytes_size:{},char_curosr_index:{}",
-    //     cursor_x,
-    //     byte_cursor,
-    //     last_char_bytes_size,
-    //     char_curosr_index
-    // );
     (spans, byte_cursor, last_char_bytes_size)
 }
 

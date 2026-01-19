@@ -166,6 +166,19 @@ impl Handle for HandleImpl {
             HandleImpl::Hex(h) => h.handle_char(chap_tui, line_meta, td, c),
         }
     }
+
+    fn handle_paste<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<LineState>,
+        td: &'a TextDisplay,
+        pasted_string: &str,
+    ) -> ChapResult<()> {
+        match self {
+            HandleImpl::Edit(h) => h.handle_paste(chap_tui, line_meta, td, pasted_string),
+            HandleImpl::Hex(h) => h.handle_paste(chap_tui, line_meta, td, pasted_string),
+        }
+    }
 }
 
 pub(crate) fn tui_retore() -> ChapResult<()> {
@@ -274,5 +287,13 @@ pub(crate) trait Handle {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
         c: char,
+    ) -> ChapResult<()>;
+
+    fn handle_paste<'a>(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &'a RingVec<LineState>,
+        td: &'a TextDisplay,
+        pasted_string: &str,
     ) -> ChapResult<()>;
 }
