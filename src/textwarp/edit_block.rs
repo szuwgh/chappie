@@ -62,16 +62,17 @@ impl Block {
     fn text(&self, index: &LineIndex) -> GapBytes<'_> {
         self.data.text(index.block_start..index.block_end)
     }
+
     fn as_continuous(&mut self) -> &[u8] {
         self.data.as_continuous()
     }
+
     fn from_reader<T: io::Read + Seek>(
         reader: &mut T,
         buf: &mut [u8],
         file_start: usize,
         block_num: usize,
         check_sum: Option<u32>,
-        //   mut last_line_size: usize, //如果上一行不是完整行要传line_offset 上一行的大小
     ) -> ChapResult<(Self, Option<BlockIndex>)> {
         // buf.clear();
         reader.seek(SeekFrom::Start(file_start as u64))?;
@@ -104,48 +105,6 @@ impl Block {
             let block_index =
                 BlockIndex::from_block_bytes(valid_data, file_start, block_num, actual_len, sum)?;
             Some(block_index)
-            // 把这一块拆成多个 128 字节 sub-chunk，并为每个 sub-chunk 创建一个 GapBuffer
-            // let mut lines_index = Vec::new();
-            // let mut line_buf = Vec::new();
-            // let mut block_reader = BufReader::new(&valid_data[..]);
-            // let mut block_offset: usize = 0;
-            // let mut line_count: usize = 0;
-            // let mut index_num: usize = 0;
-            // //读取块内的行 构建行索引
-            // loop {
-            //     line_buf.clear();
-            //     let bytes_read = block_reader.read_until(b'\n', &mut line_buf)?;
-            //     if bytes_read == 0 {
-            //         break;
-            //     }
-            //     let is_complete = line_buf.ends_with(&[b'\n']);
-
-            //     let end = block_offset + bytes_read;
-            //     //let end_line = if is_complete { end - 1 } else { end };
-            //     let index = LineIndex {
-            //         index_num: index_num,
-            //         is_complete: is_complete,
-            //         block_start: block_offset,
-            //         block_end: end,
-            //     };
-
-            //     if is_complete {
-            //         line_count += 1;
-            //     } else {
-            //     }
-            //     block_offset = end;
-            //     index_num += 1;
-            //     lines_index.push(index);
-            // }
-
-            // Some(BlockIndex {
-            //     file_start: file_start, //块在文件开始位置
-            //     block_num: block_num,
-            //     line_count: line_count,   //块内的行数
-            //     block_size: actual_len,   //块的大小
-            //     lines_index: lines_index, //块内的行索引
-            //     check_sum: sum,
-            // })
         } else {
             None
         };

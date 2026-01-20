@@ -394,13 +394,6 @@ impl Handle for HandleEdit {
                 pasted_string.as_bytes(),
             )?;
         }
-        log::debug!(
-            "cursor_x before paste: {}, cursor_y: {}, tv width: {},chap_tui.bytes_cursor:{}",
-            chap_tui.cursor_x,
-            chap_tui.cursor_y,
-            chap_tui.elem.tv.get_width(),
-            chap_tui.bytes_cursor
-        );
 
         // 更新光标位置
         for x in pasted_string.chars() {
@@ -422,11 +415,6 @@ impl Handle for HandleEdit {
                 }
             }
         }
-        log::debug!(
-            "After paste, cursor_x: {}, cursor_y: {}",
-            chap_tui.cursor_x,
-            chap_tui.cursor_y,
-        );
         td.get_one_page(chap_tui.start_line_num)?;
         Ok(())
     }

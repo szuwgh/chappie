@@ -236,7 +236,6 @@ impl EditText for GapText {
             line_meta.get_line_index(),
             line_meta.get_line_offset() + bytes_cursor,
         );
-        //log::debug!("line_offset:{}", line_offset);
         let mut buf = [0u8; 4]; // 一个 char 最多需要 4 个字节存储 UTF-8 编码
         let s: &str = c.encode_utf8(&mut buf);
         let line = &mut self.borrow_lines_mut()[line_index];
