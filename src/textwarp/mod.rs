@@ -1,3 +1,4 @@
+pub(crate) mod block;
 pub(crate) mod edit;
 pub(crate) mod edit_block;
 pub(crate) mod hex;
@@ -666,7 +667,9 @@ impl<'a> LineData<'a> {
 }
 
 pub struct LineStr<'a> {
-    pub(crate) data: LineData<'a>,     //行数据
+    pub(crate) data: LineData<'a>, //行数据
+    pub(crate) block_num: usize,
+    pub(crate) block_offset: usize,    //块内偏移
     pub(crate) line_file_start: usize, //行在文件开始位置
     pub(crate) line_file_end: usize,   //行在文件结束的位置
 }
@@ -698,6 +701,8 @@ impl<'a> Line<'a> for LineStr<'a> {
 
         LineStr {
             data: self.data.text(range),
+            block_num: self.block_num,
+            block_offset: self.block_offset + start,
             line_file_start: line_file_start,
             line_file_end: line_file_end,
         }
@@ -712,7 +717,7 @@ impl<'a> Line<'a> for LineStr<'a> {
     }
 
     fn get_block_num(&self) -> usize {
-        0
+        self.block_num
     }
 
     fn get_block_line_index(&self) -> usize {
@@ -720,7 +725,7 @@ impl<'a> Line<'a> for LineStr<'a> {
     }
 
     fn get_block_offset(&self) -> usize {
-        0
+        self.block_offset
     }
 
     fn get_data(&self) -> LineData<'a> {
@@ -736,6 +741,8 @@ impl<'a> LineStr<'a> {
     fn empty() -> LineStr<'a> {
         LineStr {
             data: LineData::empty(),
+            block_num: 0,
+            block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
         }
@@ -744,6 +751,8 @@ impl<'a> LineStr<'a> {
     fn empty_gap_bytes() -> LineStr<'a> {
         LineStr {
             data: LineData::empty_gap_bytes(),
+            block_num: 0,
+            block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
         }
@@ -981,6 +990,7 @@ pub(crate) trait TextOper {
         bytes_cursor: usize,
         line_meta: &LineState,
         bytes: &[u8],
+        is_overwrite: bool,
     ) -> ChapResult<()>;
     //
     fn insert_newline(
@@ -1251,6 +1261,7 @@ pub(crate) trait EditText {
         bytes_cursor: usize,
         line_meta: &LineState,
         c: &[u8],
+        is_overwrite: bool,
     ) -> ChapResult<()>;
     // 插入新行
     fn insert_newline(
@@ -1392,7 +1403,7 @@ impl LineState {
 
 pub(crate) enum TextDisplay {
     Text(TextWarp<MmapText>),
-    Hex(TextWarp<HexText>),
+    Hex(EditTextWarp<HexText>),
     Edit(EditTextWarp<GapText>),
     EditBlock(EditTextWarp<GapBlockText>),
 }
@@ -1452,7 +1463,7 @@ impl TextOper for TextDisplay {
     ) -> ChapResult<()> {
         match self {
             TextDisplay::Text(v) => Ok(()),
-            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Hex(v) => v.insert_char(cursor_y, bytes_cursor, line_meta, c),
             TextDisplay::Edit(v) => v.insert_char(cursor_y, bytes_cursor, line_meta, c),
             TextDisplay::EditBlock(v) => v.insert_char(cursor_y, bytes_cursor, line_meta, c),
         }
@@ -1464,12 +1475,19 @@ impl TextOper for TextDisplay {
         bytes_cursor: usize,
         line_meta: &LineState,
         c: &[u8],
+        is_overwrite: bool,
     ) -> ChapResult<()> {
         match self {
             TextDisplay::Text(v) => Ok(()),
-            TextDisplay::Hex(v) => Ok(()),
-            TextDisplay::Edit(v) => v.insert_bytes(cursor_y, bytes_cursor, line_meta, c),
-            TextDisplay::EditBlock(v) => v.insert_bytes(cursor_y, bytes_cursor, line_meta, c),
+            TextDisplay::Hex(v) => {
+                v.insert_bytes(cursor_y, bytes_cursor, line_meta, c, is_overwrite)
+            }
+            TextDisplay::Edit(v) => {
+                v.insert_bytes(cursor_y, bytes_cursor, line_meta, c, is_overwrite)
+            }
+            TextDisplay::EditBlock(v) => {
+                v.insert_bytes(cursor_y, bytes_cursor, line_meta, c, is_overwrite)
+            }
         }
     }
 
@@ -1523,7 +1541,7 @@ impl TextOper for TextDisplay {
     ) -> ChapResult<()> {
         match self {
             TextDisplay::Text(v) => Ok(()),
-            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Hex(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
             TextDisplay::Edit(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
             TextDisplay::EditBlock(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
         }
@@ -2606,6 +2624,10 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
 
     pub(crate) fn get_text_len(&self, index: usize) -> usize;
 
+    pub(crate) fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8>;
+
+    pub(crate) fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize>;
+
     // 插入字符
     // 计算光标所在行
     // 计算光标所在列
@@ -2630,10 +2652,15 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
         bytes_cursor: usize,
         line_meta: &LineState,
         bytes: &[u8],
+        is_overwrite: bool,
     ) -> ChapResult<()> {
-        self.edit_text
-            .borrow_lines_mut()
-            .insert_bytes(cursor_y, bytes_cursor, line_meta, bytes)?;
+        self.edit_text.borrow_lines_mut().insert_bytes(
+            cursor_y,
+            bytes_cursor,
+            line_meta,
+            bytes,
+            is_overwrite,
+        )?;
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
         Ok(())
@@ -2667,7 +2694,7 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     ) -> ChapResult<()> {
         self.edit_text
             .borrow_lines_mut()
-            .backspace(cursor_y, bytes_cursor, count, line_meta);
+            .backspace(cursor_y, bytes_cursor, count, line_meta)?;
         // todo
         //let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
         //unsafe { page_offset_list.set_len(line_meta.get_page_num()) };

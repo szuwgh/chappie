@@ -145,6 +145,8 @@ impl Text for GapText {
     fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
         Some(LineStr {
             data: LineData::GapBytes(self.borrow_lines()[state.line_index].text(..)),
+            block_num: state.block_num,
+            block_offset: state.block_offset,
             line_file_start: state.line_file_start,
             line_file_end: state.line_file_end,
         })
@@ -221,6 +223,7 @@ impl EditText for GapText {
         bytes_cursor: usize,
         line_meta: &LineState,
         c: &[u8],
+        is_overwrite: bool,
     ) -> ChapResult<()> {
         todo!()
     }
@@ -313,6 +316,8 @@ impl<'a> Iterator for GapTextIter<'a> {
     fn next(&mut self) -> Option<LineStr<'a>> {
         self.lines.next().map(|line| LineStr {
             data: LineData::GapBytes(line.text(..)),
+            block_num: 0,
+            block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
         })
@@ -336,6 +341,8 @@ impl<'a> Iterator for GapTextIterRev<'a> {
     fn next(&mut self) -> Option<LineStr<'a>> {
         self.lines.next().map(|line| LineStr {
             data: LineData::GapBytes(line.text(..)),
+            block_num: 0,
+            block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
         })

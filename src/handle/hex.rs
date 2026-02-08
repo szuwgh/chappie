@@ -1,5 +1,7 @@
-use crate::command::Command;
+use crossterm::cursor;
+
 use crate::command::FindValue;
+use crate::command::HexCommand;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
@@ -251,28 +253,28 @@ impl<T: Plugin> Handle for HandleHex<T> {
     ) -> ChapResult<()> {
         //todo!("Handle enter in hex mode");
         let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
-        let cmd = Command::parse(cmd_inp);
+        let cmd = HexCommand::parse(cmd_inp);
         match cmd {
-            Command::Back => {
+            HexCommand::Back => {
                 if let Some(line_num) = chap_tui.back_linenum.pop() {
                     chap_tui.cursor_y = 0;
                     chap_tui.cursor_x = 0;
                     td.get_one_page(line_num)?;
                 }
             }
-            Command::GTop => {
+            HexCommand::GTop => {
                 self.jump_to_address(chap_tui, line_meta, 0, td)?;
             }
-            Command::GBottom => {
+            HexCommand::GBottom => {
                 self.jump_to_address(chap_tui, line_meta, td.get_file_size(), td)?
             }
-            Command::SetEndian(endian) => {
+            HexCommand::SetEndian(endian) => {
                 chap_tui.set_endian(endian);
             }
-            Command::Jump(addr) => {
+            HexCommand::Jump(addr) => {
                 self.jump_to_address(chap_tui, line_meta, addr, td)?;
             }
-            Command::Find(value) => {
+            HexCommand::Find(value) => {
                 if line_meta.is_empty() {
                     return Ok(());
                 }
@@ -290,7 +292,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
                     }
                 }
             }
-            Command::Cut(c) => {
+            HexCommand::Cut(c) => {
                 let seek_start = line_meta
                     .get(chap_tui.cursor_y)
                     .unwrap()
@@ -311,7 +313,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
                 }
             }
 
-            Command::CutSel(c) => {
+            HexCommand::CutSel(c) => {
                 let bytes =
                     td.get_text_from_sel(&TextSelect::from_select(c.get_start(), c.get_end()));
                 // 新建一个文件 把bytes 保存到文件
@@ -324,16 +326,46 @@ impl<T: Plugin> Handle for HandleHex<T> {
                     chap_tui.elem.cmd_inp.push_str("save file failed");
                 }
             }
-            Command::Call(function) => {
+            HexCommand::Call(function) => {
                 let b = td.get_text_from_sel(&chap_tui.txt_sel);
                 // let a = function.call(ByteView::new(b, chap_tui.endian.clone()));
                 let a = self.plugin.eval(&function, &b)?;
                 chap_tui.assist_tv2_data = a;
             }
-            Command::ListFunc => {
+            HexCommand::ListFunc => {
                 chap_tui.assist_tv2_data = self.plugin.list()?;
             }
-            Command::Unknown(cmd) => {}
+            HexCommand::HexInput(x) => {
+                let cursor_x = chap_tui.cursor_x;
+                let cursor_y = chap_tui.cursor_y;
+                log::debug!(
+                    "Handle hex char input: {:02x?}, cursor_x: {}, cursor_y: {}",
+                    x,
+                    cursor_x,
+                    cursor_y
+                );
+                td.insert_bytes(
+                    cursor_y,
+                    cursor_x,
+                    line_meta.get(cursor_y).unwrap(),
+                    &x,
+                    true,
+                )?;
+                td.get_one_page(chap_tui.start_line_num)?;
+            }
+            HexCommand::Insert(count) => {
+                let cursor_x = chap_tui.cursor_x;
+                let cursor_y = chap_tui.cursor_y;
+                td.insert_bytes(
+                    cursor_y,
+                    cursor_x,
+                    line_meta.get(cursor_y).unwrap(),
+                    &vec![0u8; count],
+                    false,
+                )?;
+                td.get_one_page(chap_tui.start_line_num)?;
+            }
+            HexCommand::Unknown(cmd) => {}
         }
 
         Ok(())

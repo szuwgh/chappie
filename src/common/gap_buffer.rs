@@ -445,10 +445,10 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        // let mut gb = GapBuffer::new(10);
-        // gb.insert(0, "Hello".as_bytes());
-        // println!("{}", gb.text_str(..));
-        // gb.delete(1, 1);
-        // println!("{}", gb.text_str(..));
+        let mut gb = GapBuffer::new(10);
+        gb.insert(0, "Hello".as_bytes());
+        println!("{}", gb.text(..));
+        gb.delete(6, 5);
+        println!("{}", gb.text(..));
     }
 }

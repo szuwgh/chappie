@@ -382,6 +382,7 @@ impl Handle for HandleEdit {
                 chap_tui.elem.tv.get_width(),
                 line_state,
                 pasted_string.as_bytes(),
+                false,
             )?;
             chap_tui.is_last_line = false;
         } else {
@@ -392,6 +393,7 @@ impl Handle for HandleEdit {
                 chap_tui.bytes_cursor,
                 line_state,
                 pasted_string.as_bytes(),
+                false,
             )?;
         }
 

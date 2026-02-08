@@ -26,6 +26,8 @@ pub enum ChapError {
     LogError(SetLoggerError),
     #[error("lua error: {0}")]
     LuaFail(LuaError),
+    #[error("invalid hex character: {0}")]
+    InvalidHexChar(char),
 }
 
 impl From<&str> for ChapError {

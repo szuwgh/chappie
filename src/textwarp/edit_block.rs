@@ -1,9 +1,12 @@
 use crate::common::ring_vec::RingVec;
+use crate::textwarp::block::Block;
+use crate::textwarp::block::BlockIndex;
+use crate::textwarp::block::LineIndex;
+use crate::textwarp::block::BLOCK_SIZE;
+use crate::textwarp::block::BLOKK_NUM;
 use crate::textwarp::BlockLineData;
 use crate::textwarp::ChapResult;
 use crate::textwarp::EditText;
-use crate::textwarp::GapBuffer;
-use crate::textwarp::GapBytes;
 use crate::textwarp::Line;
 use crate::textwarp::LineBlockStr;
 use crate::textwarp::LineData;
@@ -11,13 +14,9 @@ use crate::textwarp::LineState;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
-use crate::ChapError;
-use crc::Crc;
-use crc::CRC_32_ISO_HDLC;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
-use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Seek;
@@ -25,192 +24,7 @@ use std::io::SeekFrom;
 use std::io::Write;
 use std::iter;
 use std::mem;
-use std::mem::replace;
 use std::path::Path;
-
-const CHAR_GAP_SIZE: usize = 64;
-const BLOCK_SIZE: usize = 4096;
-const BLOKK_NUM: usize = 8;
-const MAX_LINE_SIZE: usize = 4096; //最大行长度4KB
-
-type BlockId = usize;
-
-#[derive(Clone)]
-//一行数据
-struct LineIndex {
-    index_num: usize,   //行号
-    block_start: usize, //行在块开始位置
-    block_end: usize,   //行在块结束位置
-    is_complete: bool,  //是否完整行
-}
-
-impl LineIndex {
-    fn line_size(&self) -> usize {
-        self.block_end - self.block_start
-    }
-}
-
-//按块加载文件 每个块4KB大小
-struct Block {
-    data: GapBuffer,   //每一个块使用 GapBuffer 存储
-    file_start: usize, //
-    block_num: usize,  //块编号
-    is_modified: bool, //块是否被修改
-}
-
-impl Block {
-    fn text(&self, index: &LineIndex) -> GapBytes<'_> {
-        self.data.text(index.block_start..index.block_end)
-    }
-
-    fn as_continuous(&mut self) -> &[u8] {
-        self.data.as_continuous()
-    }
-
-    fn from_reader<T: io::Read + Seek>(
-        reader: &mut T,
-        buf: &mut [u8],
-        file_start: usize,
-        block_num: usize,
-        check_sum: Option<u32>,
-    ) -> ChapResult<(Self, Option<BlockIndex>)> {
-        // buf.clear();
-        reader.seek(SeekFrom::Start(file_start as u64))?;
-        let n = reader.read(buf)?;
-        if n == 0 {
-            return Err(ChapError::EOF);
-        }
-
-        // 调整到有效的UTF-8字符边界
-        let actual_len = match str::from_utf8(&buf[..n]) {
-            Ok(_) => n,                // 整个块有效，直接使用
-            Err(e) => e.valid_up_to(), // 使用最后一个有效字符的边界
-        };
-
-        // 如果有剩余字节（字符被分割），回退文件读取位置
-        if actual_len < n {
-            let seek_back = n - actual_len;
-            reader.seek(SeekFrom::Current(-(seek_back as i64)))?;
-        }
-
-        // 使用有效部分的数据
-        let valid_data = &buf[..actual_len];
-        let sum = crc_checksum(valid_data);
-        if let Some(sum1) = check_sum {
-            if sum != sum1 {
-                panic!("Checksum Mismatch Exception")
-            }
-        }
-        let block_index = if check_sum.is_none() {
-            let block_index =
-                BlockIndex::from_block_bytes(valid_data, file_start, block_num, actual_len, sum)?;
-            Some(block_index)
-        } else {
-            None
-        };
-
-        let block = Block {
-            data: GapBuffer::from_bytes(valid_data, CHAR_GAP_SIZE),
-            file_start: file_start,
-            block_num: block_num,
-            is_modified: false,
-        };
-
-        Ok((block, block_index))
-    }
-
-    fn insert(&mut self, block_offset: usize, bytes: &[u8]) {
-        self.data.insert(block_offset, bytes);
-        self.is_modified = true;
-    }
-
-    fn backspace(&mut self, block_offset: usize, count: usize) {
-        self.data.backspace(block_offset, count);
-        self.is_modified = true;
-    }
-
-    fn backspace_last(&mut self, count: usize) {
-        self.data.delete_last(count);
-        self.is_modified = true;
-    }
-}
-
-#[derive(Clone)]
-struct BlockIndex {
-    file_start: usize, //块在文件开始位置
-    block_num: usize,  //块编号
-    // start_line_index: usize,     //块内的起始行号在整个文件中
-    line_count: usize,           //块内的行数
-    block_size: usize,           //块的大小
-    lines_index: Vec<LineIndex>, //块内的行索引
-    check_sum: u32,              //保存的时候会更新 sum
-}
-
-impl BlockIndex {
-    fn file_end(&self) -> usize {
-        self.file_start + self.block_size
-    }
-
-    fn get_line_index(&self, block_offset: usize) -> Option<&LineIndex> {
-        for l in self.lines_index.iter() {
-            if block_offset >= l.block_start && block_offset < l.block_end {
-                return Some(l);
-            }
-        }
-        None
-    }
-
-    fn from_block_bytes(
-        valid_data: &[u8],
-        file_start: usize,
-        block_num: usize,
-        actual_len: usize,
-        sum: u32,
-    ) -> ChapResult<BlockIndex> {
-        // 把这一块拆成多个 128 字节 sub-chunk，并为每个 sub-chunk 创建一个 GapBuffer
-        let mut lines_index = Vec::new();
-        let mut line_buf = Vec::new();
-        let mut block_reader = BufReader::new(&valid_data[..]);
-        let mut block_offset: usize = 0;
-        let mut line_count: usize = 0;
-        let mut index_num: usize = 0;
-        //读取块内的行 构建行索引
-        loop {
-            line_buf.clear();
-            let bytes_read = block_reader.read_until(b'\n', &mut line_buf)?;
-            if bytes_read == 0 {
-                break;
-            }
-            let is_complete = line_buf.ends_with(&[b'\n']);
-
-            let end = block_offset + bytes_read;
-            //let end_line = if is_complete { end - 1 } else { end };
-            let index = LineIndex {
-                index_num: index_num,
-                is_complete: is_complete,
-                block_start: block_offset,
-                block_end: end,
-            };
-
-            if is_complete {
-                line_count += 1;
-            } else {
-            }
-            block_offset = end;
-            index_num += 1;
-            lines_index.push(index);
-        }
-
-        Ok(BlockIndex {
-            file_start: file_start, //块在文件开始位置
-            block_num: block_num,
-            line_count: line_count,   //块内的行数
-            block_size: actual_len,   //块的大小
-            lines_index: lines_index, //块内的行索引
-            check_sum: sum,
-        })
-    }
-}
 
 pub(crate) struct GapBlockText {
     reader: BufReader<File>,
@@ -825,6 +639,7 @@ impl EditText for GapBlockText {
         bytes_cursor: usize,
         line_meta: &LineState,
         bytes: &[u8],
+        _is_overwrite: bool,
     ) -> ChapResult<()> {
         let mut block_num = line_meta.get_block_num();
         let block_offset = line_meta.get_block_offset();
@@ -1075,12 +890,8 @@ impl<'a> Iterator for GapBlockTextIterRev<'a> {
             .get_line(self.cur_block_num, self.cur_block_offset)?;
         self.cur_block_line_index = self.cur_block_line_index.saturating_sub(1);
         let block_index = self.blocks.block_indexs.get(self.cur_block_num).unwrap();
-        self.cur_block_offset = if self.cur_block_line_index >= 0 {
-            let line_info = &block_index.lines_index[self.cur_block_line_index];
-            line_info.block_start
-        } else {
-            0
-        };
+        let line_info = &block_index.lines_index[self.cur_block_line_index];
+        self.cur_block_offset = line_info.block_start;
         Some(ret)
     }
 }
@@ -1109,11 +920,6 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
         }
         Some(ret)
     }
-}
-
-fn crc_checksum(data: &[u8]) -> u32 {
-    let crc = Crc::<u32>::new(&CRC_32_ISO_HDLC);
-    crc.checksum(data)
 }
 
 mod tests {
@@ -1145,7 +951,7 @@ mod tests {
                     line_idx.block_start,
                     line_idx.block_end,
                     line_idx.is_complete,
-                    block.text(line_idx)
+                    block.text_from_line(line_idx)
                 );
             }
         }

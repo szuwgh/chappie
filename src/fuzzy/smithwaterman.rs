@@ -63,8 +63,6 @@ impl<'a> Matrix<'a> {
 
 impl<'a> SmithWaterman<'a> {
     pub(crate) fn find(&mut self, pattern: &str, text: &str) -> Vec<Match> {
-        // let pattern = p.as_bytes();
-        // let text = t.as_bytes();
         let len1 = pattern.len();
         let len2 = text.len();
         let m = (len1 + 1) * (len2 + 1);

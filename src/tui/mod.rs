@@ -518,7 +518,7 @@ impl ChapTui {
                         twy,
                     ))
                 }
-                ChapMod::Hex => TextDisplay::Hex(TextWarp::new(
+                ChapMod::Hex => TextDisplay::Hex(EditTextWarp::new(
                     HexText::from_file_path(&p, self.elem.tv.get_height() - 2)?,
                     self.elem.tv.get_height() - 2,
                     self.elem.tv.get_width(),

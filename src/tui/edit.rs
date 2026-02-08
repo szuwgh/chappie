@@ -20,15 +20,7 @@ trait GetNonControlLen {
 
 impl GetNonControlLen for &[u8] {
     fn get_non_control_len(&self) -> usize {
-        let mut len = self.len();
-        // for c in self.iter().rev() {
-        //     if *c == b'\n' {
-        //         len -= 1; // 减去控制字符的字节长度
-        //     } else {
-        //         break; // 遇到非控制字符时停止
-        //     }
-        // }
-        len
+        self.len()
     }
 }
 
@@ -242,7 +234,7 @@ fn append_padding_lines(
 }
 
 /// 构建行号导航文本
-fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text {
+fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_> {
     let nav_lines: Vec<Line> = (0..height)
         .map(|i| {
             line_meta.get(i).map_or_else(
@@ -258,114 +250,3 @@ fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text {
         .collect();
     Text::from(nav_lines)
 }
-
-// pub(crate) fn get_edit_content<'a>(
-//     txts: &'a RingVec<CacheStr>,
-//     line_meta: &'a RingVec<LineState>,
-//     cur_line: usize,
-//     select_line: &Option<(usize, usize)>,
-//     height: usize,
-//     offset: usize,
-//     cursor_y: usize,
-//     cursor_x: usize,
-// ) -> (Text<'a>, Text<'a>, usize, usize) {
-//     assert!(txts.len() == line_meta.len());
-//     let mut lines = Vec::with_capacity(line_meta.len());
-//     let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
-//     let mut last_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
-//     for (i, txt) in txts.iter().enumerate() {
-//         let (str1, str2) = txt.text(offset..);
-//         if cursor_y == i {
-//             let mut spans = Vec::new();
-//             let count1 = str1.chars().count();
-//             if cursor_x < count1 {
-//                 let (a, b, c, size) = n_chars_skip_control_mem_opt(str1.as_ref(), cursor_x);
-//                 last_char_bytes_size = size;
-//                 if b.len() > 0 {
-//                     byte_cursor = a.len();
-//                     spans.push(Span::raw(a.to_string()));
-//                     spans.push(Span::styled(
-//                         b.to_string(),
-//                         Style::default().bg(Color::LightRed),
-//                     ));
-//                     spans.push(Span::raw(c.to_string()));
-//                     spans.push(Span::raw(str2));
-//                 } else {
-//                     byte_cursor = str1.len();
-//                     spans.push(Span::raw(str1));
-//                     spans.push(Span::raw(str2));
-//                     let diff = cursor_x.saturating_sub(txt.len());
-//                     let padding = " ".repeat(diff);
-//                     spans.push(Span::raw(padding));
-//                     // 在填充后显示高亮的光标
-//                     spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
-//                 }
-//             } else {
-//                 let (a, b, c, size) =
-//                     n_chars_skip_control_mem_opt(str2.as_ref(), cursor_x - str1.chars().count());
-//                 //如果上一个字符大小是0则光标可能在第一个字符那里
-//                 if size == 0 {
-//                     let (_, _, _, sz) = n_chars_skip_control_mem_opt(str1.as_ref(), count1);
-//                     last_char_bytes_size = sz;
-//                 } else {
-//                     last_char_bytes_size = size;
-//                 }
-//                 if b.len() > 0 {
-//                     byte_cursor = a.len() + str1.len();
-//                     spans.push(Span::raw(str1));
-//                     spans.push(Span::raw(a.to_string()));
-//                     spans.push(Span::styled(
-//                         b.to_string(),
-//                         Style::default().bg(Color::LightRed),
-//                     ));
-//                     spans.push(Span::raw(c.to_string()));
-//                 } else {
-//                     byte_cursor = str1.len() + str2.len();
-//                     spans.push(Span::raw(str1));
-//                     spans.push(Span::raw(str2));
-//                     let diff = cursor_x.saturating_sub(txt.len());
-//                     let padding = " ".repeat(diff);
-//                     spans.push(Span::raw(padding));
-//                     // 在填充后显示高亮的光标
-//                     spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
-//                 }
-//             }
-
-//             lines.push(Line::from(spans));
-//         } else {
-//             let spans = vec![Span::raw(str1), Span::raw(str2)];
-//             lines.push(Line::from(spans));
-//         }
-//     }
-//     if cursor_y >= line_meta.len() {
-//         let diff = cursor_y - line_meta.len();
-//         for _ in 0..diff {
-//             lines.push(Line::raw(""));
-//         }
-//         let mut spans = Vec::new();
-//         let padding = " ".repeat(cursor_x);
-//         spans.push(Span::raw(padding));
-//         // 在填充后显示高亮的光标
-//         spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
-//         lines.push(Line::from(spans));
-//     }
-
-//     let nav_text = Text::from(
-//         (0..height)
-//             .enumerate()
-//             .map(|(i, _)| {
-//                 if i > line_meta.len() {
-//                     return Line::raw("");
-//                 }
-//                 Line::from(Span::styled(
-//                     format!("{:>4} ", line_meta.get(i).unwrap().get_line_num()),
-//                     Style::default().fg(Color::White),
-//                 ))
-//                 // 高亮当前行
-//             })
-//             .collect::<Vec<Line>>(),
-//     );
-
-//     let text = Text::from(lines);
-//     (nav_text, text, byte_cursor, last_char_bytes_size)
-// }
