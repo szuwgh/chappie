@@ -314,8 +314,15 @@ impl EditText for HexText {
                 .unwrap();
             let cur_block_size = cur_block.block_size();
             if insert_offset < cur_block.block_size() {
-                cur_block.backspace(insert_offset, count);
-                break;
+                if count < insert_offset {
+                    cur_block.backspace(insert_offset, count);
+                    break;
+                } else {
+                    cur_block.backspace(insert_offset, insert_offset);
+                    block_num = block_num.saturating_sub(1);
+                    count = count - insert_offset;
+                    insert_offset = cur_block_size - 1;
+                }
             } else {
                 insert_offset = insert_offset - cur_block.block_size();
                 block_num += 1;
@@ -326,7 +333,7 @@ impl EditText for HexText {
                     .unwrap();
                 if count > insert_offset {
                     next_block.backspace(insert_offset, insert_offset);
-                    block_num -= 1;
+                    block_num = block_num.saturating_sub(1);
                     count = count - insert_offset;
                     insert_offset = cur_block_size - 1;
                 } else {
@@ -351,7 +358,6 @@ impl EditText for HexText {
             //覆盖模式 先删除后插入
             self.backspace(cursor_y, bytes_cursor + c.len(), c.len(), line_meta)?;
         }
-
         let mut block_num = line_meta.get_block_num();
         let block_offset = line_meta.get_block_offset();
         let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
@@ -385,20 +391,13 @@ impl EditText for HexText {
         c: char,
     ) -> ChapResult<()> {
         //判断c是否是十六进制字符
-        log::debug!(
-            "block_num:{},block_offset:{},line_meta.line_offset:{}, char:{}",
-            line_meta.block_num,
-            line_meta.block_offset,
-            line_meta.line_offset,
-            c
-        );
-        if !c.is_ascii_hexdigit() {
-            return Err(ChapError::InvalidHexChar(c));
-        }
-        let mut block_num = line_meta.get_block_num();
-        let block_offset = line_meta.get_block_offset();
-        let mut block_line_index = line_meta.get_block_line_index();
-        let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+        // if !c.is_ascii_hexdigit() {
+        //     return Err(ChapError::InvalidHexChar(c));
+        // }
+        // let mut block_num = line_meta.get_block_num();
+        // let block_offset = line_meta.get_block_offset();
+        // let mut block_line_index = line_meta.get_block_line_index();
+        // let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
         Ok(())
     }
 
