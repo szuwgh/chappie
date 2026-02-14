@@ -63,6 +63,9 @@ crc = "3.0"
 #ask_gemini = {path = "rust-lib/ask_gemini", version = "0.1.4"}  
 #llmapi = {path = "crates/llmapi", version = "0.0.1"}  
 #groq-api-rs = "0.2.0"
-#openssl = { version = "0.10", default-features = false, features = [ "vendored"] }  
+#openssl = { version = "0.10", default-features = false, features = [ "vendored"] }
 #reqwest = { version = "0.12.5", features = ["blocking", "json", "multipart"] }
+
+[dev-dependencies]
+tempfile = "3"
 

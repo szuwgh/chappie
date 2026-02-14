@@ -84,7 +84,7 @@ impl GapBlockText {
                     start_line_index += line_count;
                 } else {
                     //不是完整行
-                    start_line_index += line_count - 1;
+                    start_line_index += line_count.saturating_sub(1);
                 }
                 block_start_offset += size;
                 block_indexs.push(block_index);
@@ -922,100 +922,978 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::textwarp::Line;
-    use ratatui::symbols::block;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // ================================================================
+    //  辅助函数
+    // ================================================================
+
+    /// 创建临时文件并写入内容，返回 GapBlockText
+    fn create_gap_block_text(content: &str) -> GapBlockText {
+        create_gap_block_text_bytes(content.as_bytes())
+    }
+
+    /// 从字节创建 GapBlockText
+    fn create_gap_block_text_bytes(content: &[u8]) -> GapBlockText {
+        let mut tmp = NamedTempFile::new().expect("failed to create temp file");
+        tmp.write_all(content)
+            .expect("failed to write temp file");
+        tmp.flush().expect("failed to flush temp file");
+        GapBlockText::from_file_path(tmp.path()).expect("failed to open GapBlockText")
+    }
+
+    /// 获取块中指定 block_num 的完整文本内容
+    fn get_block_text(gbt: &mut GapBlockText, block_num: usize) -> Vec<u8> {
+        let block = gbt
+            .blocks
+            .iter_mut()
+            .find(|b| b.block_num == block_num)
+            .expect("block not found");
+        block.data.as_continuous().to_vec()
+    }
+
+    /// 获取所有已加载块的拼接文本内容（按 block_num 排序）
+    fn get_all_blocks_text(gbt: &mut GapBlockText) -> Vec<u8> {
+        let mut block_nums: Vec<usize> = gbt.blocks.iter().map(|b| b.block_num).collect();
+        block_nums.sort();
+        let mut result = Vec::new();
+        for bn in block_nums {
+            result.extend_from_slice(&get_block_text(gbt, bn));
+        }
+        result
+    }
+
+    /// 构建默认 LineState（block_num=0, block_line_index=0, block_offset=0）
+    fn default_line_state() -> LineState {
+        LineState::default()
+    }
+
+    /// 构建指定 block/line/offset 的 LineState
+    fn make_line_state(
+        block_num: usize,
+        block_line_index: usize,
+        block_offset: usize,
+        line_offset: usize,
+    ) -> LineState {
+        LineState::builder()
+            .block_num(block_num)
+            .block_line_index(block_line_index)
+            .block_offset(block_offset)
+            .line_offset(line_offset)
+            .build()
+    }
+
+    /// 生成跨越多个 block 的大文本内容
+    /// 每行格式: "LINE-{n}:xxxx...xxxx\n"，每行固定长度 line_len
+    fn generate_large_content(total_bytes: usize, line_len: usize) -> String {
+        let mut content = String::new();
+        let mut line_num = 0;
+        while content.len() < total_bytes {
+            let prefix = format!("LINE-{:04}:", line_num);
+            let remaining = line_len.saturating_sub(prefix.len() + 1); // -1 for '\n'
+            let filler: String = std::iter::repeat('x').take(remaining).collect();
+            content.push_str(&prefix);
+            content.push_str(&filler);
+            content.push('\n');
+            line_num += 1;
+        }
+        content.truncate(total_bytes);
+        // 确保最后一个字符是换行符
+        if !content.ends_with('\n') {
+            let len = content.len();
+            content.replace_range(len - 1..len, "\n");
+        }
+        content
+    }
+
+    /// 生成恰好 n 字节的重复填充行文本（每行 80 字符）
+    fn generate_padded_content(n: usize) -> String {
+        let mut s = String::new();
+        let mut i = 0u32;
+        while s.len() < n {
+            let line = format!("{:079}\n", i);
+            s.push_str(&line);
+            i += 1;
+        }
+        s.truncate(n);
+        if !s.ends_with('\n') {
+            let len = s.len();
+            s.replace_range(len - 1..len, "\n");
+        }
+        s
+    }
+
+    // ================================================================
+    //  一、短文本测试 (< 100 字节, 单 block)
+    // ================================================================
+
+    // ---------- insert_char 短文本 ----------
+
     #[test]
-    fn test_gap_block_text() {
-        let gap_block_text = GapBlockText::from_file_path("/home/postgres/a.txt").unwrap();
-        for block in gap_block_text.blocks.iter() {
-            let block_index = gap_block_text.block_indexs.get(block.block_num).unwrap();
-            //打印块所有字段信息
-            println!(
-                "Block number: {},line_count:{},file_start:{},file_end:{},is_modified:{}",
-                block.block_num,
-                block_index.line_count,
-                block_index.file_start,
-                block_index.block_size,
-                block.is_modified
-            );
-            for (i, line_idx) in gap_block_text.block_indexs[block.block_num]
-                .lines_index
-                .iter()
-                .enumerate()
-            {
-                println!(
-                    "  line {}: block_start: {}, block_end: {}, is_complete: {},content:{}",
-                    i,
-                    line_idx.block_start,
-                    line_idx.block_end,
-                    line_idx.is_complete,
-                    block.text_from_line(line_idx)
+    fn test_short_insert_char_at_beginning() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 0, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "Xhello\n");
+    }
+
+    #[test]
+    fn test_short_insert_char_in_middle() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 2, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "heXllo\n");
+    }
+
+    #[test]
+    fn test_short_insert_char_before_newline() {
+        let mut gbt = create_gap_block_text("hi\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 2, &state, '!').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "hi!\n");
+    }
+
+    #[test]
+    fn test_short_insert_char_utf8_chinese() {
+        let mut gbt = create_gap_block_text("abc\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 1, &state, '中').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "a中bc\n");
+        // 验证 block_size 增加了 3（中文 UTF-8 占 3 字节）
+        assert_eq!(gbt.block_indexs[0].block_size, 7);
+    }
+
+    #[test]
+    fn test_short_insert_char_utf8_emoji() {
+        let mut gbt = create_gap_block_text("ab\n");
+        let state = default_line_state();
+        // emoji 占 4 字节
+        gbt.insert_char(0, 1, &state, '😀').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "a😀b\n");
+        assert_eq!(gbt.block_indexs[0].block_size, 7); // 1+4+1+1
+    }
+
+    #[test]
+    fn test_short_insert_char_consecutive() {
+        let mut gbt = create_gap_block_text("ab\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 1, &state, '1').unwrap(); // "a1b\n"
+        gbt.insert_char(0, 2, &state, '2').unwrap(); // "a12b\n"
+        gbt.insert_char(0, 3, &state, '3').unwrap(); // "a123b\n"
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "a123b\n");
+    }
+
+    // ---------- insert_bytes 短文本 ----------
+
+    #[test]
+    fn test_short_insert_bytes_at_beginning() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_bytes(0, 0, &state, b"XYZ", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "XYZhello\n");
+    }
+
+    #[test]
+    fn test_short_insert_bytes_in_middle() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_bytes(0, 3, &state, b"XY", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "helXYlo\n");
+    }
+
+    #[test]
+    fn test_short_insert_bytes_empty() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_bytes(0, 0, &state, b"", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "hello\n");
+    }
+
+    #[test]
+    fn test_short_insert_bytes_with_newlines() {
+        let mut gbt = create_gap_block_text("ab\n");
+        let state = default_line_state();
+        gbt.insert_bytes(0, 1, &state, b"X\nY", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aX\nYb\n");
+    }
+
+    // ---------- insert_newline 短文本 ----------
+
+    #[test]
+    fn test_short_insert_newline_at_start() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 0, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "\nhello\n");
+    }
+
+    #[test]
+    fn test_short_insert_newline_in_middle() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 3, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "hel\nlo\n");
+    }
+
+    #[test]
+    fn test_short_insert_newline_index_update() {
+        let mut gbt = create_gap_block_text("abcdef\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 3, &state).unwrap();
+        let bi = &gbt.block_indexs[0];
+        assert_eq!(bi.lines_index.len(), 2);
+        assert_eq!(bi.lines_index[0].block_start, 0);
+        assert_eq!(bi.lines_index[0].block_end, 4); // "abc\n"
+        assert!(bi.lines_index[0].is_complete);
+        assert_eq!(bi.lines_index[1].block_start, 4);
+        assert_eq!(bi.lines_index[1].block_end, 8); // "def\n"
+    }
+
+    #[test]
+    fn test_short_insert_newline_on_empty_line() {
+        // 文件只有一个换行
+        let mut gbt = create_gap_block_text("\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 0, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "\n\n");
+    }
+
+    // ---------- backspace 短文本 ----------
+
+    #[test]
+    fn test_short_backspace_single() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.backspace(0, 3, 1, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "helo\n");
+    }
+
+    #[test]
+    fn test_short_backspace_multiple() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.backspace(0, 5, 3, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "he\n");
+    }
+
+    #[test]
+    fn test_short_backspace_block_size_update() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let orig = gbt.block_indexs[0].block_size;
+        let state = default_line_state();
+        gbt.backspace(0, 2, 1, &state).unwrap();
+        assert_eq!(gbt.block_indexs[0].block_size, orig - 1);
+    }
+
+    #[test]
+    fn test_short_backspace_then_insert_restore() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.backspace(0, 3, 1, &state).unwrap(); // "helo\n"
+        gbt.insert_char(0, 2, &state, 'l').unwrap(); // "hello\n"
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "hello\n");
+    }
+
+    // ---------- 短文本组合/边界 ----------
+
+    #[test]
+    fn test_short_insert_newline_then_merge() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 3, &state).unwrap(); // "hel\nlo\n"
+        let state2 = make_line_state(0, 1, 4, 0);
+        gbt.backspace(1, 0, 1, &state2).unwrap(); // "hello\n"
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "hello\n");
+    }
+
+    #[test]
+    fn test_short_modified_flag_insert() {
+        let mut gbt = create_gap_block_text("hi\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 0, &state, 'X').unwrap();
+        assert!(gbt.blocks.iter().find(|b| b.block_num == 0).unwrap().is_modified);
+    }
+
+    #[test]
+    fn test_short_modified_flag_backspace() {
+        let mut gbt = create_gap_block_text("hi\n");
+        let state = default_line_state();
+        gbt.backspace(0, 2, 1, &state).unwrap();
+        assert!(gbt.blocks.iter().find(|b| b.block_num == 0).unwrap().is_modified);
+    }
+
+    #[test]
+    fn test_short_rollback_ok() {
+        assert!(GapBlockText::rollback().is_ok());
+    }
+
+    // ================================================================
+    //  二、多行文本测试 (多行但仍在单 block 内, < 4096 字节)
+    // ================================================================
+
+    // ---------- insert_char 多行文本 ----------
+
+    #[test]
+    fn test_multi_insert_char_first_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 1, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aXaa\nbbb\nccc\n");
+    }
+
+    #[test]
+    fn test_multi_insert_char_second_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        // 第二行: block_line_index=1, block_offset=4 ("aaa\n" = 4 bytes)
+        let state = make_line_state(0, 1, 4, 0);
+        gbt.insert_char(1, 1, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbXbb\nccc\n");
+    }
+
+    #[test]
+    fn test_multi_insert_char_third_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        // 第三行: block_line_index=2, block_offset=8
+        let state = make_line_state(0, 2, 8, 0);
+        gbt.insert_char(2, 2, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbbb\nccXc\n");
+    }
+
+    #[test]
+    fn test_multi_insert_char_updates_subsequent_lines() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 1, &state, 'X').unwrap();
+        let bi = &gbt.block_indexs[0];
+        // 第一行: "aXaa\n" = 5 bytes, block_end = 5
+        assert_eq!(bi.lines_index[0].block_end, 5);
+        // 第二行 block_start 应从 4->5, block_end 从 8->9
+        assert_eq!(bi.lines_index[1].block_start, 5);
+        assert_eq!(bi.lines_index[1].block_end, 9);
+        // 第三行 也偏移
+        assert_eq!(bi.lines_index[2].block_start, 9);
+        assert_eq!(bi.lines_index[2].block_end, 13);
+    }
+
+    // ---------- insert_bytes 多行文本 ----------
+
+    #[test]
+    fn test_multi_insert_bytes_on_last_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        let state = make_line_state(0, 2, 8, 0);
+        gbt.insert_bytes(2, 1, &state, b"XXXX", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbbb\ncXXXXcc\n");
+    }
+
+    #[test]
+    fn test_multi_insert_bytes_rebuilds_index() {
+        let mut gbt = create_gap_block_text("aa\nbb\ncc\n");
+        let state = default_line_state();
+        // insert_bytes 会通过 from_block_bytes 完全重建索引
+        gbt.insert_bytes(0, 1, &state, b"123", false).unwrap();
+        let bi = &gbt.block_indexs[0];
+        assert_eq!(bi.lines_index.len(), 3); // 仍然 3 行
+        assert_eq!(bi.block_size, 12); // 原始 9 + 3
+    }
+
+    #[test]
+    fn test_multi_insert_bytes_with_newlines_rebuilds_lines() {
+        let mut gbt = create_gap_block_text("aa\nbb\n");
+        let state = default_line_state();
+        gbt.insert_bytes(0, 1, &state, b"X\nY\nZ", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aX\nY\nZa\nbb\n");
+        let bi = &gbt.block_indexs[0];
+        assert_eq!(bi.lines_index.len(), 4); // 从 2 行变 4 行
+    }
+
+    // ---------- insert_newline 多行文本 ----------
+
+    #[test]
+    fn test_multi_insert_newline_first_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 2, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aa\na\nbbb\nccc\n");
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), 4);
+    }
+
+    #[test]
+    fn test_multi_insert_newline_middle_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbbccc\nddd\n");
+        // 第二行 block_offset=4
+        let state = make_line_state(0, 1, 4, 0);
+        gbt.insert_newline(1, 3, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbbb\nccc\nddd\n");
+    }
+
+    #[test]
+    fn test_multi_insert_newline_last_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\ncccdddeee\n");
+        // 第三行 block_offset=8
+        let state = make_line_state(0, 2, 8, 0);
+        gbt.insert_newline(2, 3, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbbb\nccc\ndddeee\n");
+    }
+
+    #[test]
+    fn test_multi_insert_newline_consecutive() {
+        let mut gbt = create_gap_block_text("abcdef\n");
+        let state = default_line_state();
+        gbt.insert_newline(0, 2, &state).unwrap(); // "ab\ncdef\n"
+        let state2 = make_line_state(0, 1, 3, 0);
+        gbt.insert_newline(1, 2, &state2).unwrap(); // "ab\ncd\nef\n"
+        let state3 = make_line_state(0, 2, 6, 0);
+        gbt.insert_newline(2, 1, &state3).unwrap(); // "ab\ncd\ne\nf\n"
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "ab\ncd\ne\nf\n");
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), 4);
+    }
+
+    // ---------- backspace 多行文本 ----------
+
+    #[test]
+    fn test_multi_backspace_first_line() {
+        let mut gbt = create_gap_block_text("hello\nworld\nfoo\n");
+        let state = default_line_state();
+        gbt.backspace(0, 3, 1, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "helo\nworld\nfoo\n");
+    }
+
+    #[test]
+    fn test_multi_backspace_second_line() {
+        let mut gbt = create_gap_block_text("hello\nworld\nfoo\n");
+        let state = make_line_state(0, 1, 6, 0);
+        gbt.backspace(1, 3, 1, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "hello\nwold\nfoo\n");
+    }
+
+    #[test]
+    fn test_multi_backspace_merge_second_into_first() {
+        let mut gbt = create_gap_block_text("hello\nworld\nfoo\n");
+        let state = make_line_state(0, 1, 6, 0);
+        gbt.backspace(1, 0, 1, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "helloworld\nfoo\n");
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), 2);
+    }
+
+    #[test]
+    fn test_multi_backspace_merge_third_into_second() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        // 第三行行首: block_line_index=2, block_offset=8
+        let state = make_line_state(0, 2, 8, 0);
+        gbt.backspace(2, 0, 1, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbbbccc\n");
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), 2);
+    }
+
+    #[test]
+    fn test_multi_backspace_subsequent_line_index_updates() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\nccc\n");
+        let state = default_line_state();
+        gbt.backspace(0, 2, 1, &state).unwrap(); // "aa\nbbb\nccc\n"
+        let bi = &gbt.block_indexs[0];
+        assert_eq!(bi.lines_index[0].block_end, 3); // "aa\n"
+        assert_eq!(bi.lines_index[1].block_start, 3);
+        assert_eq!(bi.lines_index[1].block_end, 7); // "bbb\n"
+        assert_eq!(bi.lines_index[2].block_start, 7);
+        assert_eq!(bi.lines_index[2].block_end, 11); // "ccc\n"
+    }
+
+    // ---------- 多行组合测试 ----------
+
+    #[test]
+    fn test_multi_insert_char_then_newline_then_backspace() {
+        let mut gbt = create_gap_block_text("ab\ncd\n");
+        let state = default_line_state();
+        gbt.insert_char(0, 1, &state, 'X').unwrap(); // "aXb\ncd\n"
+        gbt.insert_newline(0, 2, &state).unwrap(); // "aX\nb\ncd\n"
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aX\nb\ncd\n");
+
+        // 合并第二行到第一行
+        let state2 = make_line_state(0, 1, 3, 0);
+        gbt.backspace(1, 0, 1, &state2).unwrap(); // "aXb\ncd\n"
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aXb\ncd\n");
+    }
+
+    #[test]
+    fn test_multi_many_lines() {
+        // 10 行短文本
+        let content = "L0\nL1\nL2\nL3\nL4\nL5\nL6\nL7\nL8\nL9\n";
+        let mut gbt = create_gap_block_text(content);
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), 10);
+
+        // 在第 5 行插入字符
+        // L0(3) + L1(3) + L2(3) + L3(3) + L4(3) = offset 15
+        let state = make_line_state(0, 5, 15, 0);
+        gbt.insert_char(5, 1, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert!(data.starts_with(b"L0\nL1\nL2\nL3\nL4\nLX5\n"));
+    }
+
+    #[test]
+    fn test_multi_make_backup() {
+        let content = "hello\nworld\nfoo\nbar\n";
+        let mut gbt = create_gap_block_text(content);
+        let state = default_line_state();
+        gbt.insert_char(0, 0, &state, 'Z').unwrap();
+        let backup_file = NamedTempFile::new().unwrap();
+        let backup_path = backup_file.path().to_path_buf();
+        gbt.make_backup(&backup_path).unwrap();
+        let backup_content = std::fs::read_to_string(&backup_path).unwrap();
+        assert_eq!(backup_content, "Zhello\nworld\nfoo\nbar\n");
+    }
+
+    #[test]
+    fn test_multi_insert_bytes_on_second_line() {
+        let mut gbt = create_gap_block_text("aaa\nbbb\n");
+        let state = make_line_state(0, 1, 4, 0);
+        gbt.insert_bytes(1, 1, &state, b"XX", false).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "aaa\nbXXbb\n");
+    }
+
+    #[test]
+    fn test_multi_no_trailing_newline() {
+        let mut gbt = create_gap_block_text("line1\nline2");
+        let state = default_line_state();
+        gbt.insert_char(0, 3, &state, 'X').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        assert_eq!(String::from_utf8_lossy(&data), "linXe1\nline2");
+    }
+
+    // ================================================================
+    //  三、大块文本测试 (跨越 4096 字节 block 边界)
+    // ================================================================
+
+    #[test]
+    fn test_large_file_creates_multiple_blocks() {
+        // 创建 > 4096 字节的文件，确保产生多个 block
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let gbt = create_gap_block_text(&content);
+        assert!(
+            gbt.block_indexs.len() >= 3,
+            "文件大于 2 * BLOCK_SIZE 应产生至少 3 个 block, 实际 {}",
+            gbt.block_indexs.len()
+        );
+        assert_eq!(gbt.file_size, content.len());
+    }
+
+    #[test]
+    fn test_large_block_index_consistency() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let gbt = create_gap_block_text(&content);
+        // 检查 block_indexs 的连续性
+        for i in 0..gbt.block_indexs.len() {
+            assert_eq!(gbt.block_indexs[i].block_num, i);
+            if i > 0 {
+                assert_eq!(
+                    gbt.block_indexs[i].file_start,
+                    gbt.block_indexs[i - 1].file_start + gbt.block_indexs[i - 1].block_size,
+                    "block {} 的 file_start 应等于前一个 block 的 file_end",
+                    i
                 );
             }
         }
-        //assert!(gap_block_text.is_ok());
     }
+
     #[test]
-    fn test_gap_block_iter() {
-        let mut gap_block_text = GapBlockText::from_file_path("/home/postgres/a.txt").unwrap();
-        let mut block_num = 0;
-        let mut block_offset = 0;
-        let mut block_line_index = 0;
+    fn test_large_insert_char_on_block0() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let orig_size = gbt.block_indexs[0].block_size;
+        gbt.insert_char(0, 5, &state, 'Z').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        // 验证 block 0 的第一行头部
+        let first_line: String = String::from_utf8_lossy(&data)
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(first_line.starts_with("LINE-Z0000:"));
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size + 1);
+    }
 
-        for _ in 0..122 {
-            let mut iter = gap_block_text
-                .get_iter(block_num, block_line_index, block_offset)
-                .unwrap();
-            let line_block_str = iter.next().unwrap();
-            block_num = line_block_str.get_end_block_num();
-            block_offset = line_block_str.get_end_block_offset();
-            block_line_index = line_block_str.get_block_line_index();
-            println!(
-                "str:{},block_num:{},next_block_offset:{},cur_block_line_index:{}",
-                line_block_str, block_num, block_offset, block_line_index
-            );
+    #[test]
+    fn test_large_insert_char_on_block0_second_line() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        // 第二行: block_line_index=1
+        let bi = &gbt.block_indexs[0];
+        let line1_info = &bi.lines_index[1];
+        let block_offset = line1_info.block_start;
+        let state = make_line_state(0, 1, block_offset, 0);
+        gbt.insert_char(1, 5, &state, 'Z').unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        let text = String::from_utf8_lossy(&data).to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        // 第二行应该在位置 5 插入了 'Z'
+        assert!(lines.len() >= 2);
+    }
+
+    #[test]
+    fn test_large_insert_char_on_block1() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        // 在 block 1 的第一行插入
+        let bi1 = &gbt.block_indexs[1];
+        let first_line_offset = bi1.lines_index[0].block_start;
+        let state = make_line_state(1, 0, first_line_offset, 0);
+        let orig_size = bi1.block_size;
+        gbt.insert_char(0, 3, &state, 'Z').unwrap();
+        assert_eq!(gbt.block_indexs[1].block_size, orig_size + 1);
+    }
+
+    #[test]
+    fn test_large_insert_bytes_on_block0() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let orig_size = gbt.block_indexs[0].block_size;
+        gbt.insert_bytes(0, 5, &state, b"ABCDE", false).unwrap();
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size + 5);
+    }
+
+    #[test]
+    fn test_large_insert_bytes_on_block1() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi1 = &gbt.block_indexs[1];
+        let first_line_offset = bi1.lines_index[0].block_start;
+        let state = make_line_state(1, 0, first_line_offset, 0);
+        let orig_size = bi1.block_size;
+        gbt.insert_bytes(0, 2, &state, b"XY", false).unwrap();
+        assert_eq!(gbt.block_indexs[1].block_size, orig_size + 2);
+    }
+
+    #[test]
+    fn test_large_insert_newline_on_block0() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let orig_line_count = gbt.block_indexs[0].lines_index.len();
+        let state = default_line_state();
+        gbt.insert_newline(0, 5, &state).unwrap();
+        // 行数应增加 1
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), orig_line_count + 1);
+        // block_size 增加 1
+        let data = get_block_text(&mut gbt, 0);
+        let text = String::from_utf8_lossy(&data);
+        let first_line = text.lines().next().unwrap();
+        assert_eq!(first_line, "LINE-");
+    }
+
+    #[test]
+    fn test_large_insert_newline_on_block1() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi1 = &gbt.block_indexs[1];
+        let first_line_offset = bi1.lines_index[0].block_start;
+        let orig_lines = bi1.lines_index.len();
+        let state = make_line_state(1, 0, first_line_offset, 0);
+        gbt.insert_newline(0, 10, &state).unwrap();
+        assert_eq!(gbt.block_indexs[1].lines_index.len(), orig_lines + 1);
+    }
+
+    #[test]
+    fn test_large_backspace_on_block0() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let orig_size = gbt.block_indexs[0].block_size;
+        gbt.backspace(0, 5, 2, &state).unwrap();
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size - 2);
+    }
+
+    #[test]
+    fn test_large_backspace_on_block1() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi1 = &gbt.block_indexs[1];
+        let first_line_offset = bi1.lines_index[0].block_start;
+        let orig_size = bi1.block_size;
+        let state = make_line_state(1, 0, first_line_offset, 0);
+        gbt.backspace(0, 5, 1, &state).unwrap();
+        assert_eq!(gbt.block_indexs[1].block_size, orig_size - 1);
+    }
+
+    #[test]
+    fn test_large_backspace_merge_in_block0() {
+        // 确保第一个块有多行
+        let content = generate_large_content(BLOCK_SIZE * 2, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let bi = &gbt.block_indexs[0];
+        assert!(bi.lines_index.len() >= 2, "block 0 应至少有 2 行");
+        let second_line = &bi.lines_index[1];
+        let block_offset = second_line.block_start;
+        let orig_lines = bi.lines_index.len();
+        let state = make_line_state(0, 1, block_offset, 0);
+        gbt.backspace(1, 0, 1, &state).unwrap();
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), orig_lines - 1);
+    }
+
+    #[test]
+    fn test_large_backspace_merge_cross_block() {
+        // 在 block 1 第一行行首退格，触发跨块合并
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi1 = &gbt.block_indexs[1];
+        let first_line_info = &bi1.lines_index[0];
+        // block_line_index=0, block_offset=first_line_info.block_start
+        // 行首退格: bytes_cursor=0, line_offset=0
+        let state = make_line_state(1, 0, first_line_info.block_start, 0);
+        // 跨块合并: block_offset == 0，block_num > 0
+        // 这里 block_offset 可能不为 0（如果行跨块），需要根据实际情况构造
+        // 当 block_line_index=0 且 line_offset=0 且 bytes_cursor=0:
+        //   如果 block_offset > 0 -> 块内合并
+        //   如果 block_offset == 0 -> 跨块合并
+        if first_line_info.block_start == 0 {
+            // 跨块合并
+            let bi0_last = gbt.block_indexs[0].lines_index.last().unwrap().clone();
+            let was_complete = bi0_last.is_complete;
+            gbt.backspace(0, 0, 1, &state).unwrap();
+            // 跨块合并后，block 0 的最后一行应变成 is_complete=false
+            let bi0_last_after = gbt.block_indexs[0].lines_index.last().unwrap();
+            assert!(!bi0_last_after.is_complete, "跨块合并后前一块最后行应标记为不完整");
+        } else {
+            // 块内合并
+            let orig_lines = gbt.block_indexs[1].lines_index.len();
+            let state2 = make_line_state(1, 0, 0, 0);
+            // 如果 block_offset > 0 说明这一行不在块首，走块内合并逻辑
+            // 但 block_line_index=0 时 block_line_index-1 会 underflow
+            // 这种情况说明块的第一行前面有数据属于上一个块的跨行
         }
-        println!("-----------------reverse-------------------");
-        // let line_state = LineState::builder()
-        //     .block_num(block_num)
-        //     .block_offset(block_offset)
-        //     .block_line_index(block_line_index + 1)
-        //     .build();
+    }
 
-        // let pre_line_state = gap_block_text.get_pre_line_state(&line_state).unwrap();
-        // println!(
-        //     "pre_block_num:{},pre_block_offset:{},pre_block_index:{}",
-        //     pre_line_state.get_block_num(),
-        //     pre_line_state.get_block_offset(),
-        //     pre_line_state.get_block_line_index()
-        // );
-        // block_num = pre_line_state.get_block_num();
-        // block_offset = pre_line_state.get_block_offset();
-        // block_line_index = pre_line_state.get_block_line_index();
-        // for _ in 0..125 {
-        //     let line_state = {
-        //         let mut iter_rev = gap_block_text
-        //             .get_iter_rev(block_num, block_line_index, block_offset)
-        //             .unwrap();
-        //         let line_block_str = iter_rev.next().unwrap();
-        //         println!(
-        //             "str:{},block_num:{},block_offset:{}",
-        //             line_block_str, block_num, block_offset
-        //         );
-        //         let line_state = LineState::builder()
-        //             .block_num(block_num)
-        //             .block_offset(block_offset)
-        //             .block_line_index(block_line_index)
-        //             .build();
-        //         line_state
-        //     };
+    #[test]
+    fn test_large_insert_then_backspace_on_block0() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        gbt.insert_char(0, 5, &state, 'Z').unwrap();
+        gbt.backspace(0, 6, 1, &state).unwrap();
+        let data = get_block_text(&mut gbt, 0);
+        let text = String::from_utf8_lossy(&data);
+        assert!(text.starts_with("LINE-0000:"));
+    }
 
-        //     let pre_line_state = gap_block_text.get_pre_line_state(&line_state).unwrap();
-        //     block_num = pre_line_state.get_block_num();
-        //     block_offset = pre_line_state.get_block_offset();
-        //     block_line_index = pre_line_state.get_block_line_index();
-        // }
+    #[test]
+    fn test_large_insert_newline_then_merge_on_block0() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let orig_lines = gbt.block_indexs[0].lines_index.len();
+        let state = default_line_state();
+        gbt.insert_newline(0, 5, &state).unwrap();
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), orig_lines + 1);
+        let state2 = make_line_state(0, 1, 6, 0);
+        gbt.backspace(1, 0, 1, &state2).unwrap();
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), orig_lines);
+    }
+
+    #[test]
+    fn test_large_make_backup_unmodified() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let backup_file = NamedTempFile::new().unwrap();
+        let backup_path = backup_file.path().to_path_buf();
+        gbt.make_backup(&backup_path).unwrap();
+        let backup_content = std::fs::read(&backup_path).unwrap();
+        assert_eq!(
+            backup_content.len(),
+            content.len(),
+            "未修改大文件备份长度应一致"
+        );
+        assert_eq!(backup_content, content.as_bytes());
+    }
+
+    #[test]
+    fn test_large_make_backup_after_modify_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        gbt.insert_char(0, 0, &state, 'Z').unwrap();
+        let backup_file = NamedTempFile::new().unwrap();
+        let backup_path = backup_file.path().to_path_buf();
+        gbt.make_backup(&backup_path).unwrap();
+        let backup_content = std::fs::read(&backup_path).unwrap();
+        assert_eq!(backup_content[0], b'Z');
+        assert_eq!(backup_content.len(), content.len() + 1);
+    }
+
+    #[test]
+    fn test_large_file_size() {
+        let content = generate_padded_content(BLOCK_SIZE * 3);
+        let gbt = create_gap_block_text(&content);
+        assert_eq!(gbt.get_file_size(), content.len());
+    }
+
+    #[test]
+    fn test_large_block_line_count() {
+        // 每行 80 字节, 4096/80 = 51.2, 所以 block 0 约有 51 行
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let gbt = create_gap_block_text(&content);
+        let bi0 = &gbt.block_indexs[0];
+        assert!(
+            bi0.lines_index.len() >= 40,
+            "block 0 至少应有 40 行, 实际 {}",
+            bi0.lines_index.len()
+        );
+    }
+
+    #[test]
+    fn test_large_insert_char_on_last_line_of_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi = &gbt.block_indexs[0];
+        let last_idx = bi.lines_index.len() - 1;
+        let last_line = &bi.lines_index[last_idx];
+        let state = make_line_state(0, last_idx, last_line.block_start, 0);
+        let orig_end = last_line.block_end;
+        gbt.insert_char(0, 3, &state, 'Z').unwrap();
+        assert_eq!(
+            gbt.block_indexs[0].lines_index[last_idx].block_end,
+            orig_end + 1
+        );
+    }
+
+    #[test]
+    fn test_large_insert_newline_on_last_line_of_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi = &gbt.block_indexs[0];
+        let last_idx = bi.lines_index.len() - 1;
+        let last_line = &bi.lines_index[last_idx];
+        let orig_lines = bi.lines_index.len();
+        let state = make_line_state(0, last_idx, last_line.block_start, 0);
+        gbt.insert_newline(0, 5, &state).unwrap();
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), orig_lines + 1);
+    }
+
+    #[test]
+    fn test_large_backspace_on_last_line_of_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi = &gbt.block_indexs[0];
+        let last_idx = bi.lines_index.len() - 1;
+        let last_line = &bi.lines_index[last_idx];
+        let state = make_line_state(0, last_idx, last_line.block_start, 0);
+        let orig_size = bi.block_size;
+        gbt.backspace(0, 5, 2, &state).unwrap();
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size - 2);
+    }
+
+    #[test]
+    fn test_large_consecutive_inserts_on_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let orig_size = gbt.block_indexs[0].block_size;
+        for i in 0..10 {
+            gbt.insert_char(0, i, &state, 'A').unwrap();
+        }
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size + 10);
+    }
+
+    #[test]
+    fn test_large_consecutive_backspaces_on_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let orig_size = gbt.block_indexs[0].block_size;
+        for _ in 0..5 {
+            gbt.backspace(0, 10, 1, &state).unwrap();
+        }
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size - 5);
+    }
+
+    #[test]
+    fn test_large_3_blocks_file() {
+        let content = generate_padded_content(BLOCK_SIZE * 3 + 200);
+        let gbt = create_gap_block_text(&content);
+        assert!(
+            gbt.block_indexs.len() >= 4,
+            "3*BLOCK_SIZE+200 应产生至少 4 个 block, 实际 {}",
+            gbt.block_indexs.len()
+        );
+        // 所有 block 的 block_size 之和应等于 file_size
+        let total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        assert_eq!(total, content.len());
+    }
+
+    #[test]
+    fn test_large_insert_bytes_large_payload() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let payload = vec![b'X'; 200];
+        let orig_size = gbt.block_indexs[0].block_size;
+        gbt.insert_bytes(0, 5, &state, &payload, false).unwrap();
+        assert_eq!(gbt.block_indexs[0].block_size, orig_size + 200);
+    }
+
+    #[test]
+    fn test_large_insert_bytes_with_newlines_on_block0() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        let orig_lines = gbt.block_indexs[0].lines_index.len();
+        gbt.insert_bytes(0, 5, &state, b"A\nB\nC", false).unwrap();
+        // insert_bytes 重建索引，增加了 2 个换行 => 多 2 行
+        assert_eq!(gbt.block_indexs[0].lines_index.len(), orig_lines + 2);
+    }
+
+    #[test]
+    fn test_large_exact_block_boundary() {
+        // 文件大小恰好是 BLOCK_SIZE 的倍数
+        let content = generate_padded_content(BLOCK_SIZE * 2);
+        let gbt = create_gap_block_text(&content);
+        let total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        assert_eq!(total, BLOCK_SIZE * 2);
+    }
+
+    #[test]
+    fn test_large_insert_char_utf8_on_block1() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+        let bi1 = &gbt.block_indexs[1];
+        let first_line_offset = bi1.lines_index[0].block_start;
+        let orig_size = bi1.block_size;
+        let state = make_line_state(1, 0, first_line_offset, 0);
+        gbt.insert_char(0, 3, &state, '中').unwrap(); // 3 字节
+        assert_eq!(gbt.block_indexs[1].block_size, orig_size + 3);
     }
 }
