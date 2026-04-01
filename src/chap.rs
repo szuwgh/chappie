@@ -52,7 +52,7 @@ impl Chappie {
         let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
         let home = dirs::home_dir().expect("Failed to get home directory");
         let chap_log_dir = home.join(".chap/log");
-        let chap_plugin_dir = PathBuf::from("/home/postgres/rsproject/chappie/plugin"); //home.join(".chap/plugin");
+        let chap_plugin_dir = home.join(".chap/plugin");
         fs::create_dir_all(&chap_log_dir)?;
         fs::create_dir_all(&chap_plugin_dir)?;
         // 配置日志输出到文件

@@ -360,8 +360,24 @@ impl CacheStr {
                 LineParts::from_2(l, r)
             }
             CacheStr::GapBlock(v1, v2) => {
-                let (l1, r1) = v1.text(&range);
-                let (l2, r2) = v2.text(&range);
+                let len1 = v1.len();
+                let total_len = len1 + v2.len();
+                let start = match range.start_bound() {
+                    Bound::Included(&s) => s,
+                    Bound::Excluded(&s) => s + 1,
+                    Bound::Unbounded => 0,
+                };
+                let end = match range.end_bound() {
+                    Bound::Included(&e) => e,
+                    Bound::Excluded(&e) => e,
+                    Bound::Unbounded => total_len,
+                };
+                // v1 取 [start, min(end, len1)]
+                let (l1, r1) = v1.text(&(start..end.min(len1)));
+                // v2 的 range 需偏移 len1
+                let v2_start = start.saturating_sub(len1);
+                let v2_end = end.saturating_sub(len1);
+                let (l2, r2) = v2.text(&(v2_start..v2_end));
                 LineParts::from_4(l1, r1, l2, r2)
             }
         }
@@ -2705,5 +2721,13 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
 
     pub(crate) fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
         self.edit_text.borrow_lines_mut().save(filepath)
+    }
+}
+
+#[cfg(test)]
+impl CacheStr {
+    /// 从 Vec<u8> 构造 CacheStr，仅用于测试
+    pub(crate) fn from_vec_for_test(data: Vec<u8>) -> Self {
+        CacheStr::Vec(VecCache::from_vec(data))
     }
 }
