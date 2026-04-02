@@ -31,7 +31,8 @@ fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usi
     let mut end_idx = None;
     let mut last_start_idx = None;
     let slen = s.get_non_control_len();
-    for (idx, (byte_index, ch)) in s.char_indices().enumerate() {
+    // 去掉多余的 .enumerate()：idx 从未被使用，直接取 char_indices() 的 (byte_index, ch)
+    for (byte_index, ch) in s.char_indices() {
         // if ch.is_control() {
         //     continue;
         // }
@@ -58,49 +59,63 @@ fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usi
     (&s[..start], &s[start..end], &s[end..], start - last_start)
 }
 
-/// 单次遍历同时求出字符范围 [char_start, char_end) 对应的字节边界。
+/// 单次字符遍历，直接返回字符范围 [char_start, char_end) 对应的可见字节切片（至多 2 段）。
 ///
 /// # 优化说明
-/// 原来两次独立调用 char_to_byte_offset 各自从字节 0 开始遍历，
-/// 合计消耗 2×(char_start + char_end) 次字符迭代。
-/// 本函数一次遍历同时找到两个边界，最多遍历 char_end 次，节省约 50% 的遍历开销。
+/// 原先两步：char_range_to_byte_range（扫描一遍求字节边界）+
+///           slice_parts_range（再扫描一遍切取子切片）。
+/// 本函数融合两步：在遍历中同时记录 char_start 所在位置，
+/// 到达 char_end 时即刻提取切片返回，字节只扫描一遍，节省约 50% 扫描量。
 ///
-/// # 返回值
-/// (byte_start, byte_end)：
-///   - byte_start：第 char_start 个字符的字节起始位置
-///   - byte_end  ：第 char_end   个字符的字节起始位置（可见区域末尾）
-///   - 若 char_start / char_end 超出文本末尾，对应值返回总字节数（安全截断）
-fn char_range_to_byte_range(parts: &[&[u8]], char_start: usize, char_end: usize) -> (usize, usize) {
+/// 可见区域跨越 3+ 段时取前两段（与原 slice_parts_range 行为一致）。
+fn char_range_to_visible<'a>(
+    parts: &[&'a [u8]],
+    char_start: usize,
+    char_end: usize,
+) -> [&'a [u8]; 2] {
     let mut char_count = 0usize;
-    // 累计已完整处理的 part 字节数；循环提前退出时不代表全文总字节，
-    // 但此时 result_end 必然已被赋值，无需用 byte_total 作兜底。
-    let mut byte_total = 0usize;
-    let mut result_start: Option<usize> = None;
+    // char_start 所在的 part 索引及其在该 part 内的字节偏移
+    let mut start_pi = 0usize;
+    let mut start_byte = 0usize;
+    let mut found_start = false;
 
-    'outer: for part in parts {
-        match std::str::from_utf8(part) {
-            Ok(s) => {
-                for (byte_idx, _) in s.char_indices() {
-                    // 记录 char_start 对应的字节偏移（只赋值一次）
-                    if result_start.is_none() && char_count == char_start {
-                        result_start = Some(byte_total + byte_idx);
-                    }
-                    // 到达 char_end 时立即返回，无需继续遍历后续字符
-                    if char_count == char_end {
-                        let byte_end = byte_total + byte_idx;
-                        // result_start 未找到（char_start > char_end）时兜底为 byte_end
-                        return (result_start.unwrap_or(byte_end), byte_end);
-                    }
-                    char_count += 1;
-                }
+    for (pi, part) in parts.iter().enumerate() {
+        for (byte_idx, _) in part.char_indices() {
+            // 记录 char_start 位置（仅记录一次）
+            if !found_start && char_count == char_start {
+                start_pi = pi;
+                start_byte = byte_idx;
+                found_start = true;
             }
-            // 非法 UTF-8 段：跳过字符计数，字节仍累计（与原逻辑保持一致）
-            Err(_) => {}
+            // 到达 char_end：立即提取可见切片并返回
+            if char_count == char_end {
+                if !found_start {
+                    return [b"", b""];
+                }
+                return if start_pi == pi {
+                    // 起止在同一 part：单段切片
+                    [&part[start_byte..byte_idx], b""]
+                } else if start_pi + 1 == pi {
+                    // 跨相邻两个 part
+                    [&parts[start_pi][start_byte..], &part[..byte_idx]]
+                } else {
+                    // 跨 3+ 个 part：取前两段（与原 slice_parts_range 行为一致）
+                    [&parts[start_pi][start_byte..], parts[start_pi + 1]]
+                };
+            }
+            char_count += 1;
         }
-        byte_total += part.len();
     }
-    // char_end 超出文本末尾：byte_total 此时已累计全文所有字节
-    (result_start.unwrap_or(byte_total), byte_total)
+    // char_end 超出文本末尾
+    if !found_start || parts.is_empty() {
+        return [b"", b""];
+    }
+    let last_pi = parts.len() - 1;
+    if start_pi == last_pi {
+        [&parts[start_pi][start_byte..], b""]
+    } else {
+        [&parts[start_pi][start_byte..], parts[start_pi + 1]]
+    }
 }
 
 pub(crate) fn get_edit_content<'a>(
@@ -120,13 +135,10 @@ pub(crate) fn get_edit_content<'a>(
     let mut prev_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
     for (i, txt) in txts.iter().enumerate() {
         //一行数据可能会分成很多个块
-        // 优化 A：单次遍历同时求出可见窗口的字节边界，避免两次独立遍历
+        // 单次字符遍历求可见切片（融合原 char_range_to_byte_range + slice_parts_range）
         let full = txt.text(0..);
-        let full_parts = full.as_parts();
-        let (byte_start, byte_end) =
-            char_range_to_byte_range(full_parts, column_offset, column_offset + with);
-        let t = txt.text(byte_start..byte_end);
-        let parts = t.as_parts();
+        let visible = char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
+        let parts: &[&[u8]] = &visible[..];
         if cursor_y == i {
             //取上一行的最后一个字符char 大小
             let mut prev_line_last_char_size = 0;
@@ -135,34 +147,36 @@ pub(crate) fn get_edit_content<'a>(
                     if let Some(prev_txt) = txts.get(i - 1) {
                         let prev_t = prev_txt.text(0..);
                         let prev_parts = prev_t.as_parts();
-                        prev_parts.iter().rev().for_each(|s| {
-                            if s.len() > 0 {
-                                (*s).char_indices().rev().for_each(|(_, ch)| {
-                                    if !ch.is_control() {
-                                        prev_line_last_char_size = ch.len_utf8();
-                                        return;
-                                    }
-                                });
-                                return;
-                            }
-                        });
+                        // 优化：原 for_each 内的 return 只退出闭包，无法提前终止外层循环，
+                        // 导致找到目标字符后仍继续扫描剩余字符/段，且最终结果是首字符而非末字符。
+                        // 改用 find_map：逆序扫描各段，找到首个非控制字符即停止，正确返回末字符大小。
+                        prev_line_last_char_size = prev_parts
+                            .iter()
+                            .rev()
+                            .find_map(|s| {
+                                s.char_indices()
+                                    .rev()
+                                    .find(|(_, ch)| !ch.is_control())
+                                    .map(|(_, ch)| ch.len_utf8())
+                            })
+                            .unwrap_or(0);
                     }
                 }
             }
-            //计算part数组叠加的字符数量
+            // 计算各 part 字符数，同时确定光标所在段；合并为单次遍历
             let mut char_count = LineParts::<usize>::empty();
-            let mut char_curosr_index = 0; // 判断光标在那个 part中
-
-            for (_, s) in parts.iter().enumerate() {
-                let count = (*s).chars().count();
-                char_count.append(count);
-            }
+            let mut char_curosr_index = 0;
             let mut char_sum_count = 0;
-            for (idx, s) in char_count.as_parts().iter().enumerate() {
-                char_sum_count += *s;
-                if char_sum_count > 0 && cursor_x <= char_sum_count.saturating_sub(1) {
-                    char_curosr_index = idx;
-                    break;
+            let mut cursor_part_found = false;
+            for (idx, s) in parts.iter().enumerate() {
+                let count = s.chars().count();
+                char_count.append(count);
+                if !cursor_part_found {
+                    char_sum_count += count;
+                    if char_sum_count > 0 && cursor_x <= char_sum_count.saturating_sub(1) {
+                        char_curosr_index = idx;
+                        cursor_part_found = true;
+                    }
                 }
             }
             let (spans, byte_pos, last_csz) =
@@ -175,13 +189,12 @@ pub(crate) fn get_edit_content<'a>(
             }
             lines.push(Line::from(spans));
         } else {
-            // 优化 B：使用 str::from_utf8 直接借用原始字节切片，
-            // 避免 String::from_utf8_lossy 在无效 UTF-8 时产生的堆分配。
-            // 文本编辑模式下内容应为合法 UTF-8；非法字节退化为空字符串显示。
-            let spans = parts
-                .iter()
-                .map(|s| Span::raw(str::from_utf8(s).unwrap_or("")))
-                .collect::<Vec<Span>>();
+            // 优化B：str::from_utf8 直接借用原始字节，避免 from_utf8_lossy 堆分配。
+            // 优化5：visible 固定 2 段，直接按索引构造 Span，预分配容量 2，
+            // 避免 map().collect() 的迭代器包装和动态扩容开销。
+            let mut spans = Vec::with_capacity(2);
+            spans.push(Span::raw(str::from_utf8(visible[0]).unwrap_or("")));
+            spans.push(Span::raw(str::from_utf8(visible[1]).unwrap_or("")));
             lines.push(Line::from(spans));
         }
     }
@@ -198,7 +211,8 @@ fn build_cursor_line<'a>(
     char_curosr_index: usize, //判断光标在那个 part中
 ) -> (Vec<Span<'a>>, usize, usize) {
     //let (str1, str2) = txt.text(offset..);
-    let mut spans = Vec::new();
+    // 优化2：预分配容量：最多 str_parts.len() 个普通段 + 3 个光标相关 span（前段/光标/后段）
+    let mut spans = Vec::with_capacity(str_parts.len() + 3);
     let mut last_char_bytes_size: usize = 0;
     let byte_cursor;
     let (a, b, c) = if char_curosr_index == 0 {
@@ -206,15 +220,17 @@ fn build_cursor_line<'a>(
         last_char_bytes_size = last_csz;
         (a, b, c)
     } else {
+        // 优化2：前几段字符数之和会被用两次，提前计算缓存，避免重复 .iter().sum()
+        let prev_char_sum: usize = char_count[..char_curosr_index].iter().sum();
         let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(
             str_parts[char_curosr_index],
-            cursor_x.saturating_sub(char_count[..char_curosr_index].iter().sum()),
+            cursor_x.saturating_sub(prev_char_sum),
         );
         //如果上一个字符大小是0则光标可能在第一个字符那里
         if last_csz == 0 {
             let (_, _, _, sz) = n_chars_skip_control_mem_opt(
                 str_parts[char_curosr_index - 1],
-                char_count[..char_curosr_index].iter().sum(),
+                prev_char_sum,
             );
             last_char_bytes_size = sz;
         } else {
@@ -226,14 +242,15 @@ fn build_cursor_line<'a>(
         byte_cursor = if char_curosr_index == 0 {
             a.get_non_control_len()
         } else {
+            // 优化3：原来先推入 spans（遍历一次），再 fold 累加字节（遍历第二次），
+            // 合并为单次循环：推入 span 的同时累加字节数
+            let mut prefix_bytes = 0usize;
             for j in 0..char_curosr_index {
-                spans.push(Span::raw(String::from_utf8_lossy(str_parts[j])));
+                let part = str_parts[j];
+                prefix_bytes += part.len();
+                spans.push(Span::raw(str::from_utf8(part).unwrap_or("")));
             }
-            str_parts[..char_curosr_index]
-                .iter()
-                .filter(|s| !s.is_empty())
-                .fold(0, |acc, s| acc + s.len())
-                + a.get_non_control_len()
+            prefix_bytes + a.get_non_control_len()
         };
         let (display, color) = if b == b"\n" {
             (" ", Color::LightBlue)
@@ -251,9 +268,9 @@ fn build_cursor_line<'a>(
         byte_cursor = if char_curosr_index == 0 {
             str_parts[0].get_non_control_len()
         } else {
+            // 空切片 len()==0 不影响 fold 结果，filter 多余，直接删除
             str_parts[..char_curosr_index]
                 .iter()
-                .filter(|s| !s.is_empty())
                 .fold(0, |acc, s| acc + s.len())
                 + str_parts[char_curosr_index].get_non_control_len()
         };

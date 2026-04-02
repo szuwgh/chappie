@@ -286,7 +286,7 @@ impl ChapTui {
         Ok(ChapTui {
             chap_mod: chap_mod,
             size: size,
-            warp_type: TextWarpType::NoWrap,
+            warp_type: TextWarpType::SoftWrap,
             terminal: terminal,
             elem: elem,
             ui_type: ui_type,
