@@ -58,8 +58,54 @@ fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usi
     (&s[..start], &s[start..end], &s[end..], start - last_start)
 }
 
+/// 单次遍历同时求出字符范围 [char_start, char_end) 对应的字节边界。
+///
+/// # 优化说明
+/// 原来两次独立调用 char_to_byte_offset 各自从字节 0 开始遍历，
+/// 合计消耗 2×(char_start + char_end) 次字符迭代。
+/// 本函数一次遍历同时找到两个边界，最多遍历 char_end 次，节省约 50% 的遍历开销。
+///
+/// # 返回值
+/// (byte_start, byte_end)：
+///   - byte_start：第 char_start 个字符的字节起始位置
+///   - byte_end  ：第 char_end   个字符的字节起始位置（可见区域末尾）
+///   - 若 char_start / char_end 超出文本末尾，对应值返回总字节数（安全截断）
+fn char_range_to_byte_range(parts: &[&[u8]], char_start: usize, char_end: usize) -> (usize, usize) {
+    let mut char_count = 0usize;
+    // 累计已完整处理的 part 字节数；循环提前退出时不代表全文总字节，
+    // 但此时 result_end 必然已被赋值，无需用 byte_total 作兜底。
+    let mut byte_total = 0usize;
+    let mut result_start: Option<usize> = None;
+
+    'outer: for part in parts {
+        match std::str::from_utf8(part) {
+            Ok(s) => {
+                for (byte_idx, _) in s.char_indices() {
+                    // 记录 char_start 对应的字节偏移（只赋值一次）
+                    if result_start.is_none() && char_count == char_start {
+                        result_start = Some(byte_total + byte_idx);
+                    }
+                    // 到达 char_end 时立即返回，无需继续遍历后续字符
+                    if char_count == char_end {
+                        let byte_end = byte_total + byte_idx;
+                        // result_start 未找到（char_start > char_end）时兜底为 byte_end
+                        return (result_start.unwrap_or(byte_end), byte_end);
+                    }
+                    char_count += 1;
+                }
+            }
+            // 非法 UTF-8 段：跳过字符计数，字节仍累计（与原逻辑保持一致）
+            Err(_) => {}
+        }
+        byte_total += part.len();
+    }
+    // char_end 超出文本末尾：byte_total 此时已累计全文所有字节
+    (result_start.unwrap_or(byte_total), byte_total)
+}
+
 pub(crate) fn get_edit_content<'a>(
     txts: &'a RingVec<CacheStr>,
+    with:usize,
     line_meta: &'a RingVec<LineState>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
@@ -74,8 +120,12 @@ pub(crate) fn get_edit_content<'a>(
     let mut prev_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
     for (i, txt) in txts.iter().enumerate() {
         //一行数据可能会分成很多个块
-        let s = txt.as_str();
-        let t = txt.text(column_offset..);
+        // 优化 A：单次遍历同时求出可见窗口的字节边界，避免两次独立遍历
+        let full = txt.text(0..);
+        let full_parts = full.as_parts();
+        let (byte_start, byte_end) =
+            char_range_to_byte_range(full_parts, column_offset, column_offset + with);
+        let t = txt.text(byte_start..byte_end);
         let parts = t.as_parts();
         if cursor_y == i {
             //取上一行的最后一个字符char 大小
@@ -125,9 +175,12 @@ pub(crate) fn get_edit_content<'a>(
             }
             lines.push(Line::from(spans));
         } else {
+            // 优化 B：使用 str::from_utf8 直接借用原始字节切片，
+            // 避免 String::from_utf8_lossy 在无效 UTF-8 时产生的堆分配。
+            // 文本编辑模式下内容应为合法 UTF-8；非法字节退化为空字符串显示。
             let spans = parts
                 .iter()
-                .map(|s| Span::raw(String::from_utf8_lossy(*s)))
+                .map(|s| Span::raw(str::from_utf8(s).unwrap_or("")))
                 .collect::<Vec<Span>>();
             lines.push(Line::from(spans));
         }
@@ -531,7 +584,7 @@ mod tests {
         let txts = make_ring_txt(vec!["hello"]);
         let meta = make_ring_meta(&[1]);
         let (_, content, byte_cursor, _) =
-            get_edit_content(&txts, &meta, 0, &None, 10, 0, 0, 0);
+            get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 0, 0);
         assert_eq!(byte_cursor, 0);
         // 文本内容应可见
         let text = content.to_string();
@@ -544,7 +597,7 @@ mod tests {
         let txts = make_ring_txt(vec!["hello"]);
         let meta = make_ring_meta(&[1]);
         let (_, _, byte_cursor, last_sz) =
-            get_edit_content(&txts, &meta, 0, &None, 10, 0, 0, 2);
+            get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 0, 2);
         assert_eq!(byte_cursor, 2);
         assert_eq!(last_sz, 1); // 前一字符 'e' 占 1 字节
     }
@@ -555,7 +608,7 @@ mod tests {
         let txts = make_ring_txt(vec!["你好世界"]);
         let meta = make_ring_meta(&[1]);
         let (_, _, byte_cursor, last_sz) =
-            get_edit_content(&txts, &meta, 0, &None, 10, 0, 0, 2);
+            get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 0, 2);
         assert_eq!(byte_cursor, 6);
         assert_eq!(last_sz, 3); // 前一字符 "好" 占 3 字节
     }
@@ -565,7 +618,7 @@ mod tests {
         // 3 行文本，行号导航应正确
         let txts = make_ring_txt(vec!["line1", "line2", "line3"]);
         let meta = make_ring_meta(&[1, 2, 3]);
-        let (nav, _, _, _) = get_edit_content(&txts, &meta, 0, &None, 5, 0, 0, 0);
+        let (nav, _, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, 5, 0, 0, 0);
         assert!(nav.to_string().contains("1"));
         assert!(nav.to_string().contains("2"));
         assert!(nav.to_string().contains("3"));
@@ -576,7 +629,7 @@ mod tests {
         // 光标行 cursor_y=3 超出 meta 范围（只有 2 行），应追加 padding
         let txts = make_ring_txt(vec!["a", "b"]);
         let meta = make_ring_meta(&[1, 2]);
-        let (_, content, _, _) = get_edit_content(&txts, &meta, 0, &None, 10, 0, 3, 0);
+        let (_, content, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 3, 0);
         // 应有超过 2 行的渲染输出（含 padding 行）
         assert!(content.lines.len() >= 3);
     }

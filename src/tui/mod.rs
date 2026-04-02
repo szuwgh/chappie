@@ -286,7 +286,7 @@ impl ChapTui {
         Ok(ChapTui {
             chap_mod: chap_mod,
             size: size,
-            warp_type: TextWarpType::SoftWrap,
+            warp_type: TextWarpType::NoWrap,
             terminal: terminal,
             elem: elem,
             ui_type: ui_type,
@@ -671,6 +671,7 @@ impl ChapTui {
             self.terminal.draw(|f| {
                 let (navi, visible_content, byte_cursor, last_char_bytes_size) = get_edit_content(
                     content,
+                    self.elem.tv.get_width(),
                     &meta,
                     self.elem.navi.get_cur_line(),
                     &self.elem.navi.select_line,
@@ -697,5 +698,68 @@ impl ChapTui {
             meta
         };
         return Ok(line_meta);
+    }
+}
+
+#[cfg(test)]
+impl ChapTui {
+    /// 测试专用构造器，不初始化真实终端
+    pub(crate) fn for_test(tv_height: usize, tv_width: usize) -> Self {
+        use ratatui::backend::CrosstermBackend;
+        let terminal = Terminal::new(CrosstermBackend::new(std::io::stdout())).unwrap();
+        let size = Size { width: 120, height: tv_height as u16 + 2 };
+        let rect = Rect::new(0, 0, 120, tv_height as u16 + 2);
+        let navi = Navigation {
+            min_line: 0,
+            max_line: tv_height.saturating_sub(2),
+            cur_line: 0,
+            rect: Rect::new(0, 0, 5, tv_height as u16),
+            select_line: None,
+        };
+        let tv = TextView {
+            height: tv_height,
+            width: tv_width,
+            scroll: 1,
+            rect: Rect::new(5, 0, tv_width as u16, tv_height as u16),
+        };
+        let assist_tv1 = TextView {
+            height: tv_height,
+            width: 40,
+            scroll: 1,
+            rect: Rect::new(tv_width as u16 + 5, 0, 40, tv_height as u16 / 2),
+        };
+        let assist_tv2 = TextView {
+            height: tv_height,
+            width: 40,
+            scroll: 1,
+            rect: Rect::new(tv_width as u16 + 5, tv_height as u16 / 2, 40, tv_height as u16 / 2),
+        };
+        let cmd_inp = CmdInput::new(Rect::new(4, tv_height as u16, tv_width as u16, 1));
+        ChapTui {
+            chap_mod: ChapMod::EditBlock,
+            ui_type: crate::cli::UIType::Full,
+            size,
+            warp_type: crate::textwarp::TextWarpType::SoftWrap,
+            terminal,
+            elem: TuiElement {
+                navi,
+                tv,
+                cmd_title: Rect::new(0, tv_height as u16, 4, 1),
+                cmd_inp,
+                assist_tv1,
+                assist_tv2,
+            },
+            back_linenum: Vec::new(),
+            txt_sel: crate::textwarp::TextSelect::new(),
+            cursor_x: 0,
+            cursor_y: 0,
+            column_offset: 0,
+            bytes_cursor: 0,
+            bytes_cursor_size: 0,
+            start_line_num: 1,
+            is_last_line: false,
+            endian: crate::byteutil::Endian::Little,
+            assist_tv2_data: String::new(),
+        }
     }
 }

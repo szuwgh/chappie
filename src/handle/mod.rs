@@ -1,5 +1,7 @@
 pub(crate) mod edit;
 pub(crate) mod hex;
+#[cfg(test)]
+mod large_file_tests;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::execute;
