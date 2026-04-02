@@ -2143,11 +2143,13 @@ impl<T: Text + TextIndex> TextWarp<T> {
         if *line_num >= skip_line {
             *cur_line_count += 1;
             let txt_len = line_txt.text_len();
-            let char_with = line_txt
+            // 单次遍历同时统计显示宽度和字符数，避免两次独立扫描
+            let (char_with, char_len) = line_txt
                 .get_data()
                 .char_indices()
-                .fold(0, |acc, (_, ch)| acc + ch.width().unwrap_or(0));
-            let char_len = line_txt.get_data().char_indices().count();
+                .fold((0usize, 0usize), |(w, n), (_, ch)| {
+                    (w + ch.width().unwrap_or(0), n + 1)
+                });
             f(
                 line_txt.get_data(),
                 LineState::new(
@@ -2283,13 +2285,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
             let mut char_index = 0; // 当前行字符索引
             let mut char_count = 0; // 当前行字符数
             let data = line_txt.get_data();
-            let iter = if line_start > 0 {
-                Either::Left(data.char_indices().rev().enumerate())
-            } else {
-                Either::Right(data.char_indices().enumerate()) //要正向迭代 取出最后一行的数据 才是正确的
-            };
-
-            for (i, (_, ch)) in iter {
+            // 此处 line_start > 0 已由外层 if 保证，直接反向迭代
+            for (i, (_, ch)) in data.char_indices().rev().enumerate() {
                 let ch_width = ch.width().unwrap_or(0);
                 //检查是否超过屏幕宽度
                 if current_width + ch_width > with {
@@ -2299,11 +2296,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         *cur_line_count += 1;
                         let txt = line_txt.text((line_txt.text_len() - end)..);
                         let len: usize = txt.text_len();
-                        let meta_line_offset = if line_start > 0 {
-                            line_start - (line_offset + current_bytes)
-                        } else {
-                            line_txt.text_len() - (line_offset + current_bytes)
-                        };
+                        // line_start > 0 由外层 if 保证
+                        let meta_line_offset = line_start - (line_offset + current_bytes);
                         f(
                             txt.get_data(),
                             LineState::new(
@@ -2341,11 +2335,8 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     let txt = line_txt.text(..);
                     *cur_line_count += 1;
                     let len = txt.text_len();
-                    let meta_line_offset = if line_start > 0 {
-                        line_start - (line_offset + current_bytes)
-                    } else {
-                        0
-                    };
+                    // line_start > 0 由外层 if 保证
+                    let meta_line_offset = line_start - (line_offset + current_bytes);
 
                     f(
                         txt.get_data(),

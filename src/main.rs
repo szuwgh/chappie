@@ -11,7 +11,7 @@ mod command;
 mod common;
 mod function;
 mod fuzzy;
-
+mod undo;
 mod handle;
 mod lua;
 mod pg;

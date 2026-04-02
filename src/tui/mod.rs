@@ -1,4 +1,3 @@
-pub(crate) mod csv;
 pub(crate) mod edit;
 pub(crate) mod hex;
 pub(crate) mod text;
@@ -49,7 +48,6 @@ use ratatui::Terminal;
 use std::io;
 use std::io::stdout;
 use std::path::Path;
-use tokio::sync::mpsc;
 
 pub(crate) enum ChapMod {
     Edit,      //普通编辑器模式
@@ -271,9 +269,6 @@ pub(crate) struct ChapTui {
 impl ChapTui {
     pub(crate) fn new(
         chap_mod: ChapMod,
-        prompt_tx: mpsc::Sender<String>,
-        // vdb: Option<Collection>,
-        llm_res_rx: mpsc::Receiver<String>,
         ui_type: UIType,
         que: bool,
     ) -> ChapResult<ChapTui> {
@@ -479,7 +474,7 @@ impl ChapTui {
         Ok(line_meta)
     }
 
-    pub(crate) async fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
+    pub(crate) fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
         &mut self,
         p: P1,
         plugin: P2,

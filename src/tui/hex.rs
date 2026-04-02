@@ -4,7 +4,6 @@ use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
 use crate::textwarp::TextSelect;
-use const_hex::Buffer;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -12,81 +11,226 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
 
-//u8类型
-enum U8Category {
-    Null,
-    AsciiPrintable,
-    AsciiWhitespace,
-    AsciiOther,
-    NonAscii,
-}
+// ========== 编译期静态查找表 ==========
 
-impl U8Category {
-    fn color(self) -> Color {
-        match self {
-            U8Category::Null => Color::LightRed,
-            U8Category::AsciiPrintable => Color::LightGreen,
-            U8Category::AsciiWhitespace => Color::LightBlue,
-            U8Category::AsciiOther => Color::Yellow,
-            U8Category::NonAscii => Color::White,
-        }
+/// 十六进制大写字节对表
+/// HEX_UPPER_TABLE[i] = [高位ASCII, 低位ASCII]
+const HEX_UPPER_TABLE: [[u8; 2]; 256] = {
+    let mut t = [[0u8; 2]; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let hi = (i >> 4) as u8;
+        let lo = (i & 0xf) as u8;
+        t[i][0] = if hi < 10 { b'0' + hi } else { b'A' + hi - 10 };
+        t[i][1] = if lo < 10 { b'0' + lo } else { b'A' + lo - 10 };
+        i += 1;
     }
-}
+    t
+};
 
-struct Byte(u8);
-
-impl Byte {
-    fn category(self) -> U8Category {
-        if self.0 == 0x00 {
-            U8Category::Null
-        } else if self.0.is_ascii_alphanumeric()
-            || self.0.is_ascii_punctuation()
-            || self.0.is_ascii_graphic()
-        {
-            U8Category::AsciiPrintable
-        } else if self.0.is_ascii_whitespace() {
-            U8Category::AsciiWhitespace
-        } else if self.0.is_ascii() {
-            U8Category::AsciiOther
-        } else {
-            U8Category::NonAscii
-        }
+/// ASCII 字符显示表
+/// 可打印 ASCII（0x20–0x7E）保留原字节，其余存 b'.'
+const CHAR_REPR_TABLE: [u8; 256] = {
+    let mut t = [b'.'; 256];
+    let mut i = 0x20usize;
+    while i <= 0x7e {
+        t[i] = i as u8;
+        i += 1;
     }
-}
+    t
+};
 
-fn n_chars(s: &str, n: usize) -> (&str, &str, &str) {
-    // 使用 char_indices 获取每个字符的起始字节位置
-    let mut iter = s.char_indices();
-    // 获取第 n 个字符的起始字节位置；如果不存在则取整个字符串长度
-    let start = iter.nth(n).map(|(idx, _)| idx).unwrap_or(s.len());
-    let end = iter.next().map(|(i, _)| i).unwrap_or(s.len());
-    (&s[..start], &s[start..end], &s[end..])
-}
+/// 行末填充字符串表，共 17 档
+/// PADDING_TABLE[i] = "   ".repeat(i + 1)
+/// 用法：PADDING_TABLE[16.saturating_sub(line_byte_count)]
+const PADDING_TABLE: [&str; 17] = [
+    "   ",                                                               //  3 spaces (×1)
+    "      ",                                                            //  6 spaces (×2)
+    "         ",                                                         //  9 spaces (×3)
+    "            ",                                                      // 12 spaces (×4)
+    "               ",                                                   // 15 spaces (×5)
+    "                  ",                                                // 18 spaces (×6)
+    "                     ",                                             // 21 spaces (×7)
+    "                        ",                                          // 24 spaces (×8)
+    "                           ",                                       // 27 spaces (×9)
+    "                              ",                                    // 30 spaces (×10)
+    "                                 ",                                 // 33 spaces (×11)
+    "                                    ",                              // 36 spaces (×12)
+    "                                       ",                           // 39 spaces (×13)
+    "                                          ",                        // 42 spaces (×14)
+    "                                             ",                     // 45 spaces (×15)
+    "                                                ",                  // 48 spaces (×16)
+    "                                                   ",               // 51 spaces (×17)
+];
 
-fn bytes_to_string_with_dot(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|&b| {
-            if b.is_ascii() && !b.is_ascii_control() {
-                b as char
-            } else {
-                '.'
-            }
-        })
-        .collect()
-}
+// ========== 优化 1+2：编译期 Style 查找表 ==========
+// 替代 Byte(*byte).category().color() + Style::default().fg(color) 的每字节双重构造
+//
+// 字节分类规则（与原 U8Category 完全一致）：
+//   0x00              → Null        → LightRed
+//   0x01–0x08         → AsciiOther  → Yellow   (ASCII 控制，非空白)
+//   0x09 \t           → Whitespace  → LightBlue
+//   0x0A \n           → Whitespace  → LightBlue
+//   0x0B \v           → AsciiOther  → Yellow   (Rust is_ascii_whitespace 不含 0x0B)
+//   0x0C \f           → Whitespace  → LightBlue
+//   0x0D \r           → Whitespace  → LightBlue
+//   0x0E–0x1F         → AsciiOther  → Yellow
+//   0x20 space        → Whitespace  → LightBlue
+//   0x21–0x7E         → Printable   → LightGreen
+//   0x7F DEL          → AsciiOther  → Yellow
+//   0x80–0xFF         → NonAscii    → White
 
-fn format_hex_slice(slice: &[u8], j: &mut usize) -> String {
-    let mut line = String::with_capacity(slice.len() * 3); // Adjust capacity based on expected size
-    for b in slice.iter() {
-        let mut buffer = Buffer::<1>::new();
-        let c = buffer.format(&[*b]);
-        line.push_str(c);
-        line.push_str(if (*j + 1) % 8 == 0 { "  " } else { " " });
-        *j += 1;
+// 5 种基础 Style（无高亮，仅前景色）
+const S_NULL: Style = Style {
+    fg: Some(Color::LightRed),
+    bg: None,
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_GREEN: Style = Style {
+    fg: Some(Color::LightGreen),
+    bg: None,
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_BLUE: Style = Style {
+    fg: Some(Color::LightBlue),
+    bg: None,
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_YELLOW: Style = Style {
+    fg: Some(Color::Yellow),
+    bg: None,
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_WHITE: Style = Style {
+    fg: Some(Color::White),
+    bg: None,
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+
+// 5 种高亮 Style（前景色相同，加背景色 DarkGray）
+const S_NULL_HL: Style = Style {
+    fg: Some(Color::LightRed),
+    bg: Some(Color::DarkGray),
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_GREEN_HL: Style = Style {
+    fg: Some(Color::LightGreen),
+    bg: Some(Color::DarkGray),
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_BLUE_HL: Style = Style {
+    fg: Some(Color::LightBlue),
+    bg: Some(Color::DarkGray),
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_YELLOW_HL: Style = Style {
+    fg: Some(Color::Yellow),
+    bg: Some(Color::DarkGray),
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+const S_WHITE_HL: Style = Style {
+    fg: Some(Color::White),
+    bg: Some(Color::DarkGray),
+    underline_color: None,
+    add_modifier: Modifier::empty(),
+    sub_modifier: Modifier::empty(),
+};
+
+/// 普通 Style 查找表：STYLE_TABLE[byte] → 该字节的前景色 Style
+/// 替代每字节 Byte(b).category().color() + Style::default().fg(color)
+const STYLE_TABLE: [Style; 256] = {
+    let mut t = [S_WHITE; 256];
+    t[0x00] = S_NULL;
+    let mut i = 0x01usize;
+    while i <= 0x08 {
+        t[i] = S_YELLOW;
+        i += 1;
     }
-    line
+    t[0x09] = S_BLUE;
+    t[0x0A] = S_BLUE;
+    t[0x0B] = S_YELLOW; // \v 不在 Rust is_ascii_whitespace 范围内
+    t[0x0C] = S_BLUE;
+    t[0x0D] = S_BLUE;
+    let mut i = 0x0Eusize;
+    while i <= 0x1F {
+        t[i] = S_YELLOW;
+        i += 1;
+    }
+    t[0x20] = S_BLUE;
+    let mut i = 0x21usize;
+    while i <= 0x7E {
+        t[i] = S_GREEN;
+        i += 1;
+    }
+    t[0x7F] = S_YELLOW;
+    // 0x80–0xFF 已为 S_WHITE
+    t
+};
+
+/// 高亮 Style 查找表：STYLE_HL_TABLE[byte] → 同前景色 + bg=DarkGray
+/// 替代每字节 Style::default().fg(color).bg(Color::DarkGray)
+const STYLE_HL_TABLE: [Style; 256] = {
+    let mut t = [S_WHITE_HL; 256];
+    t[0x00] = S_NULL_HL;
+    let mut i = 0x01usize;
+    while i <= 0x08 {
+        t[i] = S_YELLOW_HL;
+        i += 1;
+    }
+    t[0x09] = S_BLUE_HL;
+    t[0x0A] = S_BLUE_HL;
+    t[0x0B] = S_YELLOW_HL;
+    t[0x0C] = S_BLUE_HL;
+    t[0x0D] = S_BLUE_HL;
+    let mut i = 0x0Eusize;
+    while i <= 0x1F {
+        t[i] = S_YELLOW_HL;
+        i += 1;
+    }
+    t[0x20] = S_BLUE_HL;
+    let mut i = 0x21usize;
+    while i <= 0x7E {
+        t[i] = S_GREEN_HL;
+        i += 1;
+    }
+    t[0x7F] = S_YELLOW_HL;
+    // 0x80–0xFF 已为 S_WHITE_HL
+    t
+};
+
+/// 零拷贝取字节对应大写十六进制 &'static str（借用编译期静态表）
+#[inline]
+fn byte_to_hex(b: u8) -> &'static str {
+    // SAFETY：HEX_UPPER_TABLE 所有条目均由 b'0'–b'9' / b'A'–b'F' 构成，为合法 UTF-8
+    unsafe { std::str::from_utf8_unchecked(&HEX_UPPER_TABLE[b as usize]) }
 }
+
+/// 零拷贝取字节对应字符显示 &'static str（借用编译期静态表）
+#[inline]
+fn byte_to_char_repr(b: u8) -> &'static str {
+    // SAFETY：CHAR_REPR_TABLE 所有条目均为合法 ASCII 字节（0x20–0x7E 或 b'.'）
+    unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&CHAR_REPR_TABLE[b as usize])) }
+}
+
+// ========== Data Inspector（不涉及主渲染热路径，保持不变） ==========
 
 type ParserFn = fn(&ByteView) -> String;
 
@@ -170,6 +314,8 @@ pub(crate) fn get_data_inspector_content<'a>(
     text
 }
 
+// ========== 主渲染函数 ==========
+
 const HEX_TOP: &'static str = "00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F     ASCII";
 
 pub(crate) fn get_hex_content<'a>(
@@ -181,8 +327,7 @@ pub(crate) fn get_hex_content<'a>(
     cursor_y: usize,
     cursor_x: usize,
 ) -> (Text<'a>, Text<'a>) {
-    let mut lines = Vec::with_capacity(line_meta.len() + 1);
-    let mut buffer = Buffer::<1>::new();
+    let mut lines = Vec::with_capacity(line_meta.len() + 2);
 
     // 添加头部
     let top = Span::styled(
@@ -195,6 +340,8 @@ pub(crate) fn get_hex_content<'a>(
     lines.push(Line::from(""));
 
     // 处理每一行文本
+    // 优化 3：process_line_bytes 直接返回合并后的完整 all_spans，
+    //         省去 char_spans 临时 Vec 的分配和 extend 追加
     for (i, txt) in txts.iter().enumerate() {
         let part = txt.as_slice();
         let (slice1, slice2) = part.as_2parts();
@@ -203,7 +350,7 @@ pub(crate) fn get_hex_content<'a>(
             .map(|meta| meta.get_line_file_start())
             .unwrap_or(0);
 
-        let (hex_spans, char_spans) = process_line_bytes(
+        let all_spans = process_line_bytes(
             slice1,
             slice2,
             line_start,
@@ -211,14 +358,7 @@ pub(crate) fn get_hex_content<'a>(
             cursor_y,
             i,
             cursor_x,
-            &mut buffer,
         );
-
-        // 添加填充和字符显示
-        let padding = "   ".repeat(16_usize.saturating_sub(txt.len()) + 1);
-        let mut all_spans = hex_spans;
-        all_spans.push(Span::raw(padding));
-        all_spans.extend(char_spans);
         lines.push(Line::from(all_spans));
     }
 
@@ -231,7 +371,14 @@ pub(crate) fn get_hex_content<'a>(
     (nav_text, text)
 }
 
-/// 处理单行字节数据，生成十六进制和字符spans
+/// 处理单行字节数据，生成完整的 [hex_spans | padding | char_spans] 合并视图
+///
+/// 优化 3：直接构建一个 Vec<Span>（顺序：十六进制段 + 填充 + ASCII 字符段）。
+/// 优化 4：has_sel 提升到循环外。
+/// 优化 1+2：通过 STYLE_TABLE / STYLE_HL_TABLE 直接查表。
+/// 优化 5（新）：非光标行快路径——当 !has_sel && cursor_y != current_line 时，
+///              该行所有字节 highlight 恒为 false，跳过每字节 highlight 判断，
+///              hex span 直接用 STYLE_TABLE，char span 直接用 Span::raw。
 fn process_line_bytes<'a>(
     slice1: &[u8],
     slice2: &[u8],
@@ -240,86 +387,68 @@ fn process_line_bytes<'a>(
     cursor_y: usize,
     current_line: usize,
     cursor_x: usize,
-    buffer: &mut Buffer<1>,
-) -> (Vec<Span<'a>>, Vec<Span<'a>>) {
-    let mut hex_spans = Vec::new();
-    let mut char_spans = Vec::new();
-    let mut byte_index = 0;
+) -> Vec<Span<'a>> {
+    let total = slice1.len() + slice2.len();
+    // 容量 = 每字节 2 个 hex span（hex文本 + 空格）+ 1 个 padding span + 每字节 1 个 char span
+    let mut spans = Vec::with_capacity(total * 3 + 1);
 
-    // 处理所有字节（slice1和slice2）
-    for byte_slice in [slice1, slice2] {
-        for byte in byte_slice {
-            let global_pos = line_start + byte_index;
-            let highlight = should_highlight(
-                hex_sel,
-                global_pos,
-                cursor_y,
-                current_line,
-                byte_index,
-                cursor_x,
-            );
+    let has_sel = hex_sel.has_selected();
+    let is_cursor_line = cursor_y == current_line;
 
-            let category = Byte(*byte).category();
-            let color = category.color();
-            let hex_str = buffer.format(&[*byte]).to_uppercase();
-            let space = if byte_index != 0 && (byte_index + 1) % 8 == 0 {
-                "  "
-            } else {
-                " "
-            };
-            let char_repr = if byte.is_ascii() && !byte.is_ascii_control() {
-                (*byte as char).to_string()
-            } else {
-                '.'.to_string()
-            };
-
-            let (hex_span, char_span) = create_byte_spans(hex_str, char_repr, color, highlight);
-            hex_spans.push(hex_span);
-            hex_spans.push(Span::raw(space));
-            char_spans.push(char_span);
-
-            byte_index += 1;
+    if !has_sel && !is_cursor_line {
+        // ─── 快路径：无选区且非光标行，所有字节 highlight 恒为 false ───
+        let mut byte_index = 0usize;
+        for byte_slice in [slice1, slice2] {
+            for byte in byte_slice {
+                spans.push(Span::styled(byte_to_hex(*byte), STYLE_TABLE[*byte as usize]));
+                spans.push(Span::raw(if (byte_index + 1) & 7 == 0 { "  " } else { " " }));
+                byte_index += 1;
+            }
+        }
+        spans.push(Span::raw(PADDING_TABLE[16_usize.saturating_sub(total)]));
+        for byte_slice in [slice1, slice2] {
+            for byte in byte_slice {
+                spans.push(Span::raw(byte_to_char_repr(*byte)));
+            }
+        }
+    } else {
+        // ─── 慢路径：有选区或光标行，逐字节判断 highlight ───
+        let mut byte_index = 0usize;
+        for byte_slice in [slice1, slice2] {
+            for byte in byte_slice {
+                let highlight = if has_sel {
+                    hex_sel.is_selected(line_start + byte_index)
+                } else {
+                    is_cursor_line && byte_index == cursor_x
+                };
+                spans.push(Span::styled(
+                    byte_to_hex(*byte),
+                    if highlight { STYLE_HL_TABLE[*byte as usize] } else { STYLE_TABLE[*byte as usize] },
+                ));
+                spans.push(Span::raw(if (byte_index + 1) & 7 == 0 { "  " } else { " " }));
+                byte_index += 1;
+            }
+        }
+        spans.push(Span::raw(PADDING_TABLE[16_usize.saturating_sub(total)]));
+        let mut byte_index = 0usize;
+        for byte_slice in [slice1, slice2] {
+            for byte in byte_slice {
+                let highlight = if has_sel {
+                    hex_sel.is_selected(line_start + byte_index)
+                } else {
+                    is_cursor_line && byte_index == cursor_x
+                };
+                spans.push(if highlight {
+                    Span::styled(byte_to_char_repr(*byte), STYLE_HL_TABLE[*byte as usize])
+                } else {
+                    Span::raw(byte_to_char_repr(*byte))
+                });
+                byte_index += 1;
+            }
         }
     }
 
-    (hex_spans, char_spans)
-}
-
-/// 判断是否应该高亮显示字节
-fn should_highlight(
-    hex_sel: &TextSelect,
-    global_pos: usize,
-    cursor_y: usize,
-    current_line: usize,
-    current_x: usize,
-    cursor_x: usize,
-) -> bool {
-    if hex_sel.has_selected() {
-        hex_sel.is_selected(global_pos)
-    } else {
-        cursor_y == current_line && current_x == cursor_x
-    }
-}
-
-/// 创建单个字节的十六进制和字符spans
-fn create_byte_spans<'a>(
-    hex_str: String,
-    char_repr: String,
-    color: Color,
-    highlight: bool,
-) -> (Span<'a>, Span<'a>) {
-    if highlight {
-        let highlight_style = Style::default().fg(color).bg(Color::DarkGray);
-        (
-            Span::styled(hex_str, highlight_style),
-            Span::styled(char_repr, highlight_style),
-        )
-    } else {
-        (
-            Span::styled(hex_str, Style::default().fg(color)),
-            Span::raw(char_repr),
-        )
-    }
+    spans
 }
 
 /// 添加光标超出范围时的填充行
@@ -337,21 +466,20 @@ fn add_cursor_padding(lines: &mut Vec<Line>, cursor_y: usize, line_count: usize,
 
 /// 创建左侧导航地址文本
 fn create_navigation_text(height: usize, line_meta: &RingVec<LineState>) -> Text<'_> {
-    Text::from(
-        (0..height)
-            .enumerate()
-            .map(|(i, _)| match i {
-                0 => Line::from(Span::raw("Address")),
-                1 => Line::from(Span::raw("")),
-                _ if i - 2 < line_meta.len() => {
-                    let start = line_meta.get(i - 2).unwrap().get_line_file_start();
-                    Line::from(Span::styled(
-                        format!("{:07x}", start),
-                        Style::default().fg(Color::White),
-                    ))
-                }
-                _ => Line::raw(" "),
-            })
-            .collect::<Vec<Line>>(),
-    )
+    let mut v = Vec::with_capacity(height);
+    for i in 0..height {
+        v.push(match i {
+            0 => Line::from(Span::raw("Address")),
+            1 => Line::from(Span::raw("")),
+            _ if i - 2 < line_meta.len() => {
+                let start = line_meta.get(i - 2).unwrap().get_line_file_start();
+                Line::from(Span::styled(
+                    format!("{:07x}", start),
+                    Style::default().fg(Color::White),
+                ))
+            }
+            _ => Line::raw(" "),
+        });
+    }
+    Text::from(v)
 }

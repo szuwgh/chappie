@@ -1,28 +1,15 @@
 use crate::cli::Cli;
 use crate::common::error::ChapResult;
 use crate::ChapTui;
-use once_cell::sync::Lazy;
 use simplelog::*;
 use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
-use tokio::runtime::Builder;
-use tokio::sync::mpsc;
 
 // const LLM_MODEL_DIR: &'static str = "~/.chap/model";
 // const CHAP_VB_DIR: &'static str = "~/.chap/data";
 // const CHAP_LOG_DIR: &'static str = "~/.chap/log";
-
-// 单例的 Tokio runtime
-pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
-    Builder::new_multi_thread()
-        .enable_io()
-        .enable_time() // Enable time (timers)
-        .worker_threads(num_cpus::get())
-        .build()
-        .expect("Failed to create runtime")
-});
 
 //app
 pub(crate) struct Chappie {
@@ -48,8 +35,6 @@ impl Chappie {
     }
 
     pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
-        let (prompt_tx, prompt_rx) = mpsc::channel::<String>(1);
-        let (llm_res_tx, llm_res_rx) = mpsc::channel::<String>(1);
         let home = dirs::home_dir().expect("Failed to get home directory");
         let chap_log_dir = home.join(".chap/log");
         let chap_plugin_dir = home.join(".chap/plugin");
@@ -64,8 +49,6 @@ impl Chappie {
 
         let chap_ui = ChapTui::new(
             cli.get_chap_mod(),
-            prompt_tx,
-            llm_res_rx,
             cli.get_ui_type(),
             cli.get_que(),
         )?;
@@ -78,7 +61,7 @@ impl Chappie {
     }
 
     pub(crate) fn run<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        RUNTIME.block_on(async move { self.tui.render(p, self.chap_plugin_dir.as_path()).await })
+        self.tui.render(p, self.chap_plugin_dir.as_path())
     }
 }
 
