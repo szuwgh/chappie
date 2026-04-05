@@ -15,7 +15,6 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
-use inherit_methods_macro::inherit_methods;
 use mlua::Either;
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
@@ -1020,7 +1019,7 @@ pub(crate) trait TextOper {
         cursor_x: usize,
         count: usize,
         line_meta: &LineState,
-    ) -> ChapResult<()>;
+    ) -> ChapResult<Vec<u8>>;
 
     fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()>;
 
@@ -1291,7 +1290,7 @@ pub(crate) trait EditText {
         bytes_cursor: usize,
         count: usize,
         line_meta: &LineState,
-    ) -> ChapResult<()>;
+    ) -> ChapResult<Vec<u8>>;
 
     fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()>;
 
@@ -1323,6 +1322,8 @@ pub(crate) trait EditText {
     }
 
     fn rollback() -> ChapResult<()>;
+
+    fn ensure_block_loaded(&mut self, block_num: usize) -> ChapResult<()>;
 }
 
 impl LineState {
@@ -1552,9 +1553,9 @@ impl TextOper for TextDisplay {
         cursor_x: usize,
         count: usize,
         line_meta: &LineState,
-    ) -> ChapResult<()> {
+    ) -> ChapResult<Vec<u8>> {
         match self {
-            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Text(v) => Ok(vec![]),
             TextDisplay::Hex(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
             TextDisplay::Edit(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
             TextDisplay::EditBlock(v) => v.backspace(cursor_y, cursor_x, count, line_meta),
@@ -2591,7 +2592,6 @@ pub(crate) struct EditTextWarp<T: Text + TextIndex + EditText> {
     edit_text: TextWarp<T>,
 }
 
-#[inherit_methods(from = "self.edit_text")]
 impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     pub(crate) fn new(
         lines: T,
@@ -2607,31 +2607,57 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
     pub(crate) fn get_one_page(
         &self,
         line_num: usize,
-    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)>;
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
+        self.edit_text.get_one_page(line_num)
+    }
 
-    pub(crate) fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)>;
+    pub(crate) fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
+        self.edit_text.get_current_page()
+    }
 
-    pub(crate) fn get_current_line_meta(&self) -> ChapResult<&RingVec<LineState>>;
+    pub(crate) fn get_current_line_meta(&self) -> ChapResult<&RingVec<LineState>> {
+        self.edit_text.get_current_line_meta()
+    }
 
-    pub(crate) fn get_file_size(&self) -> usize;
+    pub(crate) fn get_file_size(&self) -> usize {
+        self.edit_text.get_file_size()
+    }
 
     /**
      * 滚动下一行
      */
-    pub(crate) fn scroll_next_one_line(&self, meta: &LineState) -> ChapResult<()>;
+    pub(crate) fn scroll_next_one_line(&self, meta: &LineState) -> ChapResult<()> {
+        self.edit_text.scroll_next_one_line(meta)
+    }
 
     /**
      * 滚动上一行
      */
-    pub(crate) fn scroll_pre_one_line(&self, meta: &LineState) -> ChapResult<()>;
+    pub(crate) fn scroll_pre_one_line(&self, meta: &LineState) -> ChapResult<()> {
+        self.edit_text.scroll_pre_one_line(meta)
+    }
 
-    pub(crate) fn scroll_pre_one_line2(&self, meta: &LineState) -> ChapResult<()>;
+    pub(crate) fn scroll_pre_one_line2(&self, meta: &LineState) -> ChapResult<()> {
+        self.edit_text.scroll_pre_one_line2(meta)
+    }
 
-    pub(crate) fn get_text_len(&self, index: usize) -> usize;
+    pub(crate) fn get_text_len(&self, index: usize) -> usize {
+        self.edit_text.get_text_len(index)
+    }
 
-    pub(crate) fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8>;
+    pub(crate) fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
+        self.edit_text.get_text_from_sel(sel)
+    }
 
-    pub(crate) fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize>;
+    pub(crate) fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize> {
+        self.edit_text.find(pattern, line_file_start)
+    }
+
+    pub(crate) fn ensure_block_loaded(&self, block_num: usize) -> ChapResult<()> {
+        self.edit_text
+            .borrow_lines_mut()
+            .ensure_block_loaded(block_num)
+    }
 
     // 插入字符
     // 计算光标所在行
@@ -2696,20 +2722,35 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
         bytes_cursor: usize,
         count: usize,
         line_meta: &LineState,
-    ) -> ChapResult<()> {
-        self.edit_text
-            .borrow_lines_mut()
-            .backspace(cursor_y, bytes_cursor, count, line_meta)?;
+    ) -> ChapResult<Vec<u8>> {
+        let delete_bytes = self.edit_text.borrow_lines_mut().backspace(
+            cursor_y,
+            bytes_cursor,
+            count,
+            line_meta,
+        )?;
         // todo
         //let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
         //unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
         self.edit_text.borrow_cache_lines_mut().clear();
         self.edit_text.borrow_cache_line_meta_mut().clear();
-        Ok(())
+        Ok(delete_bytes)
     }
 
     pub(crate) fn save<P: AsRef<Path>>(&mut self, filepath: P) -> ChapResult<()> {
         self.edit_text.borrow_lines_mut().save(filepath)
+    }
+}
+
+impl EditTextWarp<GapBlockText> {
+    pub(crate) fn find_block_line_for_offset(
+        &self,
+        block_id: usize,
+        abs_byte: usize,
+    ) -> Option<usize> {
+        self.edit_text
+            .borrow_lines_mut()
+            .find_block_line_for_offset(block_id, abs_byte)
     }
 }
 

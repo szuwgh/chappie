@@ -184,7 +184,7 @@ impl EditText for GapText {
         bytes_cursor: usize,
         count: usize,
         line_meta: &LineState,
-    ) -> ChapResult<()> {
+    ) -> ChapResult<Vec<u8>> {
         let (line_index, line_offset) = (
             line_meta.get_line_index(),
             line_meta.get_line_offset() + bytes_cursor,
@@ -192,18 +192,18 @@ impl EditText for GapText {
         if self.borrow_lines_mut()[line_index].text_len() == 0 && line_offset == 0 {
             //删除一行
             self.borrow_lines_mut().remove(line_index);
-            return Ok(());
+            return Ok(vec![]);
         }
         //表示当前行和前一行合并
         if line_offset == 0 {
             if line_index == 0 {
-                return Ok(());
+                return Ok(vec![]);
             }
             let (pre_lines, cur_lines) = self.borrow_lines_mut().split_at_mut(line_index);
             let pre_line = &mut pre_lines[line_index - 1];
             if pre_line.text_len() == 0 {
                 self.borrow_lines_mut().remove(line_index - 1);
-                return Ok(());
+                return Ok(vec![]);
             } else {
                 let cur_line = &mut cur_lines[0];
                 let cur_line_txt = cur_line.text(..);
@@ -211,10 +211,10 @@ impl EditText for GapText {
                 pre_line.insert(pre_line.text_len(), cur_line_txt.right());
                 self.borrow_lines_mut().remove(line_index);
             }
-            return Ok(());
+            return Ok(vec![]);
         }
         self.borrow_lines_mut()[line_index].backspace(line_offset, count);
-        Ok(())
+        Ok(vec![])
     }
 
     fn insert_bytes(
@@ -295,6 +295,10 @@ impl EditText for GapText {
             w.write(b"\n").unwrap();
         }
         w.flush()?;
+        Ok(())
+    }
+
+    fn ensure_block_loaded(&mut self, _: usize) -> ChapResult<()> {
         Ok(())
     }
 }

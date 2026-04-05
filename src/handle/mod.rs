@@ -8,6 +8,8 @@ use crate::execute;
 use crate::lua::LuaPlugin;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
+use crate::textwarp::TextOper;
+use crate::undo::undo::OpType;
 use crate::ChapTui;
 use crossterm::cursor::Show;
 use ratatui::restore;
@@ -298,4 +300,99 @@ pub(crate) trait Handle {
         td: &'a TextDisplay,
         pasted_string: &str,
     ) -> ChapResult<()>;
+
+    fn handle_ctrl_z<'a>(&self, chap_tui: &mut ChapTui, td: &'a TextDisplay) -> ChapResult<()> {
+        // 取一条 undo record
+        //    push() 时已存为逆操作，undo() 直接返回可执行的逆操作
+        let Some(op) = chap_tui.undo.as_mut().and_then(|u| u.undo().ok().flatten()) else {
+            return Ok(()); // undo 未启用 或 栈空
+        };
+
+        // block_id 稳定，不受 split_block 影响；
+        // byte_offset 是块内绝对偏移（操作后位置），block_offset/line_offset 均设为 0，
+        // backspace 内部会直接用 bytes_cursor（= byte_offset）作为块内绝对位置。
+        let block_id = op.block_id as usize;
+        let (resolved_block_num, resolved_block_line_index) = if let TextDisplay::EditBlock(v) = td
+        {
+            let char_start = (op.byte_offset as usize).saturating_sub(op.data.len());
+            let bli = v
+                .find_block_line_for_offset(block_id, char_start)
+                .unwrap_or(0);
+            v.ensure_block_loaded(block_id)?;
+            (block_id, bli)
+        } else {
+            (0, 0)
+        };
+        let target_line = op.line_index as usize;
+        chap_tui.start_line_num = target_line;
+        // ④ 按 op_type 执行逆操作（record 里存的就是逆操作类型）
+        //
+        //   原操作          存储的逆操作      执行动作
+        //   ──────────────────────────────────────────
+        //   InsertChar  →  DeleteChar    →  backspace
+        //   DeleteChar  →  InsertChar    →  insert_char
+        //   InsertNewline→ DeleteNewline →  backspace(1 byte)
+        //   DeleteNewline→ InsertNewline →  insert_newline
+        //
+        // block_offset=0, line_offset=0：backspace 计算
+        //   insert_offset = block_offset + line_offset + bytes_cursor = byte_offset
+        // 直接得到块内绝对位置，无需额外转换。
+        let meta = LineState {
+            char_with: 0,
+            txt_len: 0,
+            char_len: 0,
+            page_num: 0,
+            block_num: resolved_block_num,
+            block_line_index: resolved_block_line_index,
+            block_offset: 0,
+            line_num: target_line,
+            line_index: op.line_index as usize,
+            line_offset: 0,
+            line_file_start: 0,
+            line_file_end: 0,
+            start_line_num: 0,
+            start_page_num: 0,
+        };
+        match op.op_type {
+            OpType::DeleteChar => {
+                td.backspace(
+                    op.cursor_y as usize,
+                    op.byte_offset as usize,
+                    op.data.len(), // 要删掉的字节数
+                    &meta,
+                )?;
+            }
+            OpType::InsertChar => {
+                td.insert_char(
+                    op.cursor_y as usize,
+                    op.byte_offset as usize,
+                    &meta,
+                    op.data[0] as char,
+                )?;
+                // if let Some(c) = std::str::from_utf8(&op.data)
+                //     .ok()
+                //     .and_then(|s| s.chars().next())
+                // {
+                //     td.insert_char(chap_tui.cursor_y, op.byte_offset as usize, meta, c)?;
+                // }
+            }
+            OpType::DeleteNewline => {
+                //td.backspace(chap_tui.cursor_y, op.byte_offset as usize, 1, meta)?;
+            }
+            OpType::InsertNewline => {
+                // td.insert_newline(chap_tui.cursor_y, op.byte_offset as usize, meta)?;
+            }
+        }
+
+        // ⑤ 恢复光标到操作发生时的位置
+        chap_tui.cursor_y = op.cursor_y as usize;
+        chap_tui.cursor_x = op.cursor_x as usize;
+
+        // ⑥ 刷新页面
+        td.get_one_page(chap_tui.start_line_num)?;
+        Ok(())
+    }
+    fn handle_ctrl_r<'a>(&self, chap_tui: &mut ChapTui, td: &'a TextDisplay) -> ChapResult<()> {
+        Ok(())
+    }
 }

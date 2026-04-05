@@ -110,4 +110,16 @@ impl<T> RingVec<T> {
         // 总是返回 Chain 迭代器，保证类型一致
         first.iter_mut().chain(second.iter_mut())
     }
+
+    /// 按 key 排序，先旋转到 start=0 再 sort_by_key，保证物理顺序 = 逻辑顺序
+    pub(crate) fn sort_by_key<K: Ord>(&mut self, key: impl Fn(&T) -> K) {
+        if self.cache.is_empty() {
+            return;
+        }
+        if self.start > 0 {
+            self.cache.rotate_left(self.start);
+            self.start = 0;
+        }
+        self.cache.sort_by_key(|t| key(t));
+    }
 }

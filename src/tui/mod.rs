@@ -24,6 +24,7 @@ use crate::textwarp::TextWarpType;
 use crate::tui::edit::get_edit_content;
 use crate::tui::hex::get_data_inspector_content;
 use crate::tui::hex::get_hex_content;
+use crate::undo::undo::UndoFile;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -264,6 +265,7 @@ pub(crate) struct ChapTui {
     pub(crate) is_last_line: bool,       // 是否是最后一行
     pub(crate) endian: Endian,           // 字节序
     pub(crate) assist_tv2_data: String,  // 辅助窗口2数据
+    pub(crate) undo: Option<UndoFile>,
 }
 
 impl ChapTui {
@@ -271,6 +273,7 @@ impl ChapTui {
         chap_mod: ChapMod,
         ui_type: UIType,
         que: bool,
+        undo: Option<UndoFile>,
     ) -> ChapResult<ChapTui> {
         let (_, row) = cursor::position()?; // (x, y) 返回的是光标的 (列号, 行号)
                                             //let backend = CrosstermBackend::new(std::io::stdout());
@@ -296,6 +299,7 @@ impl ChapTui {
             is_last_line: false,
             endian: Endian::Little, // 默认字节序为小端
             assist_tv2_data: String::new(),
+            undo: undo,
         })
     }
 
@@ -496,7 +500,6 @@ impl ChapTui {
             self.cursor_x = 0;
             self.cursor_y = 0;
             let twy = self.warp_type;
-            log::info!("with {:?}", self.elem.tv.get_width());
             let mut td: TextDisplay = match self.chap_mod {
                 ChapMod::EditBlock => TextDisplay::EditBlock(EditTextWarp::new(
                     GapBlockText::from_file_path(&p)?,
@@ -615,6 +618,11 @@ impl ChapTui {
                                         self.assist_tv2_data = e.to_string(); // 记录错误信息
                                     }
                                 }
+                                (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                                    if let Err(e) = hand.handle_ctrl_z(self, &td) {
+                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                    }
+                                }
                                 (KeyCode::Enter, _) => {
                                     if let Err(e) = hand.handle_enter(self, line_meta, &td) {
                                         self.assist_tv2_data = e.to_string(); // 记录错误信息
@@ -698,11 +706,21 @@ impl ChapTui {
 
 #[cfg(test)]
 impl ChapTui {
+    /// 测试专用构造器（带 UndoFile），不初始化真实终端
+    pub(crate) fn for_test_with_undo(tv_height: usize, tv_width: usize, undo: UndoFile) -> Self {
+        let mut this = Self::for_test(tv_height, tv_width);
+        this.undo = Some(undo);
+        this
+    }
+
     /// 测试专用构造器，不初始化真实终端
     pub(crate) fn for_test(tv_height: usize, tv_width: usize) -> Self {
         use ratatui::backend::CrosstermBackend;
         let terminal = Terminal::new(CrosstermBackend::new(std::io::stdout())).unwrap();
-        let size = Size { width: 120, height: tv_height as u16 + 2 };
+        let size = Size {
+            width: 120,
+            height: tv_height as u16 + 2,
+        };
         let rect = Rect::new(0, 0, 120, tv_height as u16 + 2);
         let navi = Navigation {
             min_line: 0,
@@ -727,7 +745,12 @@ impl ChapTui {
             height: tv_height,
             width: 40,
             scroll: 1,
-            rect: Rect::new(tv_width as u16 + 5, tv_height as u16 / 2, 40, tv_height as u16 / 2),
+            rect: Rect::new(
+                tv_width as u16 + 5,
+                tv_height as u16 / 2,
+                40,
+                tv_height as u16 / 2,
+            ),
         };
         let cmd_inp = CmdInput::new(Rect::new(4, tv_height as u16, tv_width as u16, 1));
         ChapTui {
@@ -755,6 +778,7 @@ impl ChapTui {
             is_last_line: false,
             endian: crate::byteutil::Endian::Little,
             assist_tv2_data: String::new(),
+            undo: None,
         }
     }
 }

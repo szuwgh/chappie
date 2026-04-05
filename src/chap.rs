@@ -1,5 +1,6 @@
 use crate::cli::Cli;
 use crate::common::error::ChapResult;
+use crate::undo::undo::UndoFile;
 use crate::ChapTui;
 use simplelog::*;
 use std::fs;
@@ -46,12 +47,14 @@ impl Chappie {
             Config::default(),                            // 使用默认日志配置
             File::create(chap_log_dir.join("chap.log"))?, // 创建日志文件
         )?;
+        let undo = if let Ok(p) = cli.get_filepath() {
+            let path: &Path = Path::new(p);
+            UndoFile::open(path.with_extension("undo")).ok()
+        } else {
+            None
+        };
 
-        let chap_ui = ChapTui::new(
-            cli.get_chap_mod(),
-            cli.get_ui_type(),
-            cli.get_que(),
-        )?;
+        let chap_ui = ChapTui::new(cli.get_chap_mod(), cli.get_ui_type(), cli.get_que(), undo)?;
 
         Ok(Self {
             tui: chap_ui,

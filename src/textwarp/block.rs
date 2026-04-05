@@ -14,7 +14,7 @@ pub(crate) const BLOCK_SIZE: usize = 4096;
 pub(crate) const BLOKK_NUM: usize = 8;
 pub(crate) const MAX_LINE_SIZE: usize = 4096; //最大行长度4KB
 
-type BlockId = usize;
+pub(crate) type BlockId = usize;
 
 #[derive(Clone)]
 //一行数据
@@ -34,7 +34,7 @@ impl LineIndex {
 #[derive(Clone)]
 pub(crate) struct BlockIndex {
     pub(crate) file_start: usize, //块在文件开始位置
-    pub(crate) block_num: usize,  //块编号
+    pub(crate) block_id: BlockId, //块的稳定标识（分裂后不变）
     // start_line_index: usize,     //块内的起始行号在整个文件中
     pub(crate) line_count: usize,           //块内的行数
     pub(crate) block_size: usize,           //块的大小
@@ -59,7 +59,7 @@ impl BlockIndex {
     pub(crate) fn from_block_bytes(
         valid_data: &[u8],
         file_start: usize,
-        block_num: usize,
+        block_id: BlockId,
         actual_len: usize,
         sum: u32,
     ) -> ChapResult<BlockIndex> {
@@ -99,7 +99,7 @@ impl BlockIndex {
 
         Ok(BlockIndex {
             file_start: file_start, //块在文件开始位置
-            block_num: block_num,
+            block_id: block_id,
             line_count: line_count,   //块内的行数
             block_size: actual_len,   //块的大小
             lines_index: lines_index, //块内的行索引
@@ -114,7 +114,7 @@ pub(crate) struct Block {
     pub(crate) data: GapBuffer,   //每一个块使用 GapBuffer 存储
     pub(crate) file_start: usize, //块在文件开始位置
     pub(crate) file_end: usize,   //块在文件结束位置
-    pub(crate) block_num: usize,  //块编号
+    pub(crate) block_id: BlockId, //块的稳定标识（分裂后不变）
     pub(crate) is_modified: bool, //块是否被修改
 }
 
@@ -154,7 +154,7 @@ impl Block {
         reader: &mut T,
         buf: &mut [u8],
         file_start: usize,
-        block_num: usize,
+        block_id: BlockId,
         check_sum: Option<u32>,
     ) -> ChapResult<(Self, Option<BlockIndex>)> {
         // buf.clear();
@@ -186,7 +186,7 @@ impl Block {
         }
         let block_index = if check_sum.is_none() {
             let block_index =
-                BlockIndex::from_block_bytes(valid_data, file_start, block_num, actual_len, sum)?;
+                BlockIndex::from_block_bytes(valid_data, file_start, block_id, actual_len, sum)?;
             Some(block_index)
         } else {
             None
@@ -196,7 +196,7 @@ impl Block {
             data: GapBuffer::from_bytes(valid_data, CHAR_GAP_SIZE),
             file_start: file_start,
             file_end: file_start + actual_len,
-            block_num: block_num,
+            block_id: block_id,
             is_modified: false,
         };
 
@@ -208,13 +208,17 @@ impl Block {
         self.is_modified = true;
     }
 
-    pub(crate) fn backspace(&mut self, block_offset: usize, count: usize) {
+    pub(crate) fn backspace(&mut self, block_offset: usize, count: usize) -> Vec<u8> {
+        let deleted_bytes = self
+            .data
+            .text(block_offset.saturating_sub(count)..block_offset)
+            .to_vec();
         self.data.backspace(block_offset, count);
         self.is_modified = true;
+        deleted_bytes
     }
 
     pub(crate) fn backspace_last(&mut self, count: usize) {
-        self.data.delete_last(count);
         self.is_modified = true;
     }
 

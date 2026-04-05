@@ -381,7 +381,7 @@ impl GapBuffer {
     // Backspace 删除光标前一个字符
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
     pub(crate) fn backspace(&mut self, index: usize, count: usize) {
-        self.delete(index, count);
+        self.delete(index, count)
     }
 
     /// 删除index处前len个字符
@@ -392,8 +392,9 @@ impl GapBuffer {
         if index < len {
             index = len
         }
+
         self.move_gap_to(index);
-        self.gap_start = self.gap_start.saturating_sub(len)
+        self.gap_start = self.gap_start.saturating_sub(len);
     }
 
     /// 删除最后len个字符

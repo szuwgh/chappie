@@ -1,1 +1,1 @@
-mod undo;
+pub(crate) mod undo;

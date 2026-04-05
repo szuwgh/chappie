@@ -5,6 +5,8 @@ use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarpType;
+use crate::undo::undo::EditOp;
+use crate::undo::undo::OpType;
 use crate::ChapTui;
 use std::path::Path;
 use unicode_width::UnicodeWidthChar;
@@ -233,6 +235,7 @@ impl Handle for HandleEdit {
         }
         chap_tui.cursor_x = 0;
         td.get_one_page(chap_tui.start_line_num)?;
+
         Ok(())
     }
 
@@ -256,12 +259,26 @@ impl Handle for HandleEdit {
         let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
             return Ok(());
         };
-        td.backspace(
+        let delete_bytes = td.backspace(
             chap_tui.cursor_y,
             chap_tui.bytes_cursor,
             chap_tui.bytes_cursor_size,
             cur_meta,
         )?;
+        if let Some(undo) = &mut chap_tui.undo {
+            let abs_offset =
+                cur_meta.get_block_offset() + cur_meta.get_line_offset() + chap_tui.bytes_cursor
+                    - delete_bytes.len();
+            undo.push(EditOp {
+                op_type: OpType::DeleteChar,
+                cursor_y: chap_tui.cursor_y as u32,
+                cursor_x: chap_tui.cursor_x as u32,
+                block_id: cur_meta.get_block_num() as u32,
+                line_index: chap_tui.start_line_num as u32,
+                byte_offset: abs_offset as u32,
+                data: delete_bytes,
+            })?;
+        }
         td.get_one_page(chap_tui.start_line_num)?;
         if chap_tui.cursor_x == 0 {
             let cursor_y = chap_tui.cursor_y.saturating_sub(1);
@@ -322,22 +339,50 @@ impl Handle for HandleEdit {
         c: char,
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.clear();
+        let mut buf = [0u8; 4];
+        let s = c.encode_utf8(&mut buf);
         if chap_tui.cursor_x == 0 && chap_tui.is_last_line && chap_tui.cursor_y > 0 {
             let Some(prev_meta) = line_meta.get(chap_tui.cursor_y - 1) else {
                 return Ok(());
             };
-            td.insert_char(
-                chap_tui.cursor_y - 1,
-                chap_tui.elem.tv.get_width(),
-                prev_meta,
-                c,
-            )?;
+            let byte_offset = prev_meta.get_txt_len(); // 段末字节数（非列数，支持多字节字符）
+            td.insert_char(chap_tui.cursor_y - 1, byte_offset, prev_meta, c)?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = prev_meta.get_block_offset()
+                    + prev_meta.get_line_offset()
+                    + byte_offset
+                    + c.len_utf8();
+                undo.push(EditOp {
+                    op_type: OpType::InsertChar,
+                    cursor_y: chap_tui.cursor_y as u32,
+                    cursor_x: chap_tui.cursor_x as u32,
+                    block_id: prev_meta.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: s.as_bytes().to_vec(),
+                })?;
+            }
             chap_tui.is_last_line = false;
         } else {
             let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
                 return Ok(());
             };
             td.insert_char(chap_tui.cursor_y, chap_tui.bytes_cursor, cur_meta, c)?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = cur_meta.get_block_offset()
+                    + cur_meta.get_line_offset()
+                    + chap_tui.bytes_cursor
+                    + c.len_utf8();
+                undo.push(EditOp {
+                    op_type: OpType::InsertChar,
+                    cursor_y: chap_tui.cursor_y as u32,
+                    cursor_x: chap_tui.cursor_x as u32,
+                    block_id: cur_meta.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: s.as_bytes().to_vec(),
+                })?;
+            }
         }
         if chap_tui.cursor_x < chap_tui.elem.tv.get_width() {
             chap_tui.cursor_x += 1;
@@ -363,18 +408,35 @@ impl Handle for HandleEdit {
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.clear();
         let mut char_with = 0;
+        let pasted_bytes = pasted_string.as_bytes();
         if chap_tui.cursor_x == 0 && chap_tui.is_last_line && chap_tui.cursor_y > 0 {
             let Some(line_state) = line_meta.get(chap_tui.cursor_y - 1) else {
                 return Ok(());
             };
             char_with = line_state.char_with;
+
             td.insert_bytes(
                 chap_tui.cursor_y - 1,
                 chap_tui.elem.tv.get_width(),
                 line_state,
-                pasted_string.as_bytes(),
+                pasted_bytes,
                 false,
             )?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = line_state.get_block_offset()
+                    + line_state.get_line_offset()
+                    + chap_tui.bytes_cursor
+                    + pasted_bytes.len();
+                undo.push(EditOp {
+                    op_type: OpType::InsertChar,
+                    cursor_y: chap_tui.cursor_y as u32,
+                    cursor_x: chap_tui.cursor_x as u32,
+                    block_id: line_state.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: pasted_bytes.to_vec(),
+                })?;
+            }
             chap_tui.is_last_line = false;
         } else {
             let Some(line_state) = line_meta.get(chap_tui.cursor_y) else {
@@ -385,9 +447,24 @@ impl Handle for HandleEdit {
                 chap_tui.cursor_y,
                 chap_tui.bytes_cursor,
                 line_state,
-                pasted_string.as_bytes(),
+                pasted_bytes,
                 false,
             )?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = line_state.get_block_offset()
+                    + line_state.get_line_offset()
+                    + chap_tui.bytes_cursor
+                    + pasted_bytes.len();
+                undo.push(EditOp {
+                    op_type: OpType::InsertChar,
+                    cursor_y: chap_tui.cursor_y as u32,
+                    cursor_x: chap_tui.cursor_x as u32,
+                    block_id: line_state.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: pasted_bytes.to_vec(),
+                })?;
+            }
         }
 
         // 更新光标位置
@@ -432,8 +509,10 @@ mod tests {
     use crate::textwarp::TextDisplay;
     use crate::textwarp::TextWarpType;
     use crate::tui::ChapTui;
+    use crate::undo::undo::UndoFile;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    use tempfile::TempDir;
 
     // ── 测试辅助 ──────────────────────────────────────────────────────────────
 
@@ -447,12 +526,8 @@ mod tests {
         tmp.flush().unwrap();
 
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
-        let mut td = TextDisplay::EditBlock(EditTextWarp::new(
-            gap,
-            TV_H,
-            TV_W,
-            TextWarpType::SoftWrap,
-        ));
+        let mut td =
+            TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
         td.get_one_page(1).unwrap();
 
         let tui = ChapTui::for_test(TV_H, TV_W);
@@ -464,7 +539,13 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         let (txts, _) = td.get_current_page().unwrap();
         txts.get(0)
-            .map(|c| c.as_str().as_parts().iter().map(|s| s.to_string()).collect())
+            .map(|c| {
+                c.as_str()
+                    .as_parts()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -472,7 +553,13 @@ mod tests {
     fn all_lines_text(td: &TextDisplay) -> String {
         let (txts, _) = td.get_current_page().unwrap();
         txts.iter()
-            .flat_map(|c| c.as_str().as_parts().iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .flat_map(|c| {
+                c.as_str()
+                    .as_parts()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
 
@@ -620,7 +707,11 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         handle().handle_char(&mut tui, meta, &td, '你').unwrap();
         let text = first_line_text(&td);
-        assert!(text.contains('你'), "插入中文后内容应包含 '你'，实际: {:?}", text);
+        assert!(
+            text.contains('你'),
+            "插入中文后内容应包含 '你'，实际: {:?}",
+            text
+        );
         // cursor_x 增加 1（字符数，不是字节数）
         assert_eq!(tui.cursor_x, 1);
     }
@@ -714,7 +805,11 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         handle().handle_backspace(&mut tui, meta, &td).unwrap();
         let text = first_line_text(&td);
-        assert!(!text.starts_with('h'), "backspace 后 'h' 应被删除，实际: {:?}", text);
+        assert!(
+            !text.starts_with('h'),
+            "backspace 后 'h' 应被删除，实际: {:?}",
+            text
+        );
         assert_eq!(tui.cursor_x, 0, "cursor_x 应减少 1");
     }
 
@@ -729,7 +824,11 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         handle().handle_backspace(&mut tui, meta, &td).unwrap();
         let text = first_line_text(&td);
-        assert!(!text.contains('好'), "backspace 应删除 '好'，实际: {:?}", text);
+        assert!(
+            !text.contains('好'),
+            "backspace 应删除 '好'，实际: {:?}",
+            text
+        );
         assert!(text.contains('你'), "backspace 不应影响 '你'");
         assert_eq!(tui.cursor_x, 1, "cursor_x 应减少 1");
     }
@@ -746,7 +845,11 @@ mod tests {
         handle().handle_backspace(&mut tui, meta, &td).unwrap();
         // 合并后应只有一行
         let text = all_lines_text(&td);
-        assert!(text.contains("helloworld"), "backspace 应合并两行，实际: {:?}", text);
+        assert!(
+            text.contains("helloworld"),
+            "backspace 应合并两行，实际: {:?}",
+            text
+        );
         assert_eq!(tui.cursor_y, 0, "合并后 cursor_y 应回到第 0 行");
     }
 
@@ -760,7 +863,11 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         handle().handle_paste(&mut tui, meta, &td, "XYZ").unwrap();
         let text = first_line_text(&td);
-        assert!(text.contains("XYZ"), "粘贴后内容应包含 'XYZ'，实际: {:?}", text);
+        assert!(
+            text.contains("XYZ"),
+            "粘贴后内容应包含 'XYZ'，实际: {:?}",
+            text
+        );
         assert_eq!(tui.cursor_x, 3, "粘贴 3 个字符后 cursor_x 应为 3");
     }
 
@@ -770,9 +877,15 @@ mod tests {
         tui.cursor_x = 0;
         tui.bytes_cursor = 0;
         let meta = td.get_current_line_meta().unwrap();
-        handle().handle_paste(&mut tui, meta, &td, "line1\nline2").unwrap();
+        handle()
+            .handle_paste(&mut tui, meta, &td, "line1\nline2")
+            .unwrap();
         let (txts, _) = td.get_current_page().unwrap();
-        assert!(txts.len() >= 2, "粘贴含换行的文本后应有多行，实际 {} 行", txts.len());
+        assert!(
+            txts.len() >= 2,
+            "粘贴含换行的文本后应有多行，实际 {} 行",
+            txts.len()
+        );
         assert_eq!(tui.cursor_y, 1, "粘贴换行后 cursor_y 应增加");
     }
 
@@ -784,7 +897,11 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         handle().handle_paste(&mut tui, meta, &td, "你好").unwrap();
         let text = first_line_text(&td);
-        assert!(text.contains("你好"), "粘贴中文后内容应包含 '你好'，实际: {:?}", text);
+        assert!(
+            text.contains("你好"),
+            "粘贴中文后内容应包含 '你好'，实际: {:?}",
+            text
+        );
     }
 
     // ── SoftWrap 额外边界场景 ─────────────────────────────────────────────────
@@ -793,7 +910,13 @@ mod tests {
     fn nth_line_text(td: &TextDisplay, n: usize) -> String {
         let (txts, _) = td.get_current_page().unwrap();
         txts.get(n)
-            .map(|c| c.as_str().as_parts().iter().map(|s| s.to_string()).collect())
+            .map(|c| {
+                c.as_str()
+                    .as_parts()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -811,17 +934,13 @@ mod tests {
         let (mut tui, td, _f) = setup("line1\nline2\nline3\n");
         let meta = td.get_current_line_meta().unwrap();
         tui.cursor_y = 2; // 已在最后一行
-        // handle_down 内部: cursor_y += 1 → 3, 随后 line_meta.get(3).unwrap() → None → panic ?
+                          // handle_down 内部: cursor_y += 1 → 3, 随后 line_meta.get(3).unwrap() → None → panic ?
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle().handle_down(&mut tui, meta, &td).unwrap()
         }));
         assert!(result.is_ok(), "handle_down 在短文件末行不应 panic");
         // 光标不应超出 meta 有效范围
-        assert!(
-            tui.cursor_y <= 3,
-            "cursor_y({}) 超出文件行数",
-            tui.cursor_y
-        );
+        assert!(tui.cursor_y <= 3, "cursor_y({}) 超出文件行数", tui.cursor_y);
     }
 
     /// 多次向下直到超出文件行，验证不 panic
@@ -990,8 +1109,12 @@ mod tests {
         assert_eq!(tui.cursor_y, 0, "合并后 cursor_y 应为 0");
         // cursor_x 应指向合并点（'w'），不超出新行长度
         let merged_char_len = meta.get(0).unwrap().get_char_len(); // 旧 meta 的长度（"hello\n"）
-        // 注意 merged_char_len 是合并前的值，合并后 char_len 会变
-        assert!(tui.cursor_x <= 5, "cursor_x({}) 应 <= 5 (合并点)", tui.cursor_x);
+                                                                   // 注意 merged_char_len 是合并前的值，合并后 char_len 会变
+        assert!(
+            tui.cursor_x <= 5,
+            "cursor_x({}) 应 <= 5 (合并点)",
+            tui.cursor_x
+        );
     }
 
     /// cursor_x > 0 时 backspace，cursor_x 应减少 1
@@ -1065,7 +1188,9 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         // 粘贴 TV_H * 2 行换行
         let many_lines = "x\n".repeat(TV_H * 2);
-        handle().handle_paste(&mut tui, meta, &td, &many_lines).unwrap();
+        handle()
+            .handle_paste(&mut tui, meta, &td, &many_lines)
+            .unwrap();
         assert!(
             tui.cursor_y <= TV_H,
             "大量换行粘贴后 cursor_y({}) 不应超出 tv_height({})",
@@ -1081,7 +1206,9 @@ mod tests {
         tui.cursor_x = 0;
         tui.bytes_cursor = 0;
         let meta = td.get_current_line_meta().unwrap();
-        handle().handle_paste(&mut tui, meta, &td, "hello world").unwrap();
+        handle()
+            .handle_paste(&mut tui, meta, &td, "hello world")
+            .unwrap();
         let text = all_lines_text(&td);
         assert!(
             text.contains("hello world"),
@@ -1203,7 +1330,10 @@ mod tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handle().handle_paste(&mut tui, meta, &td, "XY").unwrap()
         }));
-        assert!(result.is_ok(), "handle_paste is_last_line + cursor_y=0 不应 panic");
+        assert!(
+            result.is_ok(),
+            "handle_paste is_last_line + cursor_y=0 不应 panic"
+        );
     }
 
     // ── 内容正确性：插入位置验证 ──────────────────────────────────────────────
@@ -1351,7 +1481,11 @@ mod tests {
         assert_eq!(tui.cursor_y, 0, "未触发行合并，cursor_y 应保持 0");
         assert_eq!(tui.cursor_x, 0, "cursor_x 应减到 0");
         // 第 0 行应删掉 'a'，只剩 'b\n'
-        assert!(text.starts_with('b'), "删除 'a' 后首字符应为 b，实际: {:?}", text);
+        assert!(
+            text.starts_with('b'),
+            "删除 'a' 后首字符应为 b，实际: {:?}",
+            text
+        );
     }
 
     // ── handle_down/up 往返光标稳定性 ────────────────────────────────────────
@@ -1481,7 +1615,10 @@ mod tests {
         handle().handle_char(&mut tui, meta, &td, 'Z').unwrap();
         // cursor_x < TV_W 为 false：cursor_x 不变，也不换行
         // 字符被插入但光标不移动
-        println!("cursor_x=TV_W 插入后: cursor_x={}, is_last_line={}", tui.cursor_x, tui.is_last_line);
+        println!(
+            "cursor_x=TV_W 插入后: cursor_x={}, is_last_line={}",
+            tui.cursor_x, tui.is_last_line
+        );
         assert_eq!(
             tui.cursor_x, TV_W,
             "cursor_x 卡在 TV_W 时插入字符后应不变，实际: {}",
@@ -1504,7 +1641,8 @@ mod tests {
         assert!(
             tui.cursor_y <= TV_H,
             "连续向下后 cursor_y({}) 不应超出 tv_height({})",
-            tui.cursor_y, TV_H
+            tui.cursor_y,
+            TV_H
         );
     }
 
@@ -1549,7 +1687,8 @@ mod tests {
         assert!(
             tui.cursor_y <= TV_H - 1,
             "连续 Enter 后 cursor_y({}) 不应超出 tv_height-1({})",
-            tui.cursor_y, TV_H - 1
+            tui.cursor_y,
+            TV_H - 1
         );
     }
 
@@ -1601,8 +1740,8 @@ mod tests {
         h.handle_down(&mut tui, meta, &td).unwrap(); // → hi，cursor_x 截断到 hi 的 char_len-1=2
         let x_after_down = tui.cursor_x;
         h.handle_up(&mut tui, meta, &td).unwrap(); // → longer，cursor_x 从 x_after_down 出发
-        // cursor_x 不会恢复为原来的 5（no "sticky column"）
-        // 这是已知的 UX 限制，记录实际行为
+                                                   // cursor_x 不会恢复为原来的 5（no "sticky column"）
+                                                   // 这是已知的 UX 限制，记录实际行为
         println!(
             "down → cursor_x={}, up → cursor_x={}（不恢复为 5)",
             x_after_down, tui.cursor_x
@@ -1611,7 +1750,8 @@ mod tests {
         assert!(
             tui.cursor_x < line0_len,
             "向上后 cursor_x({}) 应 < line0_len({})",
-            tui.cursor_x, line0_len
+            tui.cursor_x,
+            line0_len
         );
     }
 
@@ -1625,14 +1765,209 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         handle().handle_char(&mut tui, meta, &td, 'Z').unwrap();
         // 保存
-        handle().handle_ctrl_s(&mut tui, tmp.path(), &mut td).unwrap();
+        handle()
+            .handle_ctrl_s(&mut tui, tmp.path(), &mut td)
+            .unwrap();
         // 验证文件内容
         let saved = std::fs::read_to_string(tmp.path()).unwrap();
-        assert!(saved.contains('Z'), "保存后文件应包含插入的字符 'Z'，实际: {:?}", saved);
+        assert!(
+            saved.contains('Z'),
+            "保存后文件应包含插入的字符 'Z'，实际: {:?}",
+            saved
+        );
         assert!(
             tui.elem.cmd_inp.get_inp().contains("saved"),
             "保存成功后命令栏应显示 'saved'"
         );
     }
 
+    // ══════════════════════════════════════════════════════════════════════════
+    // handle_ctrl_z + handle_char：undo 功能测试
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /// 带 undo 文件的测试 setup：返回 (ChapTui, TextDisplay, 内容临时文件, undo临时目录)
+    /// undo 文件路径在目录中是新建的（不存在），UndoFile 会初始化它
+    fn setup_with_undo(content: &str) -> (ChapTui, TextDisplay, NamedTempFile, TempDir) {
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(content.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
+        let mut td =
+            TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
+        td.get_one_page(1).unwrap();
+
+        // 使用 TempDir 内的不存在路径，UndoFile::open 会新建并写入文件头
+        let undo_dir = TempDir::new().unwrap();
+        let undo_path = undo_dir.path().join("undo.log");
+        let undo = UndoFile::open(&undo_path).unwrap();
+        let tui = ChapTui::for_test_with_undo(TV_H, TV_W, undo);
+        (tui, td, tmp, undo_dir)
+    }
+
+    /// undo=None 时，handle_char 不记录 undo；ctrl_z 是 noop
+    #[test]
+    fn test_ctrl_z_noop_when_undo_disabled() {
+        let (mut tui, td, _f) = setup("hello\n");
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_char(&mut tui, meta, &td, 'X').unwrap();
+        let before_ctrl_z = first_line_text(&td);
+        // undo=None，ctrl_z 不做任何事
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        let after_ctrl_z = first_line_text(&td);
+        assert_eq!(
+            before_ctrl_z, after_ctrl_z,
+            "undo=None 时 ctrl_z 不应改变内容"
+        );
+        assert!(after_ctrl_z.contains('X'), "undo=None 时 X 应仍在");
+    }
+
+    /// undo 已启用但栈空时，ctrl_z 是 noop
+    #[test]
+    fn test_ctrl_z_noop_on_empty_stack() {
+        let (mut tui, td, _f, _uf) = setup_with_undo("hello\n");
+        let before = first_line_text(&td);
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        let after = first_line_text(&td);
+        assert_eq!(before, after, "空 undo 栈时 ctrl_z 不应改变内容");
+    }
+
+    /// 插入单个字符后 ctrl_z 应恢复内容
+    #[test]
+    fn test_ctrl_z_undoes_single_char_insert() {
+        let (mut tui, td, _f, _uf) = setup_with_undo("hello\n");
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_char(&mut tui, meta, &td, 'X').unwrap();
+        let after_insert = first_line_text(&td);
+        assert!(
+            after_insert.contains('X'),
+            "插入后应包含 'X'，实际: {:?}",
+            after_insert
+        );
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        let after_undo = first_line_text(&td);
+        assert!(
+            !after_undo.contains('X'),
+            "undo 后 'X' 应被移除，实际: {:?}",
+            after_undo
+        );
+        assert!(
+            after_undo.starts_with('h'),
+            "undo 后内容应以 'h' 开头，实际: {:?}",
+            after_undo
+        );
+    }
+
+    /// undo 后光标位置应恢复到插入前
+    #[test]
+    fn test_ctrl_z_restores_cursor_position() {
+        let (mut tui, td, _f, _uf) = setup_with_undo("hello\n");
+        tui.cursor_x = 2;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 2;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_char(&mut tui, meta, &td, 'X').unwrap();
+        assert_eq!(tui.cursor_x, 3, "插入后 cursor_x 应为 3");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(tui.cursor_x, 2, "undo 后 cursor_x 应恢复为 2");
+        assert_eq!(tui.cursor_y, 0, "undo 后 cursor_y 应恢复为 0");
+    }
+
+    /// 连续插入多个字符，依次 ctrl_z，应 LIFO 顺序恢复
+    #[test]
+    fn test_ctrl_z_multiple_inserts_lifo_order() {
+        let (mut tui, td, _f, _uf) = setup_with_undo("abc\n");
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+        let h = handle();
+
+        // 在行首连续插入 X Y Z
+        h.handle_char(&mut tui, meta, &td, 'X').unwrap();
+        tui.bytes_cursor = 1;
+        h.handle_char(&mut tui, meta, &td, 'Y').unwrap();
+        tui.bytes_cursor = 2;
+        h.handle_char(&mut tui, meta, &td, 'Z').unwrap();
+
+        let after_insert = first_line_text(&td);
+        assert!(
+            after_insert.starts_with("XYZ"),
+            "插入三个字符后应以 XYZ 开头，实际: {:?}",
+            after_insert
+        );
+
+        // 第一次 ctrl_z：删除最后插入的 Z
+        h.handle_ctrl_z(&mut tui, &td).unwrap();
+        let after1 = first_line_text(&td);
+        assert!(
+            !after1.contains('Z'),
+            "第 1 次 undo 后 Z 应被删除，实际: {:?}",
+            after1
+        );
+        assert!(after1.contains('Y'), "第 1 次 undo 后 Y 应仍在");
+
+        // 第二次 ctrl_z：删除 Y
+        h.handle_ctrl_z(&mut tui, &td).unwrap();
+        let after2 = first_line_text(&td);
+        assert!(
+            !after2.contains('Y'),
+            "第 2 次 undo 后 Y 应被删除，实际: {:?}",
+            after2
+        );
+        assert!(after2.contains('X'), "第 2 次 undo 后 X 应仍在");
+
+        // 第三次 ctrl_z：删除 X
+        h.handle_ctrl_z(&mut tui, &td).unwrap();
+        let after3 = first_line_text(&td);
+        assert!(
+            !after3.contains('X'),
+            "第 3 次 undo 后 X 应被删除，实际: {:?}",
+            after3
+        );
+        assert!(
+            after3.starts_with('a'),
+            "3 次 undo 后应恢复原始内容 abc，实际: {:?}",
+            after3
+        );
+    }
+
+    /// undo 后再保存，文件内容应与 undo 后的内容一致
+    #[test]
+    fn test_ctrl_z_then_save_correct() {
+        let (mut tui, mut td, tmp, _uf) = setup_with_undo("hello\n");
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+
+        // 插入 'Z'
+        handle().handle_char(&mut tui, meta, &td, 'Z').unwrap();
+        // undo
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        // 保存
+        handle()
+            .handle_ctrl_s(&mut tui, tmp.path(), &mut td)
+            .unwrap();
+
+        let saved = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(
+            !saved.contains('Z'),
+            "undo 后保存，文件不应包含 'Z'，实际: {:?}",
+            saved
+        );
+        assert!(
+            saved.starts_with("hello"),
+            "undo 后保存内容应以 hello 开头，实际: {:?}",
+            saved
+        );
+    }
 }
