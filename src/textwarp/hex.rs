@@ -410,6 +410,15 @@ impl EditText for HexText {
         Ok(())
     }
 
+    fn delete_line(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()> {
+        Ok(())
+    }
+
     fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
         Ok(())
     }

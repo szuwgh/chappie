@@ -1013,6 +1013,13 @@ pub(crate) trait TextOper {
         line_meta: &LineState,
     ) -> ChapResult<()>;
 
+    fn delete_newline(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()>;
+
     fn backspace(
         &self,
         cursor_y: usize,
@@ -1283,6 +1290,13 @@ pub(crate) trait EditText {
         bytes_cursor: usize,
         line_meta: &LineState,
     ) -> ChapResult<()>;
+    //删除行
+    fn delete_line(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()>;
     // 删除
     fn backspace(
         &mut self,
@@ -1517,6 +1531,20 @@ impl TextOper for TextDisplay {
             TextDisplay::Hex(v) => Ok(()),
             TextDisplay::Edit(v) => v.insert_newline(cursor_y, cursor_x, line_meta),
             TextDisplay::EditBlock(v) => v.insert_newline(cursor_y, cursor_x, line_meta),
+        }
+    }
+
+    fn delete_newline(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()> {
+        match self {
+            TextDisplay::Text(v) => Ok(()),
+            TextDisplay::Hex(v) => Ok(()),
+            TextDisplay::Edit(v) => v.delete_newline(cursor_y, cursor_x, line_meta),
+            TextDisplay::EditBlock(v) => v.delete_newline(cursor_y, cursor_x, line_meta),
         }
     }
 
@@ -1793,6 +1821,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
         let mut line_end = meta.get_line_end();
         let mut line_file_start = meta.get_line_file_start();
         if !self.borrow_lines().has_next_line(meta) {
+            log::debug!("没有下一行了");
             return (None, LineState::default());
         }
         let mut next_line_state = self.borrow_lines_mut().get_next_line_state(&meta).unwrap(); //self.borrow_lines_mut().get_line(&state).unwrap(); //&self.borrow_lines()[line_index];
@@ -2707,6 +2736,23 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
         self.edit_text
             .borrow_lines_mut()
             .insert_newline(cursor_y, cursor_x, line_meta)?;
+        // todo
+        // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
+        // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };
+        self.edit_text.borrow_cache_lines_mut().clear();
+        self.edit_text.borrow_cache_line_meta_mut().clear();
+        Ok(())
+    }
+
+    pub(crate) fn delete_newline(
+        &self,
+        cursor_y: usize,
+        cursor_x: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()> {
+        self.edit_text
+            .borrow_lines_mut()
+            .delete_line(cursor_y, cursor_x, line_meta)?;
         // todo
         // let page_offset_list = self.edit_text.borrow_page_offset_list_mut();
         // unsafe { page_offset_list.set_len(line_meta.get_page_num()) };

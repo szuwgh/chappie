@@ -284,6 +284,15 @@ impl EditText for GapText {
         Ok(())
     }
 
+    fn delete_line(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()> {
+        Ok(())
+    }
+
     fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
         // 备份文件
         let file = std::fs::File::create(backup_name).unwrap();

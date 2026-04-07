@@ -9,6 +9,7 @@ use crate::lua::LuaPlugin;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
+use crate::tui::edit::get_edit_content;
 use crate::undo::undo::OpType;
 use crate::ChapTui;
 use crossterm::cursor::Show;
@@ -363,35 +364,48 @@ pub(crate) trait Handle {
                 )?;
             }
             OpType::InsertChar => {
-                td.insert_char(
+                td.insert_bytes(
                     op.cursor_y as usize,
                     op.byte_offset as usize,
                     &meta,
-                    op.data[0] as char,
+                    &op.data,
+                    false,
                 )?;
-                // if let Some(c) = std::str::from_utf8(&op.data)
-                //     .ok()
-                //     .and_then(|s| s.chars().next())
-                // {
-                //     td.insert_char(chap_tui.cursor_y, op.byte_offset as usize, meta, c)?;
-                // }
             }
             OpType::DeleteNewline => {
-                //td.backspace(chap_tui.cursor_y, op.byte_offset as usize, 1, meta)?;
+                td.delete_newline(op.cursor_y as usize, op.byte_offset as usize, &meta)?;
             }
             OpType::InsertNewline => {
-                // td.insert_newline(chap_tui.cursor_y, op.byte_offset as usize, meta)?;
+                td.insert_newline(op.cursor_y as usize, op.byte_offset as usize, &meta)?;
             }
         }
 
         // ⑤ 恢复光标到操作发生时的位置
         chap_tui.cursor_y = op.cursor_y as usize;
         chap_tui.cursor_x = op.cursor_x as usize;
+        chap_tui.is_last_line = false;
 
         // ⑥ 刷新页面
         td.get_one_page(chap_tui.start_line_num)?;
+        // let (content, meta) = td.get_current_page()?;
+        // let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
+        //     content,
+        //     chap_tui.elem.tv.get_width(),
+        //     &meta,
+        //     0,
+        //     &None,
+        //     chap_tui.elem.tv.get_height(),
+        //     chap_tui
+        //         .column_offset
+        //         .saturating_sub(chap_tui.elem.tv.get_width()),
+        //     chap_tui.cursor_y,
+        //     chap_tui.cursor_x,
+        // );
+        // chap_tui.bytes_cursor = byte_cursor;
+        // chap_tui.bytes_cursor_size = last_char_bytes_size;
         Ok(())
     }
+
     fn handle_ctrl_r<'a>(&self, chap_tui: &mut ChapTui, td: &'a TextDisplay) -> ChapResult<()> {
         Ok(())
     }

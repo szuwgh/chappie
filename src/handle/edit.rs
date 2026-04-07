@@ -5,6 +5,7 @@ use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarpType;
+use crate::tui::edit::get_edit_content;
 use crate::undo::undo::EditOp;
 use crate::undo::undo::OpType;
 use crate::ChapTui;
@@ -17,6 +18,24 @@ impl HandleEdit {
     pub(crate) fn new() -> Self {
         HandleEdit {}
     }
+
+    // fn refresh_cursor_metrics(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
+    //     let (content, meta) = td.get_current_page()?;
+    //     let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
+    //         content,
+    //         chap_tui.elem.tv.get_width(),
+    //         &meta,
+    //         0,
+    //         &None,
+    //         chap_tui.elem.tv.get_height(),
+    //         chap_tui.column_offset,
+    //         chap_tui.cursor_y,
+    //         chap_tui.cursor_x,
+    //     );
+    //     chap_tui.bytes_cursor = byte_cursor;
+    //     chap_tui.bytes_cursor_size = last_char_bytes_size;
+    //     Ok(())
+    // }
 }
 
 impl Handle for HandleEdit {
@@ -230,11 +249,27 @@ impl Handle for HandleEdit {
             return Ok(());
         };
         td.insert_newline(chap_tui.cursor_y, chap_tui.bytes_cursor, cur_meta)?;
+        if let Some(undo) = &mut chap_tui.undo {
+            let abs_offset = cur_meta.get_block_offset()
+                + cur_meta.get_line_offset()
+                + chap_tui.bytes_cursor
+                + 1;
+            undo.push(EditOp {
+                op_type: OpType::InsertNewline,
+                cursor_y: chap_tui.cursor_y as u32,
+                cursor_x: chap_tui.cursor_x as u32,
+                block_id: cur_meta.get_block_num() as u32,
+                line_index: chap_tui.start_line_num as u32,
+                byte_offset: abs_offset as u32,
+                data: vec![b'\n'],
+            })?;
+        }
         if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
             chap_tui.cursor_y += 1;
         }
         chap_tui.cursor_x = 0;
         td.get_one_page(chap_tui.start_line_num)?;
+        // self.refresh_cursor_metrics(chap_tui, td)?;
 
         Ok(())
     }
@@ -259,26 +294,47 @@ impl Handle for HandleEdit {
         let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
             return Ok(());
         };
-        let delete_bytes = td.backspace(
-            chap_tui.cursor_y,
-            chap_tui.bytes_cursor,
-            chap_tui.bytes_cursor_size,
-            cur_meta,
-        )?;
-        if let Some(undo) = &mut chap_tui.undo {
-            let abs_offset =
-                cur_meta.get_block_offset() + cur_meta.get_line_offset() + chap_tui.bytes_cursor
+        if cur_meta.line_offset == 0 && chap_tui.bytes_cursor == 0 {
+            td.delete_newline(chap_tui.cursor_y, chap_tui.cursor_x, cur_meta)?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = cur_meta.get_block_offset()
+                    + cur_meta.get_line_offset()
+                    + chap_tui.bytes_cursor
+                    - 1;
+                undo.push(EditOp {
+                    op_type: OpType::DeleteNewline,
+                    cursor_y: chap_tui.cursor_y as u32,
+                    cursor_x: chap_tui.cursor_x as u32,
+                    block_id: cur_meta.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: vec![b'\n'],
+                })?;
+            }
+        } else {
+            let delete_bytes = td.backspace(
+                chap_tui.cursor_y,
+                chap_tui.bytes_cursor,
+                chap_tui.bytes_cursor_size,
+                cur_meta,
+            )?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = cur_meta.get_block_offset()
+                    + cur_meta.get_line_offset()
+                    + chap_tui.bytes_cursor
                     - delete_bytes.len();
-            undo.push(EditOp {
-                op_type: OpType::DeleteChar,
-                cursor_y: chap_tui.cursor_y as u32,
-                cursor_x: chap_tui.cursor_x as u32,
-                block_id: cur_meta.get_block_num() as u32,
-                line_index: chap_tui.start_line_num as u32,
-                byte_offset: abs_offset as u32,
-                data: delete_bytes,
-            })?;
+                undo.push(EditOp {
+                    op_type: OpType::DeleteChar,
+                    cursor_y: chap_tui.cursor_y as u32,
+                    cursor_x: chap_tui.cursor_x as u32,
+                    block_id: cur_meta.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: delete_bytes,
+                })?;
+            }
         }
+
         td.get_one_page(chap_tui.start_line_num)?;
         if chap_tui.cursor_x == 0 {
             let cursor_y = chap_tui.cursor_y.saturating_sub(1);
@@ -396,6 +452,7 @@ impl Handle for HandleEdit {
             }
         }
         td.get_one_page(chap_tui.start_line_num)?;
+        //  self.refresh_cursor_metrics(chap_tui, td)?;
         Ok(())
     }
 
@@ -497,6 +554,7 @@ impl Handle for HandleEdit {
             }
         }
         td.get_one_page(chap_tui.start_line_num)?;
+        // self.refresh_cursor_metrics(chap_tui, td)?;
         Ok(())
     }
 }
@@ -508,6 +566,7 @@ mod tests {
     use crate::textwarp::EditTextWarp;
     use crate::textwarp::TextDisplay;
     use crate::textwarp::TextWarpType;
+    use crate::tui::edit::get_edit_content;
     use crate::tui::ChapTui;
     use crate::undo::undo::UndoFile;
     use std::io::Write;
@@ -518,6 +577,10 @@ mod tests {
 
     const TV_H: usize = 20;
     const TV_W: usize = 80;
+    const HANDLE_EDIT_ENTER_UNDO_BACKSPACE_FIXTURE: &str =
+        include_str!("../../tests/fixtures/handle_edit_enter_undo_backspace_regression.txt");
+    const HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE: &str =
+        include_str!("../../tests/fixtures/handle_edit_enter_undo_backspace_real_context.txt");
 
     /// 从字符串内容创建临时文件，返回 (ChapTui, TextDisplay, 临时文件句柄)
     fn setup(content: &str) -> (ChapTui, TextDisplay, NamedTempFile) {
@@ -561,6 +624,37 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    fn saved_text(td: &mut TextDisplay) -> String {
+        let tmp = NamedTempFile::new().unwrap();
+        td.save(tmp.path()).unwrap();
+        std::fs::read_to_string(tmp.path()).unwrap()
+    }
+
+    fn sync_cursor_metrics(tui: &mut ChapTui, td: &TextDisplay) {
+        let (content, meta) = td.get_current_page().unwrap();
+        let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
+            content,
+            tui.elem.tv.get_width(),
+            &meta,
+            0,
+            &None,
+            tui.elem.tv.get_height(),
+            tui.column_offset,
+            tui.cursor_y,
+            tui.cursor_x,
+        );
+        tui.bytes_cursor = byte_cursor;
+        tui.bytes_cursor_size = last_char_bytes_size;
+    }
+
+    fn sync_view_state(tui: &mut ChapTui, td: &TextDisplay) {
+        let meta = td.get_current_line_meta().unwrap();
+        if let Some(first) = meta.get(0) {
+            tui.start_line_num = first.get_line_num();
+        }
+        sync_cursor_metrics(tui, td);
     }
 
     fn handle() -> HandleEdit {
@@ -1454,7 +1548,7 @@ mod tests {
     /// 连续 backspace，每次光标减 1
     #[test]
     fn test_backspace_consecutive_decrements_cursor() {
-        let (mut tui, td, _f) = setup("abcde\n");
+        let (mut tui, mut td, _f) = setup("abcde\n");
         tui.cursor_x = 3;
         tui.bytes_cursor = 3;
         tui.bytes_cursor_size = 1;
@@ -1462,9 +1556,43 @@ mod tests {
         let h = handle();
         h.handle_backspace(&mut tui, meta, &td).unwrap();
         assert_eq!(tui.cursor_x, 2);
-        // 注意：bytes_cursor 需要手动更新才能做第二次删除
-        // 这揭示了测试层面 bytes_cursor 需要在每次操作后重新计算的设计约束
-        // 此处只验证第一次 backspace 正确
+        let meta = td.get_current_line_meta().unwrap();
+        h.handle_backspace(&mut tui, meta, &td).unwrap();
+        assert_eq!(tui.cursor_x, 1);
+        assert_eq!(saved_text(&mut td), "ade\n");
+    }
+
+    #[test]
+    fn test_char_then_backspace_without_manual_sync_restores_original() {
+        let (mut tui, mut td, _f) = setup("abc\n");
+        tui.cursor_x = 1;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 1;
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_char(&mut tui, meta, &td, 'X').unwrap();
+
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+
+        assert_eq!(saved_text(&mut td), "abc\n");
+        assert_eq!(tui.cursor_x, 1);
+        assert_eq!(tui.cursor_y, 0);
+    }
+
+    #[test]
+    fn test_paste_then_backspace_without_manual_sync_deletes_last_pasted_char() {
+        let (mut tui, mut td, _f) = setup("abc\n");
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_paste(&mut tui, meta, &td, "XY").unwrap();
+
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+
+        assert_eq!(saved_text(&mut td), "Xabc\n");
+        assert_eq!(tui.cursor_x, 1);
     }
 
     /// backspace 到行首（cursor_x=1 → 0），不触发合并行
@@ -1550,17 +1678,8 @@ mod tests {
         let meta = td.get_current_line_meta().unwrap();
         let paste = "x".repeat(TV_W); // 恰好 TV_W 个字符
         handle().handle_paste(&mut tui, meta, &td, &paste).unwrap();
-        // char_with = TV_W * 1 = TV_W。TV_W > TV_W 为 false，所以 cursor_x = TV_W
-        // 但 cursor_x = TV_W 时 render_edit 中 n_chars_skip_control_mem_opt(s, TV_W)
-        // 可能超出该 visual 行的字符范围
-        assert!(
-            tui.cursor_x <= TV_W,
-            "粘贴 TV_W 个字符后 cursor_x({}) 超出 TV_W({})",
-            tui.cursor_x,
-            TV_W
-        );
-        // 记录实际值：是否 == TV_W（越界）
-        println!("paste TV_W chars → cursor_x = {}", tui.cursor_x);
+        assert_eq!(tui.cursor_y, 1, "粘贴满一整行后 cursor_y 应换到下一视觉行");
+        assert_eq!(tui.cursor_x, 0, "粘贴满一整行后 cursor_x 应为 0");
     }
 
     /// 粘贴 TV_W+1 个字符：应在 TV_W 处触发换行，cursor_x 回到 1
@@ -1659,17 +1778,113 @@ mod tests {
         // 第 0 视觉段 char_len = TV_W
         // 将 cursor 移到第 0 段末尾 (char_len-2，'\n' 前的最后一个内容字符)
         if let Some(seg0) = meta.get(0) {
-            let end_x = seg0.get_char_len().saturating_sub(2);
+            let end_x = seg0.get_char_len().saturating_sub(1);
             tui.cursor_x = end_x;
             let h = handle();
-            // 右移到 char_len-1（'\n' 位置但有后续内容）
+            // 在当前视觉段最后一个字符上继续右移，应跳到续行
             h.handle_right(&mut tui, meta, &td).unwrap();
-            // 若 line_end < text_len_from_index → wrap: cursor_y=1, cursor_x=0
-            println!(
-                "折行右移: cursor_y={}, cursor_x={}",
-                tui.cursor_y, tui.cursor_x
-            );
+            assert_eq!(tui.cursor_y, 1, "跨到续行后 cursor_y 应为 1");
+            assert_eq!(tui.cursor_x, 0, "跨到续行后 cursor_x 应为 0");
         }
+    }
+
+    #[test]
+    fn test_scroll_edit_undo_keeps_correct_line_context() {
+        let content = (1..=30)
+            .map(|i| format!("line{:02}\n", i))
+            .collect::<String>();
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&content);
+        let h = handle();
+
+        for _ in 0..(TV_H + 2) {
+            let meta = td.get_current_line_meta().unwrap();
+            tui.start_line_num = meta.get(0).map_or(1, |m| m.get_line_num());
+            h.handle_down(&mut tui, meta, &td).unwrap();
+            sync_view_state(&mut tui, &td);
+        }
+
+        let meta = td.get_current_line_meta().unwrap();
+        tui.start_line_num = meta.get(0).map_or(1, |m| m.get_line_num());
+        sync_view_state(&mut tui, &td);
+        h.handle_char(&mut tui, meta, &td, 'Z').unwrap();
+        let after_insert = saved_text(&mut td);
+        assert!(
+            after_insert.contains("Z"),
+            "滚动后插入应落到当前上下文中的实际文档行"
+        );
+
+        h.handle_ctrl_z(&mut tui, &td).unwrap();
+        let after_undo = saved_text(&mut td);
+        assert_eq!(after_undo, content, "滚动后编辑再 undo 应恢复原文档");
+    }
+
+    #[test]
+    fn test_scroll_edit_delete_sequence_preserves_document_order() {
+        let content = (1..=35)
+            .map(|i| format!("row{:02}\n", i))
+            .collect::<String>();
+        let (mut tui, mut td, _f) = setup(&content);
+        let h = handle();
+
+        for _ in 0..22 {
+            let meta = td.get_current_line_meta().unwrap();
+            h.handle_down(&mut tui, meta, &td).unwrap();
+            sync_view_state(&mut tui, &td);
+        }
+
+        tui.cursor_x = 3;
+        sync_view_state(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        h.handle_char(&mut tui, meta, &td, 'X').unwrap();
+        sync_view_state(&mut tui, &td);
+
+        let meta = td.get_current_line_meta().unwrap();
+        h.handle_backspace(&mut tui, meta, &td).unwrap();
+        sync_view_state(&mut tui, &td);
+
+        tui.cursor_x = 0;
+        sync_view_state(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        h.handle_enter(&mut tui, meta, &td).unwrap();
+        sync_view_state(&mut tui, &td);
+
+        let meta = td.get_current_line_meta().unwrap();
+        h.handle_backspace(&mut tui, meta, &td).unwrap();
+
+        assert_eq!(
+            saved_text(&mut td),
+            content,
+            "滚动后连续插入/删除/回车/合并不应打乱文档顺序"
+        );
+    }
+
+    #[test]
+    fn test_backspace_at_top_of_scrolled_page_merges_with_previous_line() {
+        let content = (1..=28)
+            .map(|i| format!("line{:02}\n", i))
+            .collect::<String>();
+        let (mut tui, mut td, _f) = setup(&content);
+        let h = handle();
+
+        td.get_one_page(2).unwrap();
+        tui.start_line_num = 2;
+        tui.cursor_y = 0;
+        tui.cursor_x = 0;
+        sync_view_state(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        h.handle_backspace(&mut tui, meta, &td).unwrap();
+
+        let expected = std::iter::once("line01line02\n".to_string())
+            .chain((3..=28).map(|i| format!("line{:02}\n", i)))
+            .collect::<String>();
+        assert_eq!(
+            saved_text(&mut td),
+            expected,
+            "滚动后在页顶行首 Backspace 应合并隐藏的上一逻辑行"
+        );
+        assert_eq!(tui.start_line_num, 1, "合并隐藏上一行后应回显上一逻辑行");
+        assert_eq!(tui.cursor_y, 0, "合并后光标应留在当前页首行");
+        assert_eq!(tui.cursor_x, 6, "合并后光标应落在上一逻辑行末尾");
     }
 
     // ── handle_enter：连续插入多行 ────────────────────────────────────────────
@@ -1968,6 +2183,178 @@ mod tests {
             saved.starts_with("hello"),
             "undo 后保存内容应以 hello 开头，实际: {:?}",
             saved
+        );
+    }
+
+    #[test]
+    fn test_ctrl_z_restores_deleted_multibyte_char() {
+        let (mut tui, mut td, _f, _uf) = setup_with_undo("你好\n");
+        tui.cursor_x = 2;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 6;
+        tui.bytes_cursor_size = 3;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "你\n");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "你好\n");
+    }
+
+    #[test]
+    fn test_ctrl_z_undoes_enter() {
+        let (mut tui, mut td, _f, _uf) = setup_with_undo("hello\n");
+        tui.cursor_x = 2;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 2;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_enter(&mut tui, meta, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "he\nllo\n");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "hello\n");
+        assert_eq!(tui.cursor_x, 2);
+        assert_eq!(tui.cursor_y, 0);
+    }
+
+    #[test]
+    fn test_ctrl_z_restores_deleted_newline() {
+        let (mut tui, mut td, _f, _uf) = setup_with_undo("hello\nworld\n");
+        tui.cursor_y = 1;
+        tui.cursor_x = 0;
+        tui.bytes_cursor = 0;
+        tui.bytes_cursor_size = 1;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "helloworld\n");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "hello\nworld\n");
+        assert_eq!(tui.cursor_x, 0);
+        assert_eq!(tui.cursor_y, 1);
+    }
+
+    #[test]
+    fn test_ctrl_z_mixed_char_enter_backspace_sequence() {
+        let (mut tui, mut td, _f, _uf) = setup_with_undo("abc\n");
+
+        tui.cursor_x = 1;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 1;
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_char(&mut tui, meta, &td, 'X').unwrap();
+        assert_eq!(saved_text(&mut td), "aXbc\n");
+
+        tui.bytes_cursor = 2;
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_enter(&mut tui, meta, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "aX\nbc\n");
+
+        tui.cursor_y = 1;
+        tui.cursor_x = 1;
+        tui.bytes_cursor = 1;
+        tui.bytes_cursor_size = 1;
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "aX\nc\n");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "aX\nbc\n");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "aXbc\n");
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        assert_eq!(saved_text(&mut td), "abc\n");
+    }
+
+    #[test]
+    fn test_enter_undo_backspace_at_chinese_line_start_matches_ui() {
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(HANDLE_EDIT_ENTER_UNDO_BACKSPACE_FIXTURE);
+
+        tui.cursor_y = 4;
+        tui.cursor_x = 0;
+        sync_cursor_metrics(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_enter(&mut tui, meta, &td).unwrap();
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        sync_cursor_metrics(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+
+        assert_eq!(
+            saved_text(&mut td),
+            "\
+# 使用 centos7 作为基础镜像\n\
+FROM centos:centos7.9.2009\n\
+\n\
+# 禁用 fastestmirror 插件# 使用 vault.centos.org 存档仓库\n"
+        );
+    }
+
+    #[test]
+    fn test_enter_undo_backspace_at_a_txt_context_matches_ui() {
+        let (mut tui, mut td, _f, _uf) =
+            setup_with_undo(HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE);
+
+        tui.cursor_y = 10;
+        tui.cursor_x = 0;
+        sync_cursor_metrics(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_enter(&mut tui, meta, &td).unwrap();
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        sync_cursor_metrics(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+
+        assert_eq!(
+            saved_text(&mut td),
+            "\n\
+# 构建dockerfile环境\n\
+\n\
+```dockerfile\n\
+#centos7脚本\n\
+\n\
+# 使用 centos7 作为基础镜像\n\
+FROM centos:centos7.9.2009\n\
+\n\
+# 禁用 fastestmirror 插件# 使用 vault.centos.org 存档仓库\n"
+        );
+    }
+
+    #[test]
+    fn test_enter_undo_backspace_at_a_txt_context_without_manual_sync() {
+        let (mut tui, mut td, _f, _uf) =
+            setup_with_undo(HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE);
+
+        tui.cursor_y = 10;
+        tui.cursor_x = 0;
+        sync_cursor_metrics(&mut tui, &td);
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_enter(&mut tui, meta, &td).unwrap();
+
+        sync_cursor_metrics(&mut tui, &td);
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_backspace(&mut tui, meta, &td).unwrap();
+
+        assert_eq!(
+            saved_text(&mut td),
+            "\n\
+# 构建dockerfile环境\n\
+\n\
+```dockerfile\n\
+#centos7脚本\n\
+\n\
+# 使用 centos7 作为基础镜像\n\
+FROM centos:centos7.9.2009\n\
+\n\
+# 禁用 fastestmirror 插件# 使用 vault.centos.org 存档仓库\n"
         );
     }
 }

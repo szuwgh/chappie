@@ -74,7 +74,7 @@ impl GapBlockText {
         let mut blocks = RingVec::with_capacity(BLOKK_NUM);
         let mut buf = [0u8; BLOCK_SIZE];
         let mut block_start_offset: usize = file_start;
-        let mut start_line_index: usize = 0;
+        // let mut start_line_index: usize = 0;
         let mut block_indexs = Vec::with_capacity(BLOKK_NUM * 2);
         for i in 0..BLOKK_NUM {
             let block_id = start_block_id + i;
@@ -83,16 +83,16 @@ impl GapBlockText {
             {
                 blocks.push(block);
                 let size = block_index.block_size;
-                let line_count = block_index.line_count;
-                let last_line_index = block_index.lines_index.last().unwrap();
+                //  let line_count = block_index.line_count;
+                //let last_line_index = block_index.lines_index.last().unwrap();
 
-                if last_line_index.is_complete {
-                    //是完整行
-                    start_line_index += line_count;
-                } else {
-                    //不是完整行
-                    start_line_index += line_count.saturating_sub(1);
-                }
+                //if last_line_index.is_complete {
+                //是完整行
+                // start_line_index += line_count;
+                // } else {
+                //不是完整行
+                //  start_line_index += line_count.saturating_sub(1);
+                //}
                 block_start_offset += size;
                 block_indexs.push(block_index);
             } else {
@@ -183,6 +183,7 @@ impl GapBlockText {
             cur_block_id: block_id,
             cur_block_line_index: block_line_index,
             cur_block_offset: block_offset,
+            exhausted: false,
         })
     }
 
@@ -503,11 +504,13 @@ impl Text for GapBlockText {
         let line = self.get_line(&state).unwrap();
         let mut next_block_id = block_id;
         if state.get_line_end() >= line.text_len() {
-            if state.get_block_line_end() >= block_index.block_size {
+            if state.get_block_line_end() >= block_index.block_size - 1 {
                 // 越过当前块，进入下一块
                 next_block_id = self.block_indexs.get(pos + 1)?.block_id;
                 block_line_index = 0;
-                block_offset = state.get_block_line_end() - block_index.block_size;
+                block_offset = state
+                    .get_block_line_end()
+                    .saturating_sub(block_index.block_size);
                 line_end = 0;
             } else {
                 line_end = 0;
@@ -516,7 +519,6 @@ impl Text for GapBlockText {
                 block_offset = state.get_block_line_end();
             }
         }
-
         let p = LineState::builder()
             .line_index(line_index)
             .line_offset(line_end)
@@ -726,9 +728,10 @@ impl GapBlockText {
 
         let mut all_lines = std::mem::take(&mut self.block_indexs[pos].lines_index);
         let mut lines_b: Vec<LineIndex> = all_lines.drain(split_line_count..).collect();
-        for l in lines_b.iter_mut() {
+        for (i, l) in lines_b.iter_mut().enumerate() {
             l.block_start -= split_byte;
             l.block_end -= split_byte;
+            l.index_num = i;
         }
         let lines_a = all_lines; // drain 后剩余前半段，复用原 Vec 内存
 
@@ -810,11 +813,21 @@ impl EditText for GapBlockText {
         //合并行
 
         if line_meta.line_offset == 0 && bytes_cursor == 0 {
+            let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+            let mut pos = self.block_pos(block_id).unwrap();
+            while insert_offset >= self.block_indexs[pos].block_size {
+                insert_offset -= self.block_indexs[pos].block_size;
+                pos += 1;
+                block_id = self.block_indexs[pos].block_id;
+                block_line_index = 0;
+            }
             //在行首 需要合并上一行
             if block_offset > 0 {
                 // 先计算 pos（&self 方法），再取 blocks 的可变借用
-                let pos = self.block_pos(block_id).unwrap();
-                let insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+                //  let pos = self.block_pos(block_id).unwrap();
+                //  let insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+                log::debug!("backspace at block_id {}, line_offset {}, insert_offset {}, block_line_index {}",
+                    block_id, line_meta.line_offset, insert_offset, block_line_index);
                 let deleted_bytes = self
                     .blocks
                     .iter_mut()
@@ -852,13 +865,13 @@ impl EditText for GapBlockText {
                         .last_mut()
                         .unwrap()
                         .is_complete = false;
-                    return Ok(vec![]);
+                    return Ok(vec![b'\n']);
                 }
             }
         } else {
             let mut pos = self.block_pos(block_id).unwrap();
             let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
-            if insert_offset >= self.block_indexs[pos].block_size {
+            while insert_offset >= self.block_indexs[pos].block_size {
                 insert_offset -= self.block_indexs[pos].block_size;
                 pos += 1;
                 block_id = self.block_indexs[pos].block_id;
@@ -899,7 +912,7 @@ impl EditText for GapBlockText {
         let block_offset = line_meta.get_block_offset();
         let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
         let mut pos = self.block_pos(block_id).unwrap();
-        if insert_offset >= self.block_indexs[pos].block_size {
+        while insert_offset >= self.block_indexs[pos].block_size {
             insert_offset -= self.block_indexs[pos].block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
@@ -935,7 +948,7 @@ impl EditText for GapBlockText {
         let mut block_line_index = line_meta.get_block_line_index();
         let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
         let mut pos = self.block_pos(block_id).unwrap();
-        if insert_offset >= self.block_indexs[pos].block_size {
+        while insert_offset >= self.block_indexs[pos].block_size {
             insert_offset -= self.block_indexs[pos].block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
@@ -975,7 +988,7 @@ impl EditText for GapBlockText {
         let mut block_line_index = line_meta.get_block_line_index();
         let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
         let mut pos = self.block_pos(block_id).unwrap();
-        if insert_offset >= self.block_indexs[pos].block_size {
+        while insert_offset >= self.block_indexs[pos].block_size {
             insert_offset -= self.block_indexs[pos].block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
@@ -992,13 +1005,14 @@ impl EditText for GapBlockText {
         cur_block_index.block_size += 1;
         let line_info = &mut cur_block_index.lines_index[block_line_index];
         let block_end = line_info.block_end;
+        let was_complete = line_info.is_complete;
         line_info.block_end = insert_offset + 1;
         line_info.is_complete = true;
         let new_line_info = LineIndex {
             index_num: line_info.index_num + 1,
             block_start: insert_offset + 1,
             block_end: block_end + 1,
-            is_complete: line_info.is_complete,
+            is_complete: was_complete,
         };
         //更新索引
         cur_block_index
@@ -1012,6 +1026,77 @@ impl EditText for GapBlockText {
         if self.block_indexs[pos].block_size > BLOCK_SIZE {
             self.split_block(block_id)?;
         }
+        Ok(())
+    }
+
+    fn delete_line(
+        &mut self,
+        cursor_y: usize,
+        bytes_cursor: usize,
+        line_meta: &LineState,
+    ) -> ChapResult<()> {
+        let mut block_id = line_meta.get_block_num(); // 语义上是 block_id
+        let block_offset = line_meta.get_block_offset();
+        let mut block_line_index = line_meta.get_block_line_index();
+        let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+        let mut pos = self.block_pos(block_id).unwrap();
+        while insert_offset >= self.block_indexs[pos].block_size {
+            insert_offset -= self.block_indexs[pos].block_size;
+            pos += 1;
+            block_id = self.block_indexs[pos].block_id;
+            block_line_index = 0;
+        }
+        //在行首 需要合并上一行
+        if insert_offset > 0 {
+            // 先计算 pos（&self 方法），再取 blocks 的可变借用
+            // let pos = self.block_pos(block_id).unwrap();
+            log::debug!(
+                "backspace at block_id {}, line_offset {}, insert_offset {}, block_line_index {}",
+                block_id,
+                line_meta.line_offset,
+                insert_offset,
+                block_line_index
+            );
+            self.blocks
+                .iter_mut()
+                .find(|b| b.block_id == block_id)
+                .unwrap()
+                .backspace(insert_offset, 1);
+            // blocks 的可变借用在上一语句结束后由 NLL 释放
+            let cur_block_index = &mut self.block_indexs[pos];
+            cur_block_index.lines_index[block_line_index - 1].block_end =
+                cur_block_index.lines_index[block_line_index].block_end - 1;
+            cur_block_index.lines_index.remove(block_line_index);
+            let len = cur_block_index.lines_index.len();
+            if block_line_index < len {
+                for i in block_line_index..len {
+                    let li = &mut cur_block_index.lines_index[i];
+                    li.block_start = li.block_start.saturating_sub(1);
+                    li.block_end = li.block_end.saturating_sub(1);
+                    li.index_num = li.index_num.saturating_sub(1);
+                }
+            }
+            return Ok(());
+        } else {
+            //在块首 需要合并上一个块的最后一行
+            let pos = self.block_pos(block_id).unwrap();
+            if pos > 0 {
+                let prev_block_id = self.block_indexs[pos - 1].block_id;
+                self.blocks
+                    .iter_mut()
+                    .find(|b| b.block_id == prev_block_id)
+                    .unwrap()
+                    .backspace_last(1);
+                // blocks 借用释放
+                self.block_indexs[pos - 1]
+                    .lines_index
+                    .last_mut()
+                    .unwrap()
+                    .is_complete = false;
+                return Ok(());
+            }
+        }
+
         Ok(())
     }
 
@@ -1140,23 +1225,47 @@ struct GapBlockTextIterRev<'a> {
     cur_block_id: BlockId,       //当前块的稳定 block_id
     cur_block_line_index: usize, //块内行索引
     cur_block_offset: usize,     //块内偏移
+    exhausted: bool,
 }
 
 impl<'a> Iterator for GapBlockTextIterRev<'a> {
     type Item = LineBlockStr<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.exhausted {
+            return None;
+        }
         let (ret, _) = self
             .blocks
             .get_line(self.cur_block_id, self.cur_block_offset)?;
-        self.cur_block_line_index = self.cur_block_line_index.saturating_sub(1);
         let block_index = self
             .blocks
             .block_indexs
             .iter()
             .find(|bi| bi.block_id == self.cur_block_id)?;
-        let line_info = &block_index.lines_index[self.cur_block_line_index];
-        self.cur_block_offset = line_info.block_start;
+        let current_line_info = block_index.get_line_index(self.cur_block_offset)?;
+
+        if current_line_info.index_num > 0 {
+            let prev_index = current_line_info.index_num.saturating_sub(1);
+            let line_info = block_index.lines_index.get(prev_index)?;
+            self.cur_block_line_index = prev_index;
+            self.cur_block_offset = line_info.block_start;
+        } else {
+            let cur_pos = self
+                .blocks
+                .block_indexs
+                .iter()
+                .position(|bi| bi.block_id == self.cur_block_id)?;
+            if cur_pos == 0 {
+                self.exhausted = true;
+            } else {
+                let prev_block_index = self.blocks.block_indexs.get(cur_pos - 1)?;
+                let prev_line_info = prev_block_index.lines_index.last()?;
+                self.cur_block_id = prev_block_index.block_id;
+                self.cur_block_line_index = prev_line_info.index_num;
+                self.cur_block_offset = prev_line_info.block_start;
+            }
+        }
         Some(ret)
     }
 }
@@ -1191,7 +1300,7 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
                 }
             }
             self.cur_block_line_index = 0;
-            self.cur_block_offset = self.cur_block_offset - block_index.block_size;
+            self.cur_block_offset = self.cur_block_offset.saturating_sub(block_index.block_size);
         }
         Some(ret)
     }
@@ -1451,6 +1560,19 @@ mod tests {
         gbt.insert_newline(0, 0, &state).unwrap();
         let data = get_block_text(&mut gbt, 0);
         assert_eq!(String::from_utf8_lossy(&data), "\n\n");
+    }
+
+    #[test]
+    fn test_short_insert_newline_preserves_incomplete_tail() {
+        let mut gbt = create_gap_block_text("abcdef");
+        let state = default_line_state();
+        gbt.insert_newline(0, 3, &state).unwrap();
+        let bi = &gbt.block_indexs[0];
+        assert!(bi.lines_index[0].is_complete, "前半行应变为完整行");
+        assert!(
+            !bi.lines_index[1].is_complete,
+            "原始尾行无换行时，后半行应保持不完整"
+        );
     }
 
     // ---------- backspace 短文本 ----------
@@ -2022,6 +2144,20 @@ mod tests {
     }
 
     #[test]
+    fn test_iter_rev_does_not_panic_on_stale_block_line_index() {
+        let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
+        let mut gbt = create_gap_block_text(&content);
+        let state = default_line_state();
+        gbt.insert_newline(0, 5, &state).unwrap();
+
+        let block_id = gbt.block_indexs[0].block_id;
+        let valid_offset = gbt.block_indexs[0].lines_index[0].block_start;
+        let mut iter = gbt.get_iter_rev(block_id, 69, valid_offset).unwrap();
+
+        assert!(iter.next().is_some(), "当前行应可被反向迭代返回");
+    }
+
+    #[test]
     fn test_large_make_backup_unmodified() {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
@@ -2423,6 +2559,21 @@ mod tests {
                     label, w[0].index_num, w[0].block_end, w[1].index_num, w[1].block_start
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_split_block_lines_b_index_num_restarts_from_zero() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
+        let mut gbt = create_gap_block_text(&content);
+
+        gbt.split_block(0).unwrap();
+
+        for (i, line) in gbt.block_indexs[1].lines_index.iter().enumerate() {
+            assert_eq!(
+                line.index_num, i,
+                "分裂后的 B 块 index_num 应按块内顺序从 0 递增"
+            );
         }
     }
 

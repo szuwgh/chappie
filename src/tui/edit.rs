@@ -144,12 +144,18 @@ pub(crate) fn get_edit_content<'a>(
             let mut prev_line_last_char_size = 0;
             if cursor_x == 0 {
                 if i > 0 {
-                    if let Some(prev_txt) = txts.get(i - 1) {
+                    let is_new_logical_line = line_meta
+                        .get(i)
+                        .zip(line_meta.get(i - 1))
+                        .map(|(cur, prev)| cur.get_line_index() != prev.get_line_index())
+                        .unwrap_or(false);
+                    if is_new_logical_line {
+                        prev_line_last_char_size = 1;
+                    } else if let Some(prev_txt) = txts.get(i - 1) {
                         let prev_t = prev_txt.text(0..);
                         let prev_parts = prev_t.as_parts();
-                        // 优化：原 for_each 内的 return 只退出闭包，无法提前终止外层循环，
-                        // 导致找到目标字符后仍继续扫描剩余字符/段，且最终结果是首字符而非末字符。
-                        // 改用 find_map：逆序扫描各段，找到首个非控制字符即停止，正确返回末字符大小。
+                        // 当前视觉行是上一逻辑行的续段时，行首退格应删除上一段末尾字符，
+                        // 不是逻辑换行符，因此继续取上一段最后一个非控制字符的字节大小。
                         prev_line_last_char_size = prev_parts
                             .iter()
                             .rev()
@@ -314,10 +320,14 @@ fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_> {
             line_meta.get(i).map_or_else(
                 || Line::raw(""),
                 |meta| {
-                    Line::from(Span::styled(
-                        format!("{:>4} ", meta.get_line_num()),
-                        Style::default().fg(Color::White),
-                    ))
+                    if meta.get_line_offset() > 0 {
+                        Line::raw("")
+                    } else {
+                        Line::from(Span::styled(
+                            format!("{:>4} ", meta.get_line_num()),
+                            Style::default().fg(Color::White),
+                        ))
+                    }
                 },
             )
         })
@@ -347,12 +357,43 @@ mod tests {
         rv
     }
 
+    fn make_meta_with_offsets(line_num: usize, line_offset: usize) -> LineState {
+        LineStateBuilder::new()
+            .line_num(line_num)
+            .line_offset(line_offset)
+            .build()
+    }
+
     fn make_ring_txt(lines: Vec<&str>) -> RingVec<CacheStr> {
         let mut rv = RingVec::with_capacity(lines.len().max(1));
         for s in lines {
             rv.push(CacheStr::from_vec_for_test(s.as_bytes().to_vec()));
         }
         rv
+    }
+
+    #[test]
+    fn test_build_nav_text_hides_softwrap_continuation_numbers() {
+        let mut meta = RingVec::with_capacity(3);
+        meta.push(make_meta_with_offsets(10, 0));
+        meta.push(make_meta_with_offsets(10, 5));
+        meta.push(make_meta_with_offsets(11, 0));
+
+        let nav = build_nav_text(&meta, 3);
+        let rendered: Vec<String> = nav
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(rendered[0], "  10 ");
+        assert_eq!(rendered[1], "");
+        assert_eq!(rendered[2], "  11 ");
     }
 
     // ── n_chars_skip_control_mem_opt ─────────────────────────────────────────
