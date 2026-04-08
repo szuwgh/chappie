@@ -681,7 +681,7 @@ impl<'a> LineData<'a> {
 
 pub struct LineStr<'a> {
     pub(crate) data: LineData<'a>, //行数据
-    pub(crate) block_num: usize,
+    pub(crate) block_id: usize,
     pub(crate) block_offset: usize,    //块内偏移
     pub(crate) line_file_start: usize, //行在文件开始位置
     pub(crate) line_file_end: usize,   //行在文件结束的位置
@@ -714,7 +714,7 @@ impl<'a> Line<'a> for LineStr<'a> {
 
         LineStr {
             data: self.data.text(range),
-            block_num: self.block_num,
+            block_id: self.block_id,
             block_offset: self.block_offset + start,
             line_file_start: line_file_start,
             line_file_end: line_file_end,
@@ -729,8 +729,8 @@ impl<'a> Line<'a> for LineStr<'a> {
         self.line_file_end
     }
 
-    fn get_block_num(&self) -> usize {
-        self.block_num
+    fn get_block_id(&self) -> usize {
+        self.block_id
     }
 
     fn get_block_line_index(&self) -> usize {
@@ -754,7 +754,7 @@ impl<'a> LineStr<'a> {
     fn empty() -> LineStr<'a> {
         LineStr {
             data: LineData::empty(),
-            block_num: 0,
+            block_id: 0,
             block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
@@ -764,7 +764,7 @@ impl<'a> LineStr<'a> {
     fn empty_gap_bytes() -> LineStr<'a> {
         LineStr {
             data: LineData::empty_gap_bytes(),
-            block_num: 0,
+            block_id: 0,
             block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
@@ -775,7 +775,8 @@ impl<'a> LineStr<'a> {
 #[derive(Debug)]
 pub(crate) struct BlockLineData<'a> {
     data: LineData<'a>,
-    block_num: usize,        //块编号
+    block_file_start: usize, //块在文件中的起始位置
+    block_id: usize,         //块编号
     block_line_index: usize, //块内行号
     block_offset: usize,     //块内偏移
 }
@@ -790,7 +791,8 @@ impl<'a> BlockLineData<'a> {
     fn empty_gap_bytes() -> BlockLineData<'a> {
         BlockLineData {
             data: LineData::empty_gap_bytes(),
-            block_num: 0,
+            block_file_start: 0,
+            block_id: 0,
             block_line_index: 0,
             block_offset: 0,
         }
@@ -824,11 +826,11 @@ impl<'a> LineBlockStr<'a> {
         }
     }
 
-    fn get_end_block_num(&self) -> usize {
+    fn get_end_block_id(&self) -> usize {
         if let Some(b2) = &self.1 {
-            b2.block_num
+            b2.block_id
         } else if let Some(b1) = &self.0 {
-            b1.block_num
+            b1.block_id
         } else {
             0
         }
@@ -900,9 +902,10 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
                     let data = v.text(range_start..range_end);
                     Some(BlockLineData {
                         data: LineData::GapBytes(data),
-                        block_num: block_line_data.block_num,
+                        block_id: block_line_data.block_id,
                         block_line_index: block_line_data.block_line_index,
                         block_offset: block_line_data.block_offset + prev_offset + range_start,
+                        block_file_start: block_line_data.block_file_start,
                     })
                 }
                 _ => None,
@@ -917,18 +920,30 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
     }
 
     fn get_line_file_start(&self) -> usize {
-        0
+        if let Some(b1) = &self.0 {
+            b1.block_file_start + b1.block_offset
+        } else if let Some(b2) = &self.1 {
+            b2.block_file_start + b2.block_offset
+        } else {
+            0
+        }
     }
 
     fn get_line_file_end(&self) -> usize {
-        0
+        if let Some(b1) = &self.0 {
+            b1.block_file_start + b1.block_offset + b1.data.len()
+        } else if let Some(b2) = &self.1 {
+            b2.block_file_start + b2.block_offset + b2.data.len()
+        } else {
+            0
+        }
     }
 
-    fn get_block_num(&self) -> usize {
+    fn get_block_id(&self) -> usize {
         if let Some(b1) = &self.0 {
-            b1.block_num
+            b1.block_id
         } else if let Some(b2) = &self.1 {
-            b2.block_num
+            b2.block_id
         } else {
             0
         }
@@ -1054,7 +1069,7 @@ pub(crate) trait Line<'a>: Display {
     fn text(&self, range: impl std::ops::RangeBounds<usize> + Clone) -> Self;
     fn get_line_file_start(&self) -> usize;
     fn get_line_file_end(&self) -> usize;
-    fn get_block_num(&self) -> usize;
+    fn get_block_id(&self) -> usize;
     fn get_block_line_index(&self) -> usize;
     fn get_block_offset(&self) -> usize;
     fn get_data(&self) -> LineData<'a>;
@@ -2063,7 +2078,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         0,
                         0,
                         get_page_number!(*line_num, height),
-                        line_str.get_block_num(),
+                        line_str.get_block_id(),
                         line_str.get_block_line_index(),
                         line_str.get_block_offset(),
                         *line_num,
@@ -2187,7 +2202,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                     txt_len,
                     char_len,
                     *page_num + 1,
-                    line_str.get_block_num(),
+                    line_str.get_block_id(),
                     line_str.get_block_line_index(),
                     line_str.get_block_offset(),
                     *line_num,
@@ -2276,7 +2291,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 len,
                 char_count - char_index, //计算char 个数
                 get_page_number!(*line_num, height),
-                line_str.get_block_num(),        //行所在块编号
+                line_str.get_block_id(),         //行所在块编号
                 line_str.get_block_line_index(), //行所在块行索引
                 line_str.get_block_offset(),     //行所在块偏移
                 *line_num,
@@ -2335,7 +2350,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                                 len,
                                 char_count - char_index,
                                 get_page_number!(*line_num, height),
-                                line_str.get_block_num(),
+                                line_str.get_block_id(),
                                 line_str.get_block_line_index(),
                                 line_str.get_block_offset(),
                                 *line_num,
@@ -2375,7 +2390,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                             len,
                             char_count - char_index,
                             get_page_number!(*line_num, height),
-                            line_str.get_block_num(),
+                            line_str.get_block_id(),
                             line_str.get_block_line_index(),
                             line_str.get_block_offset(),
                             *line_num,
@@ -2452,7 +2467,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                             len,
                             i - char_index,
                             get_page_number!(*line_num, height),
-                            line_str.get_block_num(),
+                            line_str.get_block_id(),
                             line_str.get_block_line_index(),
                             line_str.get_block_offset(),
                             *line_num,
@@ -2517,7 +2532,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                         len,
                         char_count - char_index,
                         get_page_number!(*line_num, height),
-                        line_str.get_block_num(),
+                        line_str.get_block_id(),
                         line_str.get_block_line_index(),
                         line_str.get_block_offset(),
                         *line_num,
@@ -2789,6 +2804,15 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
 }
 
 impl EditTextWarp<GapBlockText> {
+    pub(crate) fn resolve_block_for_file_offset(
+        &self,
+        file_offset: usize,
+    ) -> Option<(usize, usize)> {
+        self.edit_text
+            .borrow_lines()
+            .resolve_block_for_file_offset(file_offset)
+    }
+
     pub(crate) fn find_block_line_for_offset(
         &self,
         block_id: usize,
@@ -2797,6 +2821,13 @@ impl EditTextWarp<GapBlockText> {
         self.edit_text
             .borrow_lines_mut()
             .find_block_line_for_offset(block_id, abs_byte)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn assert_block_storage_consistent_for_test(&self) {
+        self.edit_text
+            .borrow_lines()
+            .assert_storage_consistent_for_test();
     }
 }
 

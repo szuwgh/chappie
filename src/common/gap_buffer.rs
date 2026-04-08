@@ -298,6 +298,10 @@ impl GapBuffer {
         &self.buffer
     }
 
+    pub(crate) fn slices(&self) -> (&[u8], &[u8]) {
+        (&self.buffer[..self.gap_start], &self.buffer[self.gap_end..])
+    }
+
     // pub(crate) fn get_line_str<'a>(&'a mut self) -> LineStr<'a> {
     //     LineStr {
     //         // line: self.text(..),

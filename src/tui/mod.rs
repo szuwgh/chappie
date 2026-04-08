@@ -256,8 +256,8 @@ pub(crate) struct ChapTui {
     pub(crate) elem: TuiElement,
     pub(crate) back_linenum: Vec<usize>, // 上一行号
     pub(crate) txt_sel: TextSelect,      // 文本选择
-    pub(crate) cursor_x: usize,          // 光标x坐标
-    pub(crate) cursor_y: usize,          // 光标y坐标
+    pub(crate) cursor_x: usize,          // 光标x坐标 视觉坐标
+    pub(crate) cursor_y: usize,          // 光标y坐标 视觉坐标
     pub(crate) column_offset: usize,     // 列偏移量
     pub(crate) bytes_cursor: usize,      //字节偏移量
     pub(crate) bytes_cursor_size: usize, //字节偏移量

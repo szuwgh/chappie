@@ -51,7 +51,7 @@ impl<'a> Iterator for MmapTextIter<'a> {
         self.line_file_start += end + 1;
         Some(LineStr {
             data: LineData::GapBytes(GapBytes::new(line, &[])),
-            block_num: 0,
+            block_id: 0,
             block_offset: 0,
             line_file_start: line_start,
             line_file_end: line_start + end,
@@ -99,7 +99,7 @@ impl Text for MmapText {
         let line = &self.mmap[state.line_file_start..state.line_file_end];
         Some(LineStr {
             data: LineData::GapBytes(GapBytes::new(line, &[])),
-            block_num: state.block_num,
+            block_id: state.block_num,
             block_offset: state.block_offset,
             line_file_start: state.line_file_start,
             line_file_end: state.line_file_end,

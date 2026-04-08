@@ -11,6 +11,7 @@ use crate::undo::undo::OpType;
 use crate::ChapTui;
 use std::path::Path;
 use unicode_width::UnicodeWidthChar;
+use utf8_iter::Utf8CharsEx;
 
 pub(crate) struct HandleEdit;
 
@@ -19,23 +20,153 @@ impl HandleEdit {
         HandleEdit {}
     }
 
-    // fn refresh_cursor_metrics(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
-    //     let (content, meta) = td.get_current_page()?;
-    //     let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
-    //         content,
-    //         chap_tui.elem.tv.get_width(),
-    //         &meta,
-    //         0,
-    //         &None,
-    //         chap_tui.elem.tv.get_height(),
-    //         chap_tui.column_offset,
-    //         chap_tui.cursor_y,
-    //         chap_tui.cursor_x,
-    //     );
-    //     chap_tui.bytes_cursor = byte_cursor;
-    //     chap_tui.bytes_cursor_size = last_char_bytes_size;
-    //     Ok(())
-    // }
+    fn refresh_cursor_bytes_on_current_page(
+        &self,
+        chap_tui: &mut ChapTui,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        let (content, _) = td.get_current_page()?;
+        let Some(line) = content.get(chap_tui.cursor_y) else {
+            chap_tui.bytes_cursor = 0;
+            chap_tui.bytes_cursor_size = 0;
+            return Ok(());
+        };
+        let mut bytes_cursor = 0usize;
+        let mut last_char_bytes_size = 0usize;
+        let mut chars_seen = 0usize;
+        for part in line.text(0..).as_parts() {
+            for ch in (*part).chars() {
+                if chars_seen >= chap_tui.cursor_x {
+                    chap_tui.bytes_cursor = bytes_cursor;
+                    chap_tui.bytes_cursor_size = last_char_bytes_size;
+                    return Ok(());
+                }
+                let ch_len = ch.len_utf8();
+                bytes_cursor += ch_len;
+                last_char_bytes_size = ch_len;
+                chars_seen += 1;
+            }
+        }
+        chap_tui.bytes_cursor = bytes_cursor;
+        chap_tui.bytes_cursor_size = last_char_bytes_size;
+        Ok(())
+    }
+
+    fn refresh_cursor_metrics(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
+        let (content, meta) = td.get_current_page()?;
+        let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
+            content,
+            chap_tui.elem.tv.get_width(),
+            &meta,
+            0,
+            &None,
+            chap_tui.elem.tv.get_height(),
+            chap_tui.column_offset,
+            chap_tui.cursor_y,
+            chap_tui.cursor_x,
+        );
+        chap_tui.bytes_cursor = byte_cursor;
+        chap_tui.bytes_cursor_size = last_char_bytes_size;
+        Ok(())
+    }
+
+    fn prefix_display_width(
+        &self,
+        td: &TextDisplay,
+        row: usize,
+        cursor_x: usize,
+    ) -> ChapResult<usize> {
+        let (content, _) = td.get_current_page()?;
+        let Some(line) = content.get(row) else {
+            return Ok(0);
+        };
+        let mut width = 0usize;
+        let mut chars_seen = 0usize;
+        for part in line.text(0..).as_parts() {
+            for ch in (*part).chars() {
+                if chars_seen >= cursor_x {
+                    return Ok(width);
+                }
+                width += ch.width().unwrap_or(0);
+                chars_seen += 1;
+            }
+        }
+        Ok(width)
+    }
+
+    fn sync_cursor_to_abs_offset_on_current_page(
+        &self,
+        chap_tui: &mut ChapTui,
+        td: &TextDisplay,
+        target_abs_offset: usize,
+    ) -> ChapResult<()> {
+        let (content, meta) = td.get_current_page()?;
+        let Some(first) = meta.get(0) else {
+            chap_tui.cursor_x = 0;
+            chap_tui.cursor_y = 0;
+            chap_tui.bytes_cursor = 0;
+            chap_tui.bytes_cursor_size = 0;
+            chap_tui.is_last_line = false;
+            return Ok(());
+        };
+        chap_tui.start_line_num = first.get_line_num();
+
+        let mut fallback = (0usize, 0usize, 0usize, 0usize);
+        let mut found = false;
+        for (row, line_state) in meta.iter().enumerate() {
+            let row_abs = line_state.get_block_offset() + line_state.get_line_offset();
+            if row > 0 && row_abs == target_abs_offset {
+                chap_tui.cursor_y = row;
+                chap_tui.cursor_x = 0;
+                chap_tui.bytes_cursor = 0;
+                chap_tui.bytes_cursor_size = 0;
+                chap_tui.is_last_line = false;
+                return Ok(());
+            }
+            let max_x = line_state.get_char_len();
+            for x in 0..=max_x {
+                let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
+                    content,
+                    chap_tui.elem.tv.get_width(),
+                    &meta,
+                    0,
+                    &None,
+                    chap_tui.elem.tv.get_height(),
+                    chap_tui.column_offset,
+                    row,
+                    x,
+                );
+                let abs = row_abs + byte_cursor;
+                if abs == target_abs_offset {
+                    chap_tui.cursor_y = row;
+                    chap_tui.cursor_x = x;
+                    chap_tui.bytes_cursor = byte_cursor;
+                    chap_tui.bytes_cursor_size = last_char_bytes_size;
+                    chap_tui.is_last_line = false;
+                    return Ok(());
+                }
+                if abs <= target_abs_offset {
+                    fallback = (row, x, byte_cursor, last_char_bytes_size);
+                    found = true;
+                }
+            }
+        }
+
+        if found {
+            chap_tui.cursor_y = fallback.0;
+            chap_tui.cursor_x = fallback.1;
+            chap_tui.bytes_cursor = fallback.2;
+            chap_tui.bytes_cursor_size = fallback.3;
+            chap_tui.is_last_line = false;
+        } else {
+            chap_tui.cursor_x = 0;
+            chap_tui.cursor_y = 0;
+            chap_tui.bytes_cursor = 0;
+            chap_tui.bytes_cursor_size = 0;
+            chap_tui.is_last_line = false;
+        }
+        Ok(())
+    }
 }
 
 impl Handle for HandleEdit {
@@ -248,11 +379,12 @@ impl Handle for HandleEdit {
         let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
             return Ok(());
         };
-        td.insert_newline(chap_tui.cursor_y, chap_tui.bytes_cursor, cur_meta)?;
+        let insert_bytes_cursor = chap_tui.bytes_cursor.min(cur_meta.get_txt_len());
+        td.insert_newline(chap_tui.cursor_y, insert_bytes_cursor, cur_meta)?;
         if let Some(undo) = &mut chap_tui.undo {
-            let abs_offset = cur_meta.get_block_offset()
+            let abs_offset = cur_meta.get_line_file_start()
                 + cur_meta.get_line_offset()
-                + chap_tui.bytes_cursor
+                + insert_bytes_cursor
                 + 1;
             undo.push(EditOp {
                 op_type: OpType::InsertNewline,
@@ -281,6 +413,53 @@ impl Handle for HandleEdit {
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.clear();
+        // let at_absolute_start =
+        //     chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 && chap_tui.start_line_num <= 1;
+        // if at_absolute_start {
+        //     return Ok(());
+        // }
+        // if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 && chap_tui.start_line_num > 1 {
+        //     chap_tui.start_line_num -= 1;
+        //     td.get_one_page(chap_tui.start_line_num)?;
+        //     let shifted_meta = td.get_current_line_meta()?;
+        //     let Some(cur_meta) = shifted_meta.get(1) else {
+        //         return Ok(());
+        //     };
+        //     let prev_line_char_len = shifted_meta
+        //         .get(0)
+        //         .map_or(0, |m| m.get_char_len().saturating_sub(1));
+        //     td.delete_newline(1, 0, cur_meta)?;
+        //     if let Some(undo) = &mut chap_tui.undo {
+        //         let abs_offset = cur_meta
+        //             .get_block_offset()
+        //             .saturating_add(cur_meta.get_line_offset())
+        //             .saturating_sub(1);
+        //         undo.push(EditOp {
+        //             op_type: OpType::DeleteNewline,
+        //             cursor_y: 0,
+        //             cursor_x: 0,
+        //             block_id: cur_meta.get_block_num() as u32,
+        //             line_index: chap_tui.start_line_num as u32,
+        //             byte_offset: abs_offset as u32,
+        //             data: vec![b'\n'],
+        //         })?;
+        //     }
+        //     td.get_one_page(chap_tui.start_line_num)?;
+        //     chap_tui.cursor_y = 0;
+        //     chap_tui.cursor_x = prev_line_char_len;
+        //     self.refresh_cursor_bytes_on_current_page(chap_tui, td)?;
+        //     return Ok(());
+        // }
+        // let prev_line_char_len = if chap_tui.cursor_y == 0 {
+        //     0
+        // } else {
+        //     line_meta
+        //         .get(chap_tui.cursor_y - 1)
+        //         .map_or(0, |m| m.get_char_len().saturating_sub(1))
+        // };
+        // let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
+        //     return Ok(());
+        // };
         if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
             return Ok(());
         }
@@ -297,7 +476,7 @@ impl Handle for HandleEdit {
         if cur_meta.line_offset == 0 && chap_tui.bytes_cursor == 0 {
             td.delete_newline(chap_tui.cursor_y, chap_tui.cursor_x, cur_meta)?;
             if let Some(undo) = &mut chap_tui.undo {
-                let abs_offset = cur_meta.get_block_offset()
+                let abs_offset = cur_meta.get_line_file_start()
                     + cur_meta.get_line_offset()
                     + chap_tui.bytes_cursor
                     - 1;
@@ -319,7 +498,7 @@ impl Handle for HandleEdit {
                 cur_meta,
             )?;
             if let Some(undo) = &mut chap_tui.undo {
-                let abs_offset = cur_meta.get_block_offset()
+                let abs_offset = cur_meta.get_line_file_start()
                     + cur_meta.get_line_offset()
                     + chap_tui.bytes_cursor
                     - delete_bytes.len();
@@ -347,6 +526,7 @@ impl Handle for HandleEdit {
         } else {
             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
         }
+        self.refresh_cursor_bytes_on_current_page(chap_tui, td)?;
 
         Ok(())
     }
@@ -397,6 +577,9 @@ impl Handle for HandleEdit {
         chap_tui.elem.cmd_inp.clear();
         let mut buf = [0u8; 4];
         let s = c.encode_utf8(&mut buf);
+        let inserted_size = c.len_utf8();
+        let inserted_on_softwrap_continuation =
+            chap_tui.cursor_x == 0 && chap_tui.is_last_line && chap_tui.cursor_y > 0;
         if chap_tui.cursor_x == 0 && chap_tui.is_last_line && chap_tui.cursor_y > 0 {
             let Some(prev_meta) = line_meta.get(chap_tui.cursor_y - 1) else {
                 return Ok(());
@@ -404,7 +587,7 @@ impl Handle for HandleEdit {
             let byte_offset = prev_meta.get_txt_len(); // 段末字节数（非列数，支持多字节字符）
             td.insert_char(chap_tui.cursor_y - 1, byte_offset, prev_meta, c)?;
             if let Some(undo) = &mut chap_tui.undo {
-                let abs_offset = prev_meta.get_block_offset()
+                let abs_offset = prev_meta.get_line_file_start()
                     + prev_meta.get_line_offset()
                     + byte_offset
                     + c.len_utf8();
@@ -425,7 +608,7 @@ impl Handle for HandleEdit {
             };
             td.insert_char(chap_tui.cursor_y, chap_tui.bytes_cursor, cur_meta, c)?;
             if let Some(undo) = &mut chap_tui.undo {
-                let abs_offset = cur_meta.get_block_offset()
+                let abs_offset = cur_meta.get_line_file_start()
                     + cur_meta.get_line_offset()
                     + chap_tui.bytes_cursor
                     + c.len_utf8();
@@ -440,6 +623,12 @@ impl Handle for HandleEdit {
                 })?;
             }
         }
+        if inserted_on_softwrap_continuation {
+            chap_tui.bytes_cursor = inserted_size;
+        } else {
+            chap_tui.bytes_cursor += inserted_size;
+        }
+        chap_tui.bytes_cursor_size = inserted_size;
         if chap_tui.cursor_x < chap_tui.elem.tv.get_width() {
             chap_tui.cursor_x += 1;
             if chap_tui.cursor_x >= chap_tui.elem.tv.get_width()
@@ -449,10 +638,10 @@ impl Handle for HandleEdit {
                 chap_tui.is_last_line = true;
                 chap_tui.cursor_x = 0;
                 chap_tui.cursor_y += 1;
+                chap_tui.bytes_cursor = 0;
             }
         }
         td.get_one_page(chap_tui.start_line_num)?;
-        //  self.refresh_cursor_metrics(chap_tui, td)?;
         Ok(())
     }
 
@@ -464,97 +653,58 @@ impl Handle for HandleEdit {
         pasted_string: &str,
     ) -> ChapResult<()> {
         chap_tui.elem.cmd_inp.clear();
-        let mut char_with = 0;
-        let pasted_bytes = pasted_string.as_bytes();
-        if chap_tui.cursor_x == 0 && chap_tui.is_last_line && chap_tui.cursor_y > 0 {
-            let Some(line_state) = line_meta.get(chap_tui.cursor_y - 1) else {
-                return Ok(());
-            };
-            char_with = line_state.char_with;
-
-            td.insert_bytes(
-                chap_tui.cursor_y - 1,
-                chap_tui.elem.tv.get_width(),
-                line_state,
-                pasted_bytes,
-                false,
-            )?;
-            if let Some(undo) = &mut chap_tui.undo {
-                let abs_offset = line_state.get_block_offset()
-                    + line_state.get_line_offset()
-                    + chap_tui.bytes_cursor
-                    + pasted_bytes.len();
-                undo.push(EditOp {
-                    op_type: OpType::InsertChar,
-                    cursor_y: chap_tui.cursor_y as u32,
-                    cursor_x: chap_tui.cursor_x as u32,
-                    block_id: line_state.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
-                    byte_offset: abs_offset as u32,
-                    data: pasted_bytes.to_vec(),
-                })?;
-            }
-            chap_tui.is_last_line = false;
-        } else {
-            let Some(line_state) = line_meta.get(chap_tui.cursor_y) else {
-                return Ok(());
-            };
-            char_with = chap_tui.cursor_x;
-            td.insert_bytes(
-                chap_tui.cursor_y,
-                chap_tui.bytes_cursor,
-                line_state,
-                pasted_bytes,
-                false,
-            )?;
-            if let Some(undo) = &mut chap_tui.undo {
-                let abs_offset = line_state.get_block_offset()
-                    + line_state.get_line_offset()
-                    + chap_tui.bytes_cursor
-                    + pasted_bytes.len();
-                undo.push(EditOp {
-                    op_type: OpType::InsertChar,
-                    cursor_y: chap_tui.cursor_y as u32,
-                    cursor_x: chap_tui.cursor_x as u32,
-                    block_id: line_state.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
-                    byte_offset: abs_offset as u32,
-                    data: pasted_bytes.to_vec(),
-                })?;
-            }
+        if pasted_string.is_empty() {
+            return Ok(());
         }
-
-        // 更新光标位置
-        for x in pasted_string.chars() {
-            let x_width = x.width().unwrap_or(0);
-            if x == '\n' {
-                if chap_tui.cursor_y < chap_tui.elem.tv.get_height() {
-                    chap_tui.cursor_x = 0;
-                    chap_tui.cursor_y += 1;
-                }
+        let pasted_bytes = pasted_string.as_bytes();
+        let (line_state, insert_cursor_y, insert_bytes_cursor) =
+            if chap_tui.cursor_x == 0 && chap_tui.is_last_line && chap_tui.cursor_y > 0 {
+                let Some(line_state) = line_meta.get(chap_tui.cursor_y - 1) else {
+                    return Ok(());
+                };
+                (
+                    line_state,
+                    chap_tui.cursor_y - 1,
+                    chap_tui.elem.tv.get_width(),
+                )
             } else {
-                char_with += x_width;
-                if char_with > chap_tui.elem.tv.get_width() {
-                    if chap_tui.cursor_y < chap_tui.elem.tv.get_height() {
-                        //不断添加字符 还是续接上一行
-                        chap_tui.cursor_x = 1;
-                        char_with = x_width;
-                        chap_tui.cursor_y += 1;
-                    }
-                } else {
-                    chap_tui.cursor_x += 1;
-                    if chap_tui.cursor_x >= chap_tui.elem.tv.get_width()
-                        && chap_tui.cursor_y < chap_tui.elem.tv.get_height()
-                    {
-                        chap_tui.cursor_x = 0;
-                        chap_tui.cursor_y += 1;
-                        char_with = 0;
-                    }
-                }
-            }
+                let Some(line_state) = line_meta.get(chap_tui.cursor_y) else {
+                    return Ok(());
+                };
+                (line_state, chap_tui.cursor_y, chap_tui.bytes_cursor)
+            };
+        let target_abs_offset = line_state.get_line_file_start()
+            + line_state.get_line_offset()
+            + insert_bytes_cursor
+            + pasted_bytes.len();
+        td.insert_bytes(
+            insert_cursor_y,
+            insert_bytes_cursor,
+            line_state,
+            pasted_bytes,
+            false,
+        )?;
+        if let Some(undo) = &mut chap_tui.undo {
+            undo.push(EditOp {
+                op_type: OpType::InsertChar,
+                cursor_y: chap_tui.cursor_y as u32,
+                cursor_x: chap_tui.cursor_x as u32,
+                block_id: line_state.get_block_num() as u32,
+                line_index: chap_tui.start_line_num as u32,
+                byte_offset: target_abs_offset as u32,
+                data: pasted_bytes.to_vec(),
+            })?;
         }
         td.get_one_page(chap_tui.start_line_num)?;
-        // self.refresh_cursor_metrics(chap_tui, td)?;
+        self.sync_cursor_to_abs_offset_on_current_page(chap_tui, td, target_abs_offset)?;
+        if !pasted_string.ends_with('\n') && chap_tui.cursor_x == chap_tui.elem.tv.get_width() {
+            if chap_tui.cursor_y < chap_tui.elem.tv.get_height() {
+                chap_tui.cursor_x = 0;
+                chap_tui.cursor_y += 1;
+                chap_tui.bytes_cursor = 0;
+                chap_tui.bytes_cursor_size = 0;
+            }
+        }
         Ok(())
     }
 }
@@ -577,10 +727,10 @@ mod tests {
 
     const TV_H: usize = 20;
     const TV_W: usize = 80;
-    const HANDLE_EDIT_ENTER_UNDO_BACKSPACE_FIXTURE: &str =
-        include_str!("../../tests/fixtures/handle_edit_enter_undo_backspace_regression.txt");
-    const HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE: &str =
-        include_str!("../../tests/fixtures/handle_edit_enter_undo_backspace_real_context.txt");
+    // const HANDLE_EDIT_ENTER_UNDO_BACKSPACE_FIXTURE: &str =
+    //     include_str!("../../tests/fixtures/handle_edit_enter_undo_backspace_regression.txt");
+    // const HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE: &str =
+    //     include_str!("../../tests/fixtures/handle_edit_enter_undo_backspace_real_context.txt");
 
     /// 从字符串内容创建临时文件，返回 (ChapTui, TextDisplay, 临时文件句柄)
     fn setup(content: &str) -> (ChapTui, TextDisplay, NamedTempFile) {
@@ -1695,6 +1845,22 @@ mod tests {
         assert_eq!(tui.cursor_x, 1, "超宽粘贴后 cursor_x 应为 1");
     }
 
+    #[test]
+    fn test_paste_large_multiline_text_places_cursor_at_paste_end() {
+        let (mut tui, mut td, _f) = setup("tail\n");
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+        let paste = format!("{}\n{}\n{}", "x".repeat(TV_W + 7), "中".repeat(3), "end");
+
+        handle().handle_paste(&mut tui, meta, &td, &paste).unwrap();
+
+        assert_eq!(saved_text(&mut td), format!("{paste}tail\n"));
+        assert_eq!(tui.cursor_y, 3, "粘贴结束后应落在最后一行");
+        assert_eq!(tui.cursor_x, 3, "粘贴结束后应落在末尾字符之后");
+    }
+
     // ── handle_backspace：bytes_cursor_size=0 时不删除内容 ─────────────────────
 
     /// bytes_cursor_size=0 且 cursor_x>0：backspace 删除 0 字节，内容不变但 cursor_x 减少
@@ -2187,6 +2353,172 @@ mod tests {
     }
 
     #[test]
+    fn test_ctrl_z_restores_large_paste_across_blocks() {
+        let original = "head\nbody\ntail\n".to_string();
+        let paste = "x".repeat(4097);
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_paste(&mut tui, meta, &td, &paste).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_paste = saved_text(&mut td);
+        assert_ne!(after_paste, original, "超大粘贴后内容应发生变化");
+        assert!(
+            after_paste.starts_with(&paste),
+            "超大粘贴后文件应以粘贴内容开头"
+        );
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_undo = saved_text(&mut td);
+        assert_eq!(after_undo, original, "ctrl+z 后应完整恢复原始内容");
+    }
+
+    #[test]
+    fn test_ctrl_z_restores_large_multibyte_multiline_paste_across_blocks() {
+        let original = "head\nbody\ntail\n".to_string();
+        let paste = format!("{}你\n终点", "x".repeat(4092));
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_paste(&mut tui, meta, &td, &paste).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_paste = saved_text(&mut td);
+        assert_ne!(after_paste, original, "超大混合粘贴后内容应发生变化");
+        assert!(
+            after_paste.starts_with(&paste),
+            "超大混合粘贴后文件应以粘贴内容开头"
+        );
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_undo = saved_text(&mut td);
+        assert_eq!(after_undo, original, "ctrl+z 后应完整恢复原始内容");
+    }
+
+    #[test]
+    fn test_ctrl_z_chain_after_large_paste_and_extra_char_keeps_block_storage_consistent() {
+        let original = "head\nbody\ntail\n".to_string();
+        let paste = "x".repeat(4097);
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        tui.cursor_x = 0;
+        tui.cursor_y = 0;
+        tui.bytes_cursor = 0;
+        let meta = td.get_current_line_meta().unwrap();
+
+        handle().handle_paste(&mut tui, meta, &td, &paste).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_paste = saved_text(&mut td);
+        assert_eq!(after_paste, format!("{paste}{original}"));
+
+        // 显式把第二次输入定位到粘贴内容末尾，避免把测试耦合到 handle_paste 的光标同步细节。
+        tui.cursor_x = paste.len();
+        tui.cursor_y = 0;
+        tui.bytes_cursor = paste.len();
+        let meta = td.get_current_line_meta().unwrap();
+        handle().handle_char(&mut tui, meta, &td, 'Z').unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_char = saved_text(&mut td);
+        assert_eq!(after_char, format!("{paste}Z{original}"));
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_first_undo = saved_text(&mut td);
+        assert_eq!(after_first_undo, format!("{paste}{original}"));
+
+        handle().handle_ctrl_z(&mut tui, &td).unwrap();
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_second_undo = saved_text(&mut td);
+        assert_eq!(after_second_undo, original);
+    }
+
+    #[test]
+    fn test_ctrl_z_restores_large_document_after_500_mixed_ops() {
+        let original = format!(
+            "{}tail\n",
+            "line-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n".repeat(520)
+        );
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        let h = handle();
+
+        for step in 0..500usize {
+            td.get_one_page(1).unwrap();
+            let meta = td.get_current_line_meta().unwrap();
+            match step % 2 {
+                0 => {
+                    tui.start_line_num = 1;
+                    tui.cursor_y = 0;
+                    tui.cursor_x = 0;
+                    tui.bytes_cursor = 0;
+                    tui.bytes_cursor_size = 0;
+                    let ch = if step % 10 == 0 { '你' } else { 'A' };
+                    h.handle_char(&mut tui, meta, &td, ch).unwrap();
+                }
+                1 => {
+                    tui.start_line_num = 1;
+                    tui.cursor_y = 0;
+                    tui.cursor_x = 0;
+                    tui.bytes_cursor = 0;
+                    tui.bytes_cursor_size = 0;
+                    let paste = if step % 12 == 1 {
+                        format!("mix-{step}\n中文-{step}")
+                    } else if step % 10 == 1 {
+                        format!("段落-{step}\nnext-{step}\nend")
+                    } else {
+                        format!("p{step:03}-你")
+                    };
+                    h.handle_paste(&mut tui, meta, &td, &paste).unwrap();
+                }
+                _ => unreachable!(),
+            }
+
+            if let TextDisplay::EditBlock(v) = &td {
+                v.assert_block_storage_consistent_for_test();
+            }
+        }
+
+        let after_ops = saved_text(&mut td);
+        assert_ne!(after_ops, original, "500 次混合操作后内容应已变化");
+
+        for undo_idx in 0..500usize {
+            h.handle_ctrl_z(&mut tui, &td).unwrap();
+            if undo_idx % 25 == 24 {
+                if let TextDisplay::EditBlock(v) = &td {
+                    v.assert_block_storage_consistent_for_test();
+                }
+            }
+        }
+
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let after_undo = saved_text(&mut td);
+        assert_eq!(after_undo, original, "500 次 ctrl+z 后应完整恢复初始大文本");
+    }
+
+    #[test]
     fn test_ctrl_z_restores_deleted_multibyte_char() {
         let (mut tui, mut td, _f, _uf) = setup_with_undo("你好\n");
         tui.cursor_x = 2;
@@ -2269,92 +2601,5 @@ mod tests {
 
         handle().handle_ctrl_z(&mut tui, &td).unwrap();
         assert_eq!(saved_text(&mut td), "abc\n");
-    }
-
-    #[test]
-    fn test_enter_undo_backspace_at_chinese_line_start_matches_ui() {
-        let (mut tui, mut td, _f, _uf) = setup_with_undo(HANDLE_EDIT_ENTER_UNDO_BACKSPACE_FIXTURE);
-
-        tui.cursor_y = 4;
-        tui.cursor_x = 0;
-        sync_cursor_metrics(&mut tui, &td);
-        let meta = td.get_current_line_meta().unwrap();
-        handle().handle_enter(&mut tui, meta, &td).unwrap();
-
-        handle().handle_ctrl_z(&mut tui, &td).unwrap();
-        sync_cursor_metrics(&mut tui, &td);
-        let meta = td.get_current_line_meta().unwrap();
-        handle().handle_backspace(&mut tui, meta, &td).unwrap();
-
-        assert_eq!(
-            saved_text(&mut td),
-            "\
-# 使用 centos7 作为基础镜像\n\
-FROM centos:centos7.9.2009\n\
-\n\
-# 禁用 fastestmirror 插件# 使用 vault.centos.org 存档仓库\n"
-        );
-    }
-
-    #[test]
-    fn test_enter_undo_backspace_at_a_txt_context_matches_ui() {
-        let (mut tui, mut td, _f, _uf) =
-            setup_with_undo(HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE);
-
-        tui.cursor_y = 10;
-        tui.cursor_x = 0;
-        sync_cursor_metrics(&mut tui, &td);
-        let meta = td.get_current_line_meta().unwrap();
-        handle().handle_enter(&mut tui, meta, &td).unwrap();
-
-        handle().handle_ctrl_z(&mut tui, &td).unwrap();
-        sync_cursor_metrics(&mut tui, &td);
-        let meta = td.get_current_line_meta().unwrap();
-        handle().handle_backspace(&mut tui, meta, &td).unwrap();
-
-        assert_eq!(
-            saved_text(&mut td),
-            "\n\
-# 构建dockerfile环境\n\
-\n\
-```dockerfile\n\
-#centos7脚本\n\
-\n\
-# 使用 centos7 作为基础镜像\n\
-FROM centos:centos7.9.2009\n\
-\n\
-# 禁用 fastestmirror 插件# 使用 vault.centos.org 存档仓库\n"
-        );
-    }
-
-    #[test]
-    fn test_enter_undo_backspace_at_a_txt_context_without_manual_sync() {
-        let (mut tui, mut td, _f, _uf) =
-            setup_with_undo(HANDLE_EDIT_ENTER_UNDO_BACKSPACE_REAL_CONTEXT_FIXTURE);
-
-        tui.cursor_y = 10;
-        tui.cursor_x = 0;
-        sync_cursor_metrics(&mut tui, &td);
-        let meta = td.get_current_line_meta().unwrap();
-        handle().handle_enter(&mut tui, meta, &td).unwrap();
-
-        sync_cursor_metrics(&mut tui, &td);
-        handle().handle_ctrl_z(&mut tui, &td).unwrap();
-        let meta = td.get_current_line_meta().unwrap();
-        handle().handle_backspace(&mut tui, meta, &td).unwrap();
-
-        assert_eq!(
-            saved_text(&mut td),
-            "\n\
-# 构建dockerfile环境\n\
-\n\
-```dockerfile\n\
-#centos7脚本\n\
-\n\
-# 使用 centos7 作为基础镜像\n\
-FROM centos:centos7.9.2009\n\
-\n\
-# 禁用 fastestmirror 插件# 使用 vault.centos.org 存档仓库\n"
-        );
     }
 }

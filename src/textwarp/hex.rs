@@ -61,7 +61,7 @@ pub(crate) struct HexText {
     file: File,                   // 文件句柄
     cache: HashMap<usize, Block>, // 缓存已修改的块
     file_size: usize,             // 文件大小
-    height: usize,                //显示高度
+    height: usize,                // 显示高度
 }
 
 impl HexText {
@@ -268,6 +268,32 @@ impl HexText {
         });
         Ok(())
     }
+
+    fn block_pos(&self, block_id: usize) -> Option<usize> {
+        self.blocks.iter().position(|b| b.block_id == block_id)
+    }
+
+    fn sync_loaded_block_metadata_from(&mut self, start_idx: usize) {
+        if self.blocks.is_empty() || start_idx >= self.blocks.len() {
+            return;
+        }
+        let mut next_start = if start_idx == 0 {
+            self.blocks.get(0).map_or(0, |b| b.file_start)
+        } else {
+            self.blocks.get(start_idx - 1).map_or(0, |b| b.file_end)
+        };
+        for i in start_idx..self.blocks.len() {
+            if let Some(block) = self.block_mut_at_pos(i) {
+                block.file_start = next_start;
+                block.file_end = next_start + block.block_size();
+                next_start = block.file_end;
+            }
+        }
+    }
+
+    fn block_mut_at_pos(&mut self, pos: usize) -> Option<&mut Block> {
+        self.blocks.iter_mut().nth(pos)
+    }
 }
 
 impl TextIndex for HexText {
@@ -302,48 +328,47 @@ impl EditText for HexText {
         mut count: usize,
         line_meta: &LineState,
     ) -> ChapResult<Vec<u8>> {
-        let mut block_num = line_meta.get_block_num();
-        let block_offset = line_meta.get_block_offset();
-        let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+        let _ = cursor_y;
+        if count == 0 {
+            return Ok(vec![]);
+        }
+        let cursor_pos = line_meta.get_line_file_start() + bytes_cursor;
+        let delete_start = cursor_pos.saturating_sub(count);
+        let delete_end = cursor_pos;
+        let mut deleted = Vec::with_capacity(count);
+        let mut first_touched = None;
 
-        for _ in 0..2 {
-            let cur_block = self
-                .blocks
-                .iter_mut()
-                .find(|b| b.block_id == block_num)
-                .unwrap();
-            let cur_block_size = cur_block.block_size();
-            if insert_offset < cur_block.block_size() {
-                if count < insert_offset {
-                    cur_block.backspace(insert_offset, count);
-                    break;
-                } else {
-                    cur_block.backspace(insert_offset, insert_offset);
-                    block_num = block_num.saturating_sub(1);
-                    count = count - insert_offset;
-                    insert_offset = cur_block_size - 1;
-                }
-            } else {
-                insert_offset = insert_offset - cur_block.block_size();
-                block_num += 1;
-                let next_block = self
-                    .blocks
-                    .iter_mut()
-                    .find(|b| b.block_id == block_num)
-                    .unwrap();
-                if count > insert_offset {
-                    next_block.backspace(insert_offset, insert_offset);
-                    block_num = block_num.saturating_sub(1);
-                    count = count - insert_offset;
-                    insert_offset = cur_block_size - 1;
-                } else {
-                    next_block.backspace(insert_offset, count);
-                    break;
-                }
+        for pos in (0..self.blocks.len()).rev() {
+            let (block_start, block_end) = {
+                let block = self.blocks.get(pos).unwrap();
+                (block.file_start, block.file_end)
+            };
+            let overlap_start = delete_start.max(block_start);
+            let overlap_end = delete_end.min(block_end);
+            if overlap_start >= overlap_end {
+                continue;
+            }
+            let local_end = overlap_end - block_start;
+            let local_count = overlap_end - overlap_start;
+            if local_count == 0 {
+                break;
+            }
+            let block = self.block_mut_at_pos(pos).unwrap();
+            let chunk = block.backspace(local_end, local_count);
+            deleted.splice(0..0, chunk);
+            count = count.saturating_sub(local_count);
+            first_touched = Some(pos);
+        }
+
+        let deleted_len = deleted.len();
+        if deleted_len > 0 {
+            self.file_size = self.file_size.saturating_sub(deleted_len);
+            if let Some(pos) = first_touched {
+                self.sync_loaded_block_metadata_from(pos);
             }
         }
 
-        Ok(vec![])
+        Ok(deleted)
     }
 
     fn insert_bytes(
@@ -354,30 +379,38 @@ impl EditText for HexText {
         c: &[u8],
         is_overwrite: bool,
     ) -> ChapResult<()> {
+        let _ = cursor_y;
+        if c.is_empty() {
+            return Ok(());
+        }
         if is_overwrite {
             //覆盖模式 先删除后插入
             self.backspace(cursor_y, bytes_cursor + c.len(), c.len(), line_meta)?;
         }
-        let mut block_num = line_meta.get_block_num();
-        let block_offset = line_meta.get_block_offset();
-        let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
-
-        let cur_block = self
-            .blocks
-            .iter_mut()
-            .find(|b| b.block_id == block_num)
-            .unwrap();
-        if insert_offset < cur_block.block_size() {
-            cur_block.insert(insert_offset, c);
+        let insert_pos = line_meta.get_line_file_start() + bytes_cursor;
+        let mut target_pos = None;
+        let mut local_offset = 0;
+        for (pos, block) in self.blocks.iter().enumerate() {
+            if insert_pos >= block.file_start && insert_pos <= block.file_end {
+                target_pos = Some(pos);
+                local_offset = insert_pos - block.file_start;
+                break;
+            }
+        }
+        if target_pos.is_none() && !self.blocks.is_empty() && insert_pos == self.get_file_size() {
+            let pos = self.blocks.len() - 1;
+            target_pos = Some(pos);
+            local_offset = self.blocks.get(pos).unwrap().block_size();
+        }
+        if let Some(pos) = target_pos {
+            let block = self.block_mut_at_pos(pos).unwrap();
+            block.insert(local_offset, c);
+            self.file_size += c.len();
+            self.sync_loaded_block_metadata_from(pos);
         } else {
-            insert_offset = insert_offset - cur_block.block_size();
-            block_num += 1;
-            let next_block = self
-                .blocks
-                .iter_mut()
-                .find(|b| b.block_id == block_num)
-                .unwrap();
-            next_block.insert(insert_offset, c);
+            return Err(
+                ChapError::Unexpected("insert position outside loaded blocks".to_string()).into(),
+            );
         }
 
         Ok(())
@@ -390,14 +423,7 @@ impl EditText for HexText {
         line_meta: &LineState,
         c: char,
     ) -> ChapResult<()> {
-        //判断c是否是十六进制字符
-        // if !c.is_ascii_hexdigit() {
-        //     return Err(ChapError::InvalidHexChar(c));
-        // }
-        // let mut block_num = line_meta.get_block_num();
-        // let block_offset = line_meta.get_block_offset();
-        // let mut block_line_index = line_meta.get_block_line_index();
-        // let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
+        //不需要实现
         Ok(())
     }
 
@@ -407,6 +433,7 @@ impl EditText for HexText {
         bytes_cursor: usize,
         line_meta: &LineState,
     ) -> ChapResult<()> {
+        //不需要实现
         Ok(())
     }
 
@@ -416,6 +443,7 @@ impl EditText for HexText {
         bytes_cursor: usize,
         line_meta: &LineState,
     ) -> ChapResult<()> {
+        //不需要实现
         Ok(())
     }
 
@@ -429,6 +457,209 @@ impl EditText for HexText {
 
     fn ensure_block_loaded(&mut self, _block_num: usize) -> ChapResult<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::textwarp::{EditText, Line, Text, TextSelect};
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write_temp_file(bytes: &[u8]) -> NamedTempFile {
+        let mut tmp = NamedTempFile::new().expect("create temp file");
+        tmp.write_all(bytes).expect("write temp bytes");
+        tmp.flush().expect("flush temp file");
+        tmp
+    }
+
+    fn make_hex_text(bytes: &[u8]) -> HexText {
+        let tmp = write_temp_file(bytes);
+        HexText::from_file_path(tmp.path(), 16).expect("open HexText")
+    }
+
+    fn line_state_for_cursor(text: &HexText, cursor_pos: usize) -> LineState {
+        let line_file_start = (cursor_pos / HEX_WITH) * HEX_WITH;
+        let line_file_end = (line_file_start + HEX_WITH).min(text.get_file_size());
+        for block in text.blocks.iter() {
+            if line_file_start >= block.file_start && line_file_start < block.file_end {
+                return LineState::builder()
+                    .block_num(block.block_id)
+                    .block_offset(line_file_start - block.file_start)
+                    .line_file_start(line_file_start)
+                    .line_file_end(line_file_end)
+                    .line_offset(0)
+                    .txt_len(line_file_end.saturating_sub(line_file_start))
+                    .char_len(line_file_end.saturating_sub(line_file_start))
+                    .line_index(line_file_start / HEX_WITH)
+                    .line_num(line_file_start / HEX_WITH + 1)
+                    .build();
+            }
+        }
+        panic!("cursor_pos {cursor_pos} not covered by any loaded block");
+    }
+
+    fn collect_all_bytes(text: &mut HexText) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(text.get_file_size());
+        for block in text.blocks.iter_mut() {
+            bytes.extend_from_slice(block.as_continuous());
+        }
+        bytes
+    }
+
+    fn assert_loaded_blocks_contiguous(text: &HexText) {
+        let mut expected = text.blocks.get(0).map_or(0, |b| b.file_start);
+        for block in text.blocks.iter() {
+            assert_eq!(block.file_start, expected);
+            assert_eq!(block.file_end, block.file_start + block.block_size());
+            expected = block.file_end;
+        }
+        assert_eq!(
+            text.get_file_size(),
+            text.blocks.iter().map(|b| b.block_size()).sum()
+        );
+    }
+
+    fn line_to_bytes(line: LineStr<'_>) -> Vec<u8> {
+        match line.get_data() {
+            LineData::Own(v) => v,
+            LineData::Bytes(v) => v.to_vec(),
+            LineData::GapBytes(v) => v.to_vec(),
+            LineData::GapBlockBytes(v1, v2) => {
+                let mut bytes = v1.to_vec();
+                bytes.extend_from_slice(&v2.to_vec());
+                bytes
+            }
+        }
+    }
+
+    #[test]
+    fn test_hex_get_line_across_chunk_boundary_returns_full_16_bytes() {
+        let data: Vec<u8> = (0..(HEX_CHUNK_SIZE + 64))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let text = make_hex_text(&data);
+        let line_start = HEX_CHUNK_SIZE - 8;
+        let state = LineState::builder()
+            .line_file_start(line_start)
+            .line_file_end(line_start + HEX_WITH)
+            .build();
+
+        let line = text.get_line(&state).expect("line exists");
+        assert_eq!(line.text_len(), HEX_WITH);
+        assert_eq!(
+            line_to_bytes(line),
+            data[line_start..line_start + HEX_WITH].to_vec()
+        );
+    }
+
+    #[test]
+    fn test_hex_iter_u8_reads_large_file_across_chunks() {
+        let data: Vec<u8> = (0..(HEX_CHUNK_SIZE * 3 + 257))
+            .map(|i| ((i * 17 + 3) % 256) as u8)
+            .collect();
+        let mut text = make_hex_text(&data);
+
+        let roundtrip: Vec<u8> = text.iter_u8(0, 0, 0).collect();
+        assert_eq!(roundtrip, data);
+    }
+
+    #[test]
+    fn test_hex_text_from_sel_spans_multiple_chunks() {
+        let data: Vec<u8> = (0..(HEX_CHUNK_SIZE * 2 + 97))
+            .map(|i| ((i * 9 + 11) % 256) as u8)
+            .collect();
+        let text = make_hex_text(&data);
+        let start = HEX_CHUNK_SIZE - 11;
+        let end = HEX_CHUNK_SIZE + 23;
+
+        let selected = text.text_from_sel(&TextSelect::from_select(start, end));
+        assert_eq!(selected, data[start..=end]);
+    }
+
+    #[test]
+    fn test_hex_insert_bytes_updates_stream_and_loaded_metadata_at_chunk_boundary() {
+        let data: Vec<u8> = (0..(HEX_CHUNK_SIZE * 2 + 32))
+            .map(|i| (i % 256) as u8)
+            .collect();
+        let mut expected = data.clone();
+        let mut text = make_hex_text(&data);
+        let insert_pos = HEX_CHUNK_SIZE - 3;
+        let payload = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE];
+        let state = line_state_for_cursor(&text, insert_pos);
+
+        text.insert_bytes(0, insert_pos % HEX_WITH, &state, &payload, false)
+            .expect("insert across chunk boundary");
+        expected.splice(insert_pos..insert_pos, payload);
+
+        assert_eq!(collect_all_bytes(&mut text), expected);
+        assert_loaded_blocks_contiguous(&text);
+    }
+
+    #[test]
+    fn test_hex_backspace_across_chunk_boundary_returns_deleted_bytes_and_updates_stream() {
+        let data: Vec<u8> = (0..(HEX_CHUNK_SIZE * 2 + 64))
+            .map(|i| ((i * 5 + 7) % 256) as u8)
+            .collect();
+        let mut expected = data.clone();
+        let mut text = make_hex_text(&data);
+        let cursor_pos = HEX_CHUNK_SIZE + 5;
+        let delete_count = 19;
+        let state = line_state_for_cursor(&text, cursor_pos);
+
+        let deleted = text
+            .backspace(0, cursor_pos % HEX_WITH, delete_count, &state)
+            .expect("backspace across boundary");
+        let start = cursor_pos - delete_count;
+        let expected_deleted = expected[start..cursor_pos].to_vec();
+        expected.drain(start..cursor_pos);
+
+        assert_eq!(deleted, expected_deleted);
+        assert_eq!(collect_all_bytes(&mut text), expected);
+        assert_loaded_blocks_contiguous(&text);
+    }
+
+    #[test]
+    fn test_hex_large_500_mixed_insert_bytes_and_backspace_match_reference_model() {
+        let data: Vec<u8> = (0..(HEX_CHUNK_SIZE * 4 + 173))
+            .map(|i| ((i * 31 + 19) % 256) as u8)
+            .collect();
+        let mut expected = data.clone();
+        let mut text = make_hex_text(&data);
+
+        for step in 0..500usize {
+            if step % 3 == 0 || expected.len() < 8 {
+                let insert_pos = (step * 97 + 13) % (expected.len() + 1);
+                let payload_len = (step % 11) + 1;
+                let payload: Vec<u8> = (0..payload_len)
+                    .map(|i| ((step * 7 + i * 29 + 5) % 256) as u8)
+                    .collect();
+                let state = line_state_for_cursor(&text, insert_pos.min(text.get_file_size()));
+                text.insert_bytes(0, insert_pos % HEX_WITH, &state, &payload, false)
+                    .expect("mixed insert");
+                expected.splice(insert_pos..insert_pos, payload);
+            } else {
+                let delete_count = ((step * 5) % 7) + 1;
+                let cursor_pos = ((step * 53 + 29) % (expected.len() - 1)) + 1;
+                let actual_delete = delete_count.min(cursor_pos);
+                let state = line_state_for_cursor(&text, cursor_pos);
+                let deleted = text
+                    .backspace(0, cursor_pos % HEX_WITH, actual_delete, &state)
+                    .expect("mixed delete");
+                let start = cursor_pos - actual_delete;
+                let expected_deleted = expected[start..cursor_pos].to_vec();
+                expected.drain(start..cursor_pos);
+                assert_eq!(deleted, expected_deleted, "step {step}");
+            }
+
+            assert_eq!(
+                collect_all_bytes(&mut text),
+                expected,
+                "byte stream mismatch at step {step}"
+            );
+            assert_loaded_blocks_contiguous(&text);
+        }
     }
 }
 
@@ -523,7 +754,7 @@ impl Text for HexText {
                             v.extend_from_slice(buf1.right());
                             return Some(LineStr {
                                 data: LineData::Own(v),
-                                block_num: b.block_id,
+                                block_id: b.block_id,
                                 block_offset: state.line_file_start - b.file_start,
                                 line_file_start: line_start,
                                 line_file_end: line_start + len + buf1.len(),
@@ -534,7 +765,7 @@ impl Text for HexText {
                             v.extend_from_slice(buf2.right());
                             return Some(LineStr {
                                 data: LineData::Own(v),
-                                block_num: b.block_id,
+                                block_id: b.block_id,
                                 block_offset: state.line_file_start - b.file_start,
                                 line_file_start: line_start,
                                 line_file_end: line_start + with,
@@ -543,7 +774,7 @@ impl Text for HexText {
                     } else {
                         return Some(LineStr {
                             data: LineData::GapBytes(buffer),
-                            block_num: b.block_id,
+                            block_id: b.block_id,
                             block_offset: state.line_file_start - b.file_start,
                             line_file_start: line_start,
                             line_file_end: state.line_file_end,
@@ -552,7 +783,7 @@ impl Text for HexText {
                 } else {
                     return Some(LineStr {
                         data: LineData::GapBytes(buffer),
-                        block_num: b.block_id,
+                        block_id: b.block_id,
                         block_offset: state.line_file_start - b.file_start,
                         line_file_start: line_start,
                         line_file_end: line_start + len,
@@ -561,7 +792,7 @@ impl Text for HexText {
             } else {
                 return Some(LineStr {
                     data: LineData::GapBytes(buffer.text(..with)),
-                    block_num: b.block_id,
+                    block_id: b.block_id,
                     block_offset: state.line_file_start - b.file_start,
                     line_file_start: line_start,
                     line_file_end: line_start + with,
@@ -571,7 +802,7 @@ impl Text for HexText {
         return Some(LineStr {
             // line: buffer,
             data: LineData::Bytes(&[]),
-            block_num: 0,
+            block_id: 0,
             block_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
@@ -799,7 +1030,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 self.line_file_start += len + buf1.len();
                                 return Some(LineStr {
                                     data: LineData::Own(v),
-                                    block_num: b.block_id,
+                                    block_id: b.block_id,
                                     block_offset: line_start - b.file_start,
                                     line_file_start: line_start,
                                     line_file_end: line_start + len + buf1.len(),
@@ -811,7 +1042,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 v.extend_from_slice(buf2.right());
                                 return Some(LineStr {
                                     data: LineData::Own(v),
-                                    block_num: b.block_id,
+                                    block_id: b.block_id,
                                     block_offset: line_start - b.file_start,
                                     line_file_start: line_start,
                                     line_file_end: line_start + self.with,
@@ -821,7 +1052,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                             self.line_file_start += len;
                             return Some(LineStr {
                                 data: LineData::GapBytes(buffer),
-                                block_num: b.block_id,
+                                block_id: b.block_id,
                                 block_offset: line_start - b.file_start,
                                 line_file_start: line_start,
                                 line_file_end: line_start + len,
@@ -831,7 +1062,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                         self.line_file_start += len;
                         return Some(LineStr {
                             data: LineData::GapBytes(buffer),
-                            block_num: b.block_id,
+                            block_id: b.block_id,
                             block_offset: line_start - b.file_start,
                             line_file_start: line_start,
                             line_file_end: line_start + len,
@@ -842,7 +1073,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                     return Some(LineStr {
                         // line: buffer.text(..self.with),
                         data: LineData::GapBytes(buffer.text(..self.with)),
-                        block_num: b.block_id,
+                        block_id: b.block_id,
                         block_offset: line_start - b.file_start,
                         line_file_start: line_start,
                         line_file_end: line_start + self.with,

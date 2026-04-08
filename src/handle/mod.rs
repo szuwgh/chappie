@@ -6,6 +6,7 @@ use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::execute;
 use crate::lua::LuaPlugin;
+use crate::textwarp::block::EMPTY_BLOCK_ID;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
@@ -311,19 +312,30 @@ pub(crate) trait Handle {
 
         // block_id 稳定，不受 split_block 影响；
         // byte_offset 是块内绝对偏移（操作后位置），block_offset/line_offset 均设为 0，
-        // backspace 内部会直接用 bytes_cursor（= byte_offset）作为块内绝对位置。
-        let block_id = op.block_id as usize;
-        let (resolved_block_num, resolved_block_line_index) = if let TextDisplay::EditBlock(v) = td
-        {
-            let char_start = (op.byte_offset as usize).saturating_sub(op.data.len());
-            let bli = v
-                .find_block_line_for_offset(block_id, char_start)
-                .unwrap_or(0);
-            v.ensure_block_loaded(block_id)?;
-            (block_id, bli)
-        } else {
-            (0, 0)
-        };
+        // // backspace 内部会直接用 bytes_cursor（= byte_offset）作为块内绝对位置。
+        // let (resolved_block_num, resolved_block_line_index) = if let TextDisplay::EditBlock(v) = td
+        // {
+        //     let anchor_abs = match op.op_type {
+        //         OpType::DeleteChar | OpType::DeleteNewline => {
+        //             (op.byte_offset as usize).saturating_sub(op.data.len())
+        //         }
+        //         OpType::InsertChar | OpType::InsertNewline => op.byte_offset as usize,
+        //     };
+        //     let (block_id, block_offset) =
+        //         v.resolve_block_for_file_offset(anchor_abs).ok_or_else(|| {
+        //             crate::ChapError::Unexpected(format!(
+        //                 "file offset {} not found in block_indexs",
+        //                 anchor_abs
+        //             ))
+        //         })?;
+        //     let bli = v
+        //         .find_block_line_for_offset(block_id, block_offset)
+        //         .unwrap_or(0);
+        //     v.ensure_block_loaded(block_id)?;
+        //     (block_id, bli)
+        // } else {
+        //     (0, 0)
+        // };
         let target_line = op.line_index as usize;
         chap_tui.start_line_num = target_line;
         // ④ 按 op_type 执行逆操作（record 里存的就是逆操作类型）
@@ -343,8 +355,8 @@ pub(crate) trait Handle {
             txt_len: 0,
             char_len: 0,
             page_num: 0,
-            block_num: resolved_block_num,
-            block_line_index: resolved_block_line_index,
+            block_num: EMPTY_BLOCK_ID,
+            block_line_index: 0,
             block_offset: 0,
             line_num: target_line,
             line_index: op.line_index as usize,

@@ -120,7 +120,7 @@ fn char_range_to_visible<'a>(
 
 pub(crate) fn get_edit_content<'a>(
     txts: &'a RingVec<CacheStr>,
-    with:usize,
+    with: usize,
     line_meta: &'a RingVec<LineState>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
@@ -234,10 +234,8 @@ fn build_cursor_line<'a>(
         );
         //如果上一个字符大小是0则光标可能在第一个字符那里
         if last_csz == 0 {
-            let (_, _, _, sz) = n_chars_skip_control_mem_opt(
-                str_parts[char_curosr_index - 1],
-                prev_char_sum,
-            );
+            let (_, _, _, sz) =
+                n_chars_skip_control_mem_opt(str_parts[char_curosr_index - 1], prev_char_sum);
             last_char_bytes_size = sz;
         } else {
             last_char_bytes_size = last_csz;
@@ -339,9 +337,20 @@ fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_> {
 mod tests {
     use super::*;
     use crate::common::ring_vec::RingVec;
+    use crate::handle::{Handle, HandleEdit};
+    use crate::textwarp::edit_block::GapBlockText;
     use crate::textwarp::CacheStr;
+    use crate::textwarp::EditTextWarp;
     use crate::textwarp::LineState;
     use crate::textwarp::LineStateBuilder;
+    use crate::textwarp::TextDisplay;
+    use crate::textwarp::TextOper;
+    use crate::textwarp::TextWarpType;
+    use crate::tui::ChapTui;
+    use crate::undo::undo::UndoFile;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    use tempfile::TempDir;
 
     // ── 构造辅助 ──────────────────────────────────────────────────────────────
 
@@ -370,6 +379,145 @@ mod tests {
             rv.push(CacheStr::from_vec_for_test(s.as_bytes().to_vec()));
         }
         rv
+    }
+
+    fn setup_with_undo(content: &str) -> (ChapTui, TextDisplay, NamedTempFile, TempDir) {
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(content.as_bytes()).unwrap();
+        tmp.flush().unwrap();
+
+        let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
+        let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, 20, 80, TextWarpType::SoftWrap));
+        td.get_one_page(1).unwrap();
+
+        let undo_dir = TempDir::new().unwrap();
+        let undo_path = undo_dir.path().join("undo.chpu");
+        let mut tui = ChapTui::for_test(20, 80);
+        tui.undo = Some(UndoFile::open(&undo_path).unwrap());
+        (tui, td, tmp, undo_dir)
+    }
+
+    fn handle() -> HandleEdit {
+        HandleEdit {}
+    }
+
+    fn saved_text(td: &mut TextDisplay) -> String {
+        let tmp = NamedTempFile::new().unwrap();
+        td.save(tmp.path()).unwrap();
+        std::fs::read_to_string(tmp.path()).unwrap()
+    }
+
+    fn sync_cursor_metrics(tui: &mut ChapTui, td: &TextDisplay) {
+        let (content, meta) = td.get_current_page().unwrap();
+        let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
+            content,
+            tui.elem.tv.get_width(),
+            &meta,
+            0,
+            &None,
+            tui.elem.tv.get_height(),
+            tui.column_offset,
+            tui.cursor_y,
+            tui.cursor_x,
+        );
+        tui.bytes_cursor = byte_cursor;
+        tui.bytes_cursor_size = last_char_bytes_size;
+    }
+
+    fn render_text_lines(text: &Text<'_>) -> Vec<String> {
+        text.lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn render_cursor_marks(text: &Text<'_>) -> Vec<(usize, usize, String, Option<Color>)> {
+        text.lines
+            .iter()
+            .enumerate()
+            .flat_map(|(line_idx, line)| {
+                line.spans
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(span_idx, span)| {
+                        if span.style.bg.is_some() {
+                            Some((
+                                line_idx,
+                                span_idx,
+                                span.content.as_ref().to_string(),
+                                span.style.bg,
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .collect()
+    }
+
+    fn render_snapshot(
+        tui: &mut ChapTui,
+        td: &TextDisplay,
+    ) -> (
+        Vec<String>,
+        Vec<String>,
+        Vec<(usize, usize, String, Option<Color>)>,
+        usize,
+        usize,
+    ) {
+        td.get_one_page(tui.start_line_num).unwrap();
+        let (content, meta) = td.get_current_page().unwrap();
+        let (nav, body, byte_cursor, last_char_bytes_size) = get_edit_content(
+            content,
+            tui.elem.tv.get_width(),
+            &meta,
+            0,
+            &None,
+            tui.elem.tv.get_height(),
+            tui.column_offset,
+            tui.cursor_y,
+            tui.cursor_x,
+        );
+        (
+            render_text_lines(&nav),
+            render_text_lines(&body),
+            render_cursor_marks(&body),
+            byte_cursor,
+            last_char_bytes_size,
+        )
+    }
+
+    fn canonical_snapshot(
+        tui: &mut ChapTui,
+        td: &TextDisplay,
+    ) -> (
+        Vec<String>,
+        Vec<String>,
+        Vec<(usize, usize, String, Option<Color>)>,
+        usize,
+        usize,
+    ) {
+        set_viewport_and_cursor(tui, td, 1, 0, 0);
+        render_snapshot(tui, td)
+    }
+
+    fn set_viewport_and_cursor(
+        tui: &mut ChapTui,
+        td: &TextDisplay,
+        start_line_num: usize,
+        cursor_y: usize,
+        cursor_x: usize,
+    ) {
+        tui.start_line_num = start_line_num;
+        tui.cursor_y = cursor_y;
+        tui.cursor_x = cursor_x;
+        td.get_one_page(tui.start_line_num).unwrap();
+        sync_cursor_metrics(tui, td);
     }
 
     #[test]
@@ -550,7 +698,7 @@ mod tests {
         let char_count = &[2usize];
         let (spans, byte_cursor, last_sz) = build_cursor_line(parts, 1, char_count, 0);
         assert_eq!(byte_cursor, 3); // "你" 占 3 字节
-        assert_eq!(last_sz, 3);     // 前一字符 "你" 占 3 字节
+        assert_eq!(last_sz, 3); // 前一字符 "你" 占 3 字节
         let cursor_span = spans.iter().find(|s| s.style.bg == Some(Color::LightRed));
         assert!(cursor_span.is_some());
         assert_eq!(cursor_span.unwrap().content.as_ref(), "好");
@@ -646,7 +794,10 @@ mod tests {
         assert_eq!(byte_cursor, 0);
         // 文本内容应可见
         let text = content.to_string();
-        assert!(text.contains("hello") || text.contains("h"), "内容应含 hello");
+        assert!(
+            text.contains("hello") || text.contains("h"),
+            "内容应含 hello"
+        );
     }
 
     #[test]
@@ -690,5 +841,274 @@ mod tests {
         let (_, content, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 3, 0);
         // 应有超过 2 行的渲染输出（含 padding 行）
         assert!(content.lines.len() >= 3);
+    }
+
+    #[test]
+    fn test_ui_render_restores_after_500_mixed_ops_and_reverse_undo() {
+        let original = format!(
+            "{}tail\n",
+            "line-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n".repeat(520)
+        );
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        let h = handle();
+
+        let initial_snapshot = render_snapshot(&mut tui, &td);
+        let initial_text = saved_text(&mut td);
+        assert_eq!(initial_text, original);
+
+        for step in 0..500usize {
+            td.get_one_page(1).unwrap();
+            let meta = td.get_current_line_meta().unwrap();
+            match step % 4 {
+                0 => {
+                    tui.start_line_num = 1;
+                    tui.cursor_y = 0;
+                    tui.cursor_x = 0;
+                    tui.bytes_cursor = 0;
+                    tui.bytes_cursor_size = 0;
+                    let ch = if step % 8 == 0 { '你' } else { 'A' };
+                    h.handle_char(&mut tui, meta, &td, ch).unwrap();
+                }
+                1 => {
+                    tui.start_line_num = 1;
+                    tui.cursor_y = 0;
+                    tui.cursor_x = 0;
+                    tui.bytes_cursor = 0;
+                    tui.bytes_cursor_size = 0;
+                    let paste = if step % 12 == 1 {
+                        format!("mix-{step}\n中文-{step}")
+                    } else if step % 10 == 1 {
+                        format!("段落-{step}\nnext-{step}\nend")
+                    } else {
+                        format!("p{step:03}-你")
+                    };
+                    h.handle_paste(&mut tui, meta, &td, &paste).unwrap();
+                }
+                2 => {
+                    tui.start_line_num = 1;
+                    tui.cursor_y = 0;
+                    tui.cursor_x = 1;
+                    td.get_one_page(tui.start_line_num).unwrap();
+                    sync_cursor_metrics(&mut tui, &td);
+                    let meta = td.get_current_line_meta().unwrap();
+                    h.handle_enter(&mut tui, meta, &td).unwrap();
+                }
+                3 => {
+                    tui.start_line_num = 1;
+                    tui.cursor_y = 0;
+                    tui.cursor_x = 1;
+                    td.get_one_page(tui.start_line_num).unwrap();
+                    sync_cursor_metrics(&mut tui, &td);
+                    let meta = td.get_current_line_meta().unwrap();
+                    h.handle_backspace(&mut tui, meta, &td).unwrap();
+                }
+                _ => unreachable!(),
+            }
+
+            if let TextDisplay::EditBlock(v) = &td {
+                v.assert_block_storage_consistent_for_test();
+            }
+            if step % 50 == 49 {
+                let snapshot = render_snapshot(&mut tui, &td);
+                assert!(!snapshot.1.is_empty(), "UI 正文渲染不应为空，step={step}");
+                assert!(!snapshot.2.is_empty(), "UI 光标高亮不应丢失，step={step}");
+            }
+        }
+
+        let changed_snapshot = render_snapshot(&mut tui, &td);
+        let changed_text = saved_text(&mut td);
+        assert_ne!(changed_text, original, "500 次混合操作后文本应发生变化");
+        assert_ne!(
+            changed_snapshot, initial_snapshot,
+            "500 次混合操作后 UI 渲染应发生变化"
+        );
+
+        for undo_idx in 0..500usize {
+            h.handle_ctrl_z(&mut tui, &td).unwrap();
+            if undo_idx % 50 == 49 {
+                let snapshot = render_snapshot(&mut tui, &td);
+                assert!(
+                    !snapshot.1.is_empty(),
+                    "undo 过程中 UI 正文渲染不应为空，undo_idx={undo_idx}"
+                );
+                assert!(
+                    !snapshot.2.is_empty(),
+                    "undo 过程中 UI 光标高亮不应丢失，undo_idx={undo_idx}"
+                );
+            }
+        }
+
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        let final_snapshot = render_snapshot(&mut tui, &td);
+        let final_text = saved_text(&mut td);
+        assert_eq!(final_text, original, "500 次 ctrl+z 后全文应恢复");
+        assert_eq!(
+            final_snapshot, initial_snapshot,
+            "500 次 ctrl+z 后 UI 渲染应恢复"
+        );
+    }
+
+    #[test]
+    fn test_ui_render_scrolled_window_restores_after_200_mixed_ops_and_undo() {
+        let original = format!(
+            "{}tail\n",
+            (0..720)
+                .map(|i| format!("row-{i:04}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"))
+                .collect::<String>()
+        );
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        let h = handle();
+
+        set_viewport_and_cursor(&mut tui, &td, 240, 4, 3);
+        let initial_snapshot = render_snapshot(&mut tui, &td);
+        let initial_text = saved_text(&mut td);
+        assert_eq!(initial_text, original);
+
+        for step in 0..200usize {
+            match step % 4 {
+                0 => {
+                    set_viewport_and_cursor(&mut tui, &td, 240, 4, 3);
+                    let meta = td.get_current_line_meta().unwrap();
+                    h.handle_char(&mut tui, meta, &td, if step % 8 == 0 { '你' } else { 'K' })
+                        .unwrap();
+                }
+                1 => {
+                    set_viewport_and_cursor(&mut tui, &td, 240, 5, 0);
+                    let meta = td.get_current_line_meta().unwrap();
+                    let paste = format!("段{step}\nwrap-{step}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+                    h.handle_paste(&mut tui, meta, &td, &paste).unwrap();
+                }
+                2 => {
+                    set_viewport_and_cursor(&mut tui, &td, 241, 3, 2);
+                    let meta = td.get_current_line_meta().unwrap();
+                    h.handle_enter(&mut tui, meta, &td).unwrap();
+                }
+                3 => {
+                    set_viewport_and_cursor(&mut tui, &td, 241, 3, 2);
+                    let meta = td.get_current_line_meta().unwrap();
+                    h.handle_backspace(&mut tui, meta, &td).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            if let TextDisplay::EditBlock(v) = &td {
+                v.assert_block_storage_consistent_for_test();
+            }
+        }
+
+        let changed_snapshot = render_snapshot(&mut tui, &td);
+        assert_ne!(changed_snapshot, initial_snapshot);
+
+        for _ in 0..200usize {
+            h.handle_ctrl_z(&mut tui, &td).unwrap();
+        }
+
+        if let TextDisplay::EditBlock(v) = &td {
+            v.assert_block_storage_consistent_for_test();
+        }
+        set_viewport_and_cursor(&mut tui, &td, 240, 4, 3);
+        let final_snapshot = render_snapshot(&mut tui, &td);
+        let final_text = saved_text(&mut td);
+        assert_eq!(final_text, original, "滚动窗口混合操作回退后全文应恢复");
+        assert_eq!(
+            final_snapshot, initial_snapshot,
+            "滚动窗口混合操作回退后 UI 快照应恢复"
+        );
+    }
+
+    #[test]
+    fn test_ui_render_large_paste_hides_softwrap_continuation_numbers_and_keeps_cursor() {
+        let original = "header\nbody\n".repeat(40);
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        let h = handle();
+
+        set_viewport_and_cursor(&mut tui, &td, 1, 0, 0);
+        let meta = td.get_current_line_meta().unwrap();
+        let large_paste = format!(
+            "超长前缀-{}\n{}\n尾巴",
+            "你".repeat(40),
+            "segment-".repeat(30)
+        );
+        h.handle_paste(&mut tui, meta, &td, &large_paste).unwrap();
+
+        let (nav, body, cursor_marks, _, _) = render_snapshot(&mut tui, &td);
+        let visible_nonempty_body_rows: Vec<usize> = body
+            .iter()
+            .enumerate()
+            .filter_map(|(i, line)| (!line.is_empty()).then_some(i))
+            .collect();
+        assert!(
+            visible_nonempty_body_rows.len() >= 3,
+            "超大 paste 后当前页应出现多行正文渲染"
+        );
+        let continuation_rows: Vec<usize> = nav
+            .iter()
+            .enumerate()
+            .filter_map(|(i, line)| {
+                (line.is_empty() && body.get(i).is_some_and(|b| !b.is_empty())).then_some(i)
+            })
+            .collect();
+        assert!(
+            !continuation_rows.is_empty(),
+            "软换行续行应隐藏行号，当前 nav={nav:?} body={body:?}"
+        );
+        assert!(
+            cursor_marks
+                .iter()
+                .any(|(_, _, _, bg)| *bg == Some(Color::LightRed)),
+            "超大 paste 后应保留红色光标高亮"
+        );
+        let text = saved_text(&mut td);
+        assert!(text.starts_with(&large_paste));
+    }
+
+    #[test]
+    fn test_ui_render_snapshot_stack_rewinds_for_repeated_large_pastes() {
+        let original = format!(
+            "{}end\n",
+            (0..260)
+                .map(|i| format!("base-{i:03}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"))
+                .collect::<String>()
+        );
+        let (mut tui, mut td, _f, _uf) = setup_with_undo(&original);
+        let h = handle();
+
+        let mut snapshots = vec![canonical_snapshot(&mut tui, &td)];
+        let mut texts = vec![saved_text(&mut td)];
+        for step in 0..30usize {
+            set_viewport_and_cursor(&mut tui, &td, 1, 0, 0);
+            let meta = td.get_current_line_meta().unwrap();
+            let paste = match step % 3 {
+                0 => format!("paste-{step}-{}\n", "x".repeat(120)),
+                1 => format!("中文块-{step}-{}\nnext-{step}\n", "你".repeat(24)),
+                _ => format!("mix-{step}-{}\n{}\n", "a".repeat(40), "段".repeat(18)),
+            };
+            h.handle_paste(&mut tui, meta, &td, &paste).unwrap();
+            if let TextDisplay::EditBlock(v) = &td {
+                v.assert_block_storage_consistent_for_test();
+            }
+            snapshots.push(canonical_snapshot(&mut tui, &td));
+            texts.push(saved_text(&mut td));
+        }
+
+        for undo_idx in (0..30usize).rev() {
+            h.handle_ctrl_z(&mut tui, &td).unwrap();
+            if let TextDisplay::EditBlock(v) = &td {
+                v.assert_block_storage_consistent_for_test();
+            }
+            let expected_snapshot = &snapshots[undo_idx];
+            let expected_text = &texts[undo_idx];
+            let actual_snapshot = canonical_snapshot(&mut tui, &td);
+            let actual_text = saved_text(&mut td);
+            assert_eq!(
+                actual_text, *expected_text,
+                "连续 paste 回退时，第 {undo_idx} 层全文应回到之前快照"
+            );
+            assert_eq!(
+                actual_snapshot, *expected_snapshot,
+                "连续 paste 回退时，第 {undo_idx} 层 UI 渲染应回到之前快照"
+            );
+        }
     }
 }

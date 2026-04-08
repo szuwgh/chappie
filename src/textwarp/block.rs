@@ -5,8 +5,6 @@ use crate::ChapError;
 use crc::Crc;
 use crc::CRC_32_ISO_HDLC;
 use std::io;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::io::Seek;
 use std::io::SeekFrom;
 pub(crate) const CHAR_GAP_SIZE: usize = 64;
@@ -15,6 +13,7 @@ pub(crate) const BLOKK_NUM: usize = 8;
 pub(crate) const MAX_LINE_SIZE: usize = 4096; //最大行长度4KB
 
 pub(crate) type BlockId = usize;
+pub(crate) const EMPTY_BLOCK_ID: BlockId = usize::MAX;
 
 #[derive(Clone)]
 //一行数据
@@ -33,8 +32,9 @@ impl LineIndex {
 
 #[derive(Clone)]
 pub(crate) struct BlockIndex {
-    pub(crate) file_start: usize, //块在文件开始位置
-    pub(crate) block_id: BlockId, //块的稳定标识（分裂后不变）
+    pub(crate) file_start: usize,        //块在文件开始位置
+    pub(crate) source_file_start: usize, //块在原始 backing file 中的位置
+    pub(crate) block_id: BlockId,        //块的稳定标识（分裂后不变）
     // start_line_index: usize,     //块内的起始行号在整个文件中
     pub(crate) line_count: usize,           //块内的行数
     pub(crate) block_size: usize,           //块的大小
@@ -63,46 +63,89 @@ impl BlockIndex {
         actual_len: usize,
         sum: u32,
     ) -> ChapResult<BlockIndex> {
-        // 把这一块拆成多个 128 字节 sub-chunk，并为每个 sub-chunk 创建一个 GapBuffer
         let mut lines_index = Vec::new();
-        let mut line_buf = Vec::new();
-        let mut block_reader = BufReader::new(&valid_data[..]);
         let mut block_offset: usize = 0;
         let mut line_count: usize = 0;
         let mut index_num: usize = 0;
-        //读取块内的行 构建行索引
-        loop {
-            line_buf.clear();
-            let bytes_read = block_reader.read_until(b'\n', &mut line_buf)?;
-            if bytes_read == 0 {
-                break;
+        for (idx, &byte) in valid_data.iter().enumerate() {
+            if byte != b'\n' {
+                continue;
             }
-            let is_complete = line_buf.ends_with(&[b'\n']);
-
-            let end = block_offset + bytes_read;
-            //let end_line = if is_complete { end - 1 } else { end };
-            let index = LineIndex {
-                index_num: index_num,
-                is_complete: is_complete,
+            let end = idx + 1;
+            lines_index.push(LineIndex {
+                index_num,
+                is_complete: true,
                 block_start: block_offset,
                 block_end: end,
-            };
-
-            if is_complete {
-                line_count += 1;
-            } else {
-            }
+            });
+            line_count += 1;
             block_offset = end;
             index_num += 1;
-            lines_index.push(index);
+        }
+
+        if block_offset < actual_len {
+            lines_index.push(LineIndex {
+                index_num,
+                is_complete: false,
+                block_start: block_offset,
+                block_end: actual_len,
+            });
         }
 
         Ok(BlockIndex {
             file_start: file_start, //块在文件开始位置
+            source_file_start: file_start,
             block_id: block_id,
             line_count: line_count,   //块内的行数
             block_size: actual_len,   //块的大小
             lines_index: lines_index, //块内的行索引
+            check_sum: sum,
+        })
+    }
+
+    pub(crate) fn from_gap_slices(
+        left: &[u8],
+        right: &[u8],
+        file_start: usize,
+        block_id: BlockId,
+        actual_len: usize,
+        sum: u32,
+    ) -> ChapResult<BlockIndex> {
+        let mut lines_index = Vec::new();
+        let mut line_start: usize = 0;
+        let mut line_count: usize = 0;
+        let mut index_num: usize = 0;
+
+        for (offset, &byte) in left.iter().chain(right.iter()).enumerate() {
+            if byte == b'\n' {
+                lines_index.push(LineIndex {
+                    index_num,
+                    is_complete: true,
+                    block_start: line_start,
+                    block_end: offset + 1,
+                });
+                line_count += 1;
+                index_num += 1;
+                line_start = offset + 1;
+            }
+        }
+
+        if line_start < actual_len {
+            lines_index.push(LineIndex {
+                index_num,
+                is_complete: false,
+                block_start: line_start,
+                block_end: actual_len,
+            });
+        }
+
+        Ok(BlockIndex {
+            file_start,
+            source_file_start: file_start,
+            block_id,
+            line_count,
+            block_size: actual_len,
+            lines_index,
             check_sum: sum,
         })
     }
