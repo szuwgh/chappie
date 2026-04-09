@@ -1202,14 +1202,17 @@ impl EditText for GapBlockText {
         //     block_id = self.block_indexs[pos].block_id;
         // }
         // Ok((block_id, pos, insert_offset))
-        let (block_id, mut pos, mut insert_offset) =
+        let (_block_id, mut pos, mut insert_offset) =
             self.resolve_target(line_meta, bytes_cursor)?;
         let mut remaining = count;
         let mut min_touched_pos = pos;
         let mut deleted_parts: Vec<Vec<u8>> = Vec::new();
 
         while remaining > 0 {
-            let current_block_id = block_id; //self.block_indexs[pos].block_id;
+            // `pos` can move across blocks while deleting, so the live block id must
+            // always be derived from the current logical position instead of the
+            // initially resolved target.
+            let current_block_id = self.block_indexs[pos].block_id;
             self.ensure_block_loaded_impl(current_block_id)?;
             min_touched_pos = min_touched_pos.min(pos);
             let delete_in_block = insert_offset.min(remaining);
@@ -1747,6 +1750,85 @@ mod tests {
         assert_eq!(get_all_blocks_text(&mut reloaded), expected);
         assert_block_storage_consistent(&reloaded);
         reloaded
+    }
+
+    fn mutation_safe_end(bytes: &[u8]) -> usize {
+        if bytes.last() == Some(&b'\n') {
+            bytes.len().saturating_sub(1)
+        } else {
+            bytes.len()
+        }
+    }
+
+    fn assert_text_and_metadata(gbt: &mut GapBlockText, expected: &[u8], label: &str) {
+        let saved = save_all_text(gbt);
+        assert!(
+            saved == expected,
+            "{label}: saved bytes mismatch: {}",
+            first_diff_window(&saved, expected)
+        );
+
+        let all_blocks = get_all_blocks_text(gbt);
+        assert!(
+            all_blocks == expected,
+            "{label}: block concat mismatch: {}",
+            first_diff_window(&all_blocks, expected)
+        );
+
+        let indexes: Vec<(BlockId, usize, usize, usize, Vec<(usize, usize, bool)>)> = gbt
+            .block_indexs
+            .iter()
+            .map(|bi| {
+                (
+                    bi.block_id,
+                    bi.file_start,
+                    bi.block_size,
+                    bi.line_count,
+                    bi.lines_index
+                        .iter()
+                        .map(|li| (li.block_start, li.block_end, li.is_complete))
+                        .collect(),
+                )
+            })
+            .collect();
+
+        let mut expected_file_start = 0usize;
+        for (block_id, file_start, block_size, line_count, lines_index) in indexes {
+            assert_eq!(
+                file_start, expected_file_start,
+                "{label}: block {block_id} file_start not contiguous"
+            );
+            expected_file_start += block_size;
+
+            let block_bytes = get_block_text(gbt, block_id);
+            assert_eq!(
+                block_bytes.len(),
+                block_size,
+                "{label}: block {block_id} size mismatch"
+            );
+
+            let expected_lines: Vec<(usize, usize, bool)> = collect_line_ranges(&block_bytes)
+                .into_iter()
+                .map(|(start, end)| (start, end, end > start && block_bytes[end - 1] == b'\n'))
+                .collect();
+
+            assert_eq!(
+                lines_index, expected_lines,
+                "{label}: block {block_id} lines_index mismatch"
+            );
+            assert_eq!(
+                line_count,
+                expected_lines.iter().filter(|(_, _, complete)| *complete).count(),
+                "{label}: block {block_id} line_count mismatch"
+            );
+        }
+
+        assert_eq!(
+            gbt.file_size,
+            expected.len(),
+            "{label}: file_size mismatch"
+        );
+        assert_block_storage_consistent(gbt);
     }
 
     fn first_diff_window(left: &[u8], right: &[u8]) -> String {
@@ -2745,38 +2827,26 @@ mod tests {
 
     #[test]
     fn test_large_backspace_merge_cross_block() {
-        // 在 block 1 第一行行首退格，触发跨块合并
-        let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
-        let mut gbt = create_gap_block_text(&content);
-        let bi1 = &gbt.block_indexs[1];
-        let first_line_info = &bi1.lines_index[0];
-        // block_line_index=0, block_offset=first_line_info.block_start
-        // 行首退格: bytes_cursor=0, line_offset=0
-        let state = make_line_state(1, 0, first_line_info.block_start, 0);
-        // 跨块合并: block_offset == 0，block_num > 0
-        // 这里 block_offset 可能不为 0（如果行跨块），需要根据实际情况构造
-        // 当 block_line_index=0 且 line_offset=0 且 bytes_cursor=0:
-        //   如果 block_offset > 0 -> 块内合并
-        //   如果 block_offset == 0 -> 跨块合并
-        if first_line_info.block_start == 0 {
-            // 跨块合并
-            let bi0_last = gbt.block_indexs[0].lines_index.last().unwrap().clone();
-            let was_complete = bi0_last.is_complete;
-            gbt.backspace(0, 0, 1, &state).unwrap();
-            // 跨块合并后，block 0 的最后一行应变成 is_complete=false
-            let bi0_last_after = gbt.block_indexs[0].lines_index.last().unwrap();
-            assert!(
-                !bi0_last_after.is_complete,
-                "跨块合并后前一块最后行应标记为不完整"
-            );
-        } else {
-            // 块内合并
-            let orig_lines = gbt.block_indexs[1].lines_index.len();
-            let state2 = make_line_state(1, 0, 0, 0);
-            // 如果 block_offset > 0 说明这一行不在块首，走块内合并逻辑
-            // 但 block_line_index=0 时 block_line_index-1 会 underflow
-            // 这种情况说明块的第一行前面有数据属于上一个块的跨行
-        }
+        let mut content = vec![b'a'; BLOCK_SIZE - 1];
+        content.push(b'\n');
+        content.extend_from_slice(b"tail\nnext");
+        let mut expected = content.clone();
+        let mut gbt = create_gap_block_text_bytes(&content);
+
+        assert_eq!(gbt.block_indexs[0].block_size, BLOCK_SIZE);
+        let (delete_start, deleted) = backspace_at_abs(&mut gbt, &mut expected, BLOCK_SIZE, 1);
+
+        assert_eq!(delete_start, BLOCK_SIZE - 1);
+        assert_eq!(deleted, b"\n");
+        assert_text_and_metadata(
+            &mut gbt,
+            &expected,
+            "cross-block newline backspace must keep bytes and metadata aligned",
+        );
+        assert!(
+            !gbt.block_indexs[0].lines_index.last().unwrap().is_complete,
+            "删除块边界换行后，前块最后一行应变为不完整"
+        );
     }
 
     #[test]
@@ -3404,18 +3474,20 @@ mod tests {
     fn test_backspace_can_delete_across_multiple_blocks() {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let original = content.as_bytes().to_vec();
+        let mut expected = original.clone();
         let mut gbt = create_gap_block_text(&content);
 
-        let second_block_id = gbt.block_indexs[1].block_id;
         let delete_end = gbt.block_indexs[0].block_size + 10;
         let delete_start = delete_end - 20;
-        let state = make_line_state(second_block_id, 0, 0, 0);
 
-        let deleted = gbt.backspace(0, 10, 20, &state).unwrap();
+        let (_, deleted) = backspace_at_abs(&mut gbt, &mut expected, delete_end, 20);
 
         assert_eq!(deleted, original[delete_start..delete_end].to_vec());
-        let expected = [&original[..delete_start], &original[delete_end..]].concat();
-        assert_eq!(get_all_blocks_text(&mut gbt), expected);
+        assert_text_and_metadata(
+            &mut gbt,
+            &expected,
+            "cross-block multi-byte backspace must match reference bytes",
+        );
     }
 
     /// lines_index 条目总数之和 == 原始 lines_index.len()
@@ -3622,7 +3694,7 @@ mod tests {
                 0usize,
                 expected.len() / 3,
                 expected.len() / 2,
-                expected.len(),
+                mutation_safe_end(&expected),
             ];
             match step % 2 {
                 0 => {
@@ -3792,7 +3864,7 @@ mod tests {
                 current.len() / 3,
                 current.len() / 2,
                 current.len() * 4 / 5,
-                current.len(),
+                mutation_safe_end(&current),
             ];
             let delete_end = anchors[step % anchors.len()].min(current.len()).max(1);
             let delete_count = ((step % 5) + 1).min(delete_end);
@@ -3836,7 +3908,7 @@ mod tests {
                 current.len() / 4,
                 current.len() / 2,
                 current.len() * 3 / 4,
-                current.len(),
+                mutation_safe_end(&current),
             ];
             let abs = anchors[step % anchors.len()];
             insert_bytes_at_abs(&mut gbt, &mut current, abs, b"\n");
@@ -4396,7 +4468,7 @@ mod tests {
                 0usize,
                 expected.len() / 3,
                 expected.len() / 2,
-                expected.len(),
+                mutation_safe_end(&expected),
             ];
             match step % 3 {
                 0 => {
@@ -4428,5 +4500,76 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_large_backspace_first_byte_keeps_text_and_metadata_correct() {
+        let content = generate_padded_content(BLOCK_SIZE * 2 + 33);
+        let original = content.as_bytes().to_vec();
+        let mut expected = original.clone();
+        let mut gbt = create_gap_block_text(&content);
+
+        let (delete_start, deleted) = backspace_at_abs(&mut gbt, &mut expected, 1, 1);
+
+        assert_eq!(delete_start, 0);
+        assert_eq!(deleted, original[0..1].to_vec());
+        assert_text_and_metadata(
+            &mut gbt,
+            &expected,
+            "backspacing the first byte of a large file must keep metadata valid",
+        );
+    }
+
+    #[test]
+    fn test_large_boundary_mixed_ops_without_trailing_newline() {
+        let mut initial = generate_large_content(BLOCK_SIZE * 2 + 211, 80).into_bytes();
+        assert_eq!(initial.pop(), Some(b'\n'));
+
+        let mut gbt = create_gap_block_text_bytes(&initial);
+        let mut expected = initial.clone();
+
+        insert_bytes_at_abs(&mut gbt, &mut expected, 0, b"HEAD-");
+        assert_text_and_metadata(&mut gbt, &expected, "after head insert");
+
+        let tail_insert_at = expected.len().saturating_sub(1);
+        insert_bytes_at_abs(&mut gbt, &mut expected, tail_insert_at, b"-TAIL");
+        assert_text_and_metadata(&mut gbt, &expected, "after tail-boundary insert");
+
+        let tail_delete_end = tail_insert_at + b"-TAIL".len();
+        let (_, deleted) = backspace_at_abs(&mut gbt, &mut expected, tail_delete_end, 5);
+        assert_eq!(deleted, b"-TAIL");
+        assert_text_and_metadata(&mut gbt, &expected, "after tail-boundary backspace");
+
+        let mid = expected.len() / 2;
+        insert_bytes_at_abs(&mut gbt, &mut expected, mid, b"\nMID\n");
+        assert_text_and_metadata(&mut gbt, &expected, "after middle newline insert");
+    }
+
+    #[test]
+    fn test_large_beginning_middle_end_mixed_ops_roundtrip_matches_reference_model() {
+        let content = generate_padded_content(BLOCK_SIZE * 3 + 145);
+        let mut gbt = create_gap_block_text(&content);
+        let mut expected = content.into_bytes();
+
+        let ops = [
+            (0usize, b"AA".as_slice()),
+            (expected.len() / 2, b"\nCENTER\n".as_slice()),
+            (mutation_safe_end(&expected), b"ZZ".as_slice()),
+        ];
+
+        for (abs, payload) in ops {
+            let insert_at = abs.min(mutation_safe_end(&expected));
+            insert_bytes_at_abs(&mut gbt, &mut expected, insert_at, payload);
+            assert_text_and_metadata(&mut gbt, &expected, "mixed anchor insert");
+        }
+
+        let end = mutation_safe_end(&expected).max(2);
+        let (_, deleted) = backspace_at_abs(&mut gbt, &mut expected, end, 2);
+        assert_eq!(deleted.len(), 2);
+        assert_text_and_metadata(
+            &mut gbt,
+            &expected,
+            "mixed anchor sequence must preserve bytes and metadata after backspace",
+        );
     }
 }

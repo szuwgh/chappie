@@ -315,9 +315,10 @@ impl GapBuffer {
     /// [H][e][l][l][o][ ][ ][ ][ ][ ][W][o][r][l][d]
     /// [H][e][l][ ][ ][ ][ ][ ][l][o][W][o][r][l][d]
     pub(crate) fn move_gap_to(&mut self, index: usize) {
-        if index > self.text_len() {
-            return;
-        }
+        // if index > self.text_len() {
+        //     return;
+        // }
+        assert!(index <= self.text_len());
         // Move the gap to the left
         if index < self.gap_start {
             let shift = self.gap_start - index;
