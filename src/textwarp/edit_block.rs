@@ -866,7 +866,7 @@ impl Text for GapBlockText {
     }
 
     //搜索
-    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
         let scroll_iter = GapBlockScollTextIter::new(
             self,
             state.block_num,
@@ -5026,7 +5026,7 @@ mod tests {
         let start_state = make_line_state_for_abs_line_start(&gbt, &content, 1, 0);
 
         let matches = gbt
-            .find(&start_state, b"needle")
+            .search(b"needle", &start_state)
             .expect("find should succeed")
             .expect("find should return matching lines");
 
@@ -5035,14 +5035,20 @@ mod tests {
         let expected_second = make_line_state_for_abs_line_start(&gbt, &content, 2, 6);
         let expected_third = make_line_state_for_abs_line_start(&gbt, &content, 3, 18);
 
-        assert_eq!(matches[0].get_line_index(), expected_second.get_line_index());
+        assert_eq!(
+            matches[0].get_line_index(),
+            expected_second.get_line_index()
+        );
         assert_eq!(matches[0].get_line_num(), expected_second.get_line_num());
         assert_eq!(matches[0].get_block_num(), expected_second.get_block_num());
         assert_eq!(
             matches[0].get_block_line_index(),
             expected_second.get_block_line_index()
         );
-        assert_eq!(matches[0].get_block_offset(), expected_second.get_block_offset());
+        assert_eq!(
+            matches[0].get_block_offset(),
+            expected_second.get_block_offset()
+        );
         assert_eq!(
             matches[0].get_line_file_start(),
             expected_second.get_line_file_start()
@@ -5059,7 +5065,10 @@ mod tests {
             matches[1].get_block_line_index(),
             expected_third.get_block_line_index()
         );
-        assert_eq!(matches[1].get_block_offset(), expected_third.get_block_offset());
+        assert_eq!(
+            matches[1].get_block_offset(),
+            expected_third.get_block_offset()
+        );
         assert_eq!(
             matches[1].get_line_file_start(),
             expected_third.get_line_file_start()

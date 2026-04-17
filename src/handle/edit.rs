@@ -1,4 +1,6 @@
 use crate::chap;
+use crate::command::Command;
+use crate::command::FindValue;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
@@ -127,12 +129,44 @@ impl HandleEdit {
         Ok(())
     }
 
+    fn handle_command(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &LineState,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
+        let cmd = Command::parse(cmd_inp);
+        match cmd {
+            Command::Find(v) => match v {
+                FindValue::Ascii(s) => {
+                    let pattern = s.as_bytes();
+                    self.find_jump(chap_tui, pattern, line_meta, td)?;
+                }
+                _ => {}
+            },
+            _ => {
+                chap_tui.elem.cmd_inp.clear();
+                chap_tui.elem.cmd_inp.push_str("Unknown command");
+            }
+        }
+        Ok(())
+    }
+
     fn find_jump(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &RingVec<LineState>,
+        pattern: &[u8],
+        line_meta: &LineState,
         td: &TextDisplay,
-    ) {
+    ) -> ChapResult<()> {
+        let result = td.search(pattern, line_meta)?;
+        if let Some(r) = result {
+            if r.len() > 1 {
+                td.get_one_page_from_state(&r[0])?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -343,6 +377,10 @@ impl Handle for HandleEdit {
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if chap_tui.in_command_mode() {
+            if let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) {
+                self.handle_command(chap_tui, cur_meta, td)?;
+            };
+
             return Ok(());
         }
         chap_tui.elem.cmd_inp.clear();

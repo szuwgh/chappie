@@ -932,7 +932,7 @@ impl Text for HexText {
         return HexTextU8Iter::new(self, line_file_start - self.chk_iter.source_file_start);
     }
 
-    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
         Ok(None)
     }
 }

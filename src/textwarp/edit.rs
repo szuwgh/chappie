@@ -173,7 +173,7 @@ impl Text for GapText {
         Vec::new().into_iter() // GapText 不支持 u8 迭代
     }
 
-    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
         Ok(None)
     }
 }

@@ -1144,6 +1144,11 @@ pub(crate) trait TextOper {
         line_num: usize,
     ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)>;
 
+    fn get_one_page_from_state(
+        &self,
+        line_state: &LineState,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)>;
+
     fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)>;
 
     fn get_current_line_meta(&self) -> ChapResult<&RingVec<LineState>>;
@@ -1154,7 +1159,7 @@ pub(crate) trait TextOper {
 
     fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize>;
 
-    fn search(&self, pattern: &[u8], line_state: &LineState) -> Option<LineState>;
+    fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>>;
 
     fn get_file_size(&self) -> usize;
 }
@@ -1373,7 +1378,7 @@ pub(crate) trait Text {
         line_file_start: usize,
     ) -> impl Iterator<Item = u8>;
 
-    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>>;
+    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>>;
 }
 
 pub(crate) trait TextIndex {
@@ -1572,12 +1577,12 @@ impl TextOper for TextDisplay {
         }
     }
 
-    fn search(&self, pattern: &[u8], line_state: &LineState) -> Option<LineState> {
+    fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
         match self {
-            TextDisplay::Text(v) => None,
-            TextDisplay::Hex(v) => None,
-            TextDisplay::Edit(v) => None,
-            TextDisplay::EditBlock(v) => None,
+            TextDisplay::Text(v) => Ok(None),
+            TextDisplay::Hex(v) => Ok(None),
+            TextDisplay::Edit(v) => Ok(None),
+            TextDisplay::EditBlock(v) => v.search(pattern, line_state),
         }
     }
 
@@ -1727,6 +1732,18 @@ impl TextOper for TextDisplay {
         }
     }
 
+    fn get_one_page_from_state(
+        &self,
+        line_state: &LineState,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
+        match self {
+            TextDisplay::Text(v) => todo!(),
+            TextDisplay::Hex(v) => todo!(),
+            TextDisplay::Edit(v) => todo!(),
+            TextDisplay::EditBlock(v) => v.get_one_page_from_line_state(line_state),
+        }
+    }
+
     fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
         match self {
             TextDisplay::Text(v) => v.get_text_from_sel(sel),
@@ -1745,7 +1762,6 @@ pub(crate) struct TextWarp<T: Text + TextIndex> {
     height: usize, //最大行数
     with: usize,
     text_warp_type: TextWarpType,
-    fuzzy: FuzzySearch,
 }
 
 impl<T: Text + TextIndex> TextWarp<T> {
@@ -1767,7 +1783,6 @@ impl<T: Text + TextIndex> TextWarp<T> {
             height,
             with,
             text_warp_type: text_warp_type,
-            fuzzy: FuzzySearch::new(),
         }
     }
 
@@ -2752,6 +2767,10 @@ impl<T: Text + TextIndex> TextWarp<T> {
     fn get_text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
         self.borrow_lines().text_from_sel(sel)
     }
+
+    fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+        self.borrow_lines_mut().search(pattern, line_state)
+    }
 }
 
 pub(crate) struct EditTextWarp<T: Text + TextIndex + EditText> {
@@ -2775,6 +2794,13 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
         line_num: usize,
     ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
         self.edit_text.get_one_page(line_num)
+    }
+
+    pub(crate) fn get_one_page_from_line_state(
+        &self,
+        line_state: &LineState,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
+        self.edit_text.get_one_page_from_line_state(line_state)
     }
 
     pub(crate) fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
@@ -2823,6 +2849,14 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
         self.edit_text
             .borrow_lines_mut()
             .ensure_block_loaded(block_num)
+    }
+
+    pub(crate) fn search(
+        &self,
+        pattern: &[u8],
+        line_state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
+        self.edit_text.search(pattern, line_state)
     }
 
     // 插入字符

@@ -156,7 +156,7 @@ impl Text for MmapText {
         Vec::new().into_iter() // MmapText 不支持 u8 迭代
     }
 
-    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
         Ok(None)
     }
 }
