@@ -92,8 +92,8 @@ impl HexText {
             }
             blocks.push(Block {
                 data: buffer,
-                file_start: bytes_start,
-                file_end: bytes_start + bytes_read,
+                source_file_start: bytes_start,
+                source_file_end: bytes_start + bytes_read,
                 block_id: blocks.len(),
                 is_modified: false,
             });
@@ -103,8 +103,8 @@ impl HexText {
             .get(0)
             .unwrap_or(&Block {
                 data: GapBuffer::new(0),
-                file_start: 0,
-                file_end: 0,
+                source_file_start: 0,
+                source_file_end: 0,
                 block_id: 0,
                 is_modified: false,
             })
@@ -159,8 +159,8 @@ impl HexText {
         }
         return Ok(Block {
             data: buffer,
-            file_start: bytes_start,
-            file_end: bytes_start + bytes_read,
+            source_file_start: bytes_start,
+            source_file_end: bytes_start + bytes_read,
             block_id: block_num,
             is_modified: false,
         });
@@ -190,8 +190,8 @@ impl HexText {
             }
             blocks.push(Block {
                 data: buffer,
-                file_start: bytes_start,
-                file_end: bytes_start + bytes_read,
+                source_file_start: bytes_start,
+                source_file_end: bytes_start + bytes_read,
                 block_id: block_num + i,
                 is_modified: false,
             });
@@ -222,13 +222,13 @@ impl HexText {
         let block2 = self.blocks.remove_last();
         if let Some(c) = block2 {
             if c.is_modified {
-                self.cache.insert(c.file_start, c);
+                self.cache.insert(c.source_file_start, c);
             }
         }
         self.blocks.push_front(Block {
             data: buffer,
-            file_start: file_seek,
-            file_end: file_seek + bytes_read,
+            source_file_start: file_seek,
+            source_file_end: file_seek + bytes_read,
             block_id: block_num,
             is_modified: false,
         });
@@ -256,13 +256,13 @@ impl HexText {
         let block0 = self.blocks.remove(0);
         if let Some(c) = block0 {
             if c.is_modified {
-                self.cache.insert(c.file_start, c);
+                self.cache.insert(c.source_file_start, c);
             }
         }
         self.blocks.push(Block {
             data: buffer,
-            file_start: file_seek,
-            file_end: file_seek + bytes_read,
+            source_file_start: file_seek,
+            source_file_end: file_seek + bytes_read,
             block_id: block_num,
             is_modified: false,
         });
@@ -278,15 +278,17 @@ impl HexText {
             return;
         }
         let mut next_start = if start_idx == 0 {
-            self.blocks.get(0).map_or(0, |b| b.file_start)
+            self.blocks.get(0).map_or(0, |b| b.source_file_start)
         } else {
-            self.blocks.get(start_idx - 1).map_or(0, |b| b.file_end)
+            self.blocks
+                .get(start_idx - 1)
+                .map_or(0, |b| b.source_file_end)
         };
         for i in start_idx..self.blocks.len() {
             if let Some(block) = self.block_mut_at_pos(i) {
-                block.file_start = next_start;
-                block.file_end = next_start + block.block_size();
-                next_start = block.file_end;
+                block.source_file_start = next_start;
+                block.source_file_end = next_start + block.block_size();
+                next_start = block.source_file_end;
             }
         }
     }
@@ -341,7 +343,7 @@ impl EditText for HexText {
         for pos in (0..self.blocks.len()).rev() {
             let (block_start, block_end) = {
                 let block = self.blocks.get(pos).unwrap();
-                (block.file_start, block.file_end)
+                (block.source_file_start, block.source_file_end)
             };
             let overlap_start = delete_start.max(block_start);
             let overlap_end = delete_end.min(block_end);
@@ -391,9 +393,9 @@ impl EditText for HexText {
         let mut target_pos = None;
         let mut local_offset = 0;
         for (pos, block) in self.blocks.iter().enumerate() {
-            if insert_pos >= block.file_start && insert_pos <= block.file_end {
+            if insert_pos >= block.source_file_start && insert_pos <= block.source_file_end {
                 target_pos = Some(pos);
-                local_offset = insert_pos - block.file_start;
+                local_offset = insert_pos - block.source_file_start;
                 break;
             }
         }
@@ -483,10 +485,11 @@ mod tests {
         let line_file_start = (cursor_pos / HEX_WITH) * HEX_WITH;
         let line_file_end = (line_file_start + HEX_WITH).min(text.get_file_size());
         for block in text.blocks.iter() {
-            if line_file_start >= block.file_start && line_file_start < block.file_end {
+            if line_file_start >= block.source_file_start && line_file_start < block.source_file_end
+            {
                 return LineState::builder()
                     .block_num(block.block_id)
-                    .block_offset(line_file_start - block.file_start)
+                    .block_offset(line_file_start - block.source_file_start)
                     .line_file_start(line_file_start)
                     .line_file_end(line_file_end)
                     .line_offset(0)
@@ -509,11 +512,14 @@ mod tests {
     }
 
     fn assert_loaded_blocks_contiguous(text: &HexText) {
-        let mut expected = text.blocks.get(0).map_or(0, |b| b.file_start);
+        let mut expected = text.blocks.get(0).map_or(0, |b| b.source_file_start);
         for block in text.blocks.iter() {
-            assert_eq!(block.file_start, expected);
-            assert_eq!(block.file_end, block.file_start + block.block_size());
-            expected = block.file_end;
+            assert_eq!(block.source_file_start, expected);
+            assert_eq!(
+                block.source_file_end,
+                block.source_file_start + block.block_size()
+            );
+            expected = block.source_file_end;
         }
         assert_eq!(
             text.get_file_size(),
@@ -708,24 +714,24 @@ impl Text for HexText {
         let end = sel.get_end();
         for s in self.blocks.iter() {
             // 跳过选区起点位于此块之后的情况
-            if start >= s.file_end {
+            if start >= s.source_file_end {
                 continue;
             }
             // 如果选区在此块之前结束，则无需继续
-            if end < s.file_start {
+            if end < s.source_file_start {
                 break;
             }
             // 计算当前块与选区的重叠范围
-            let from = (start.max(s.file_start) - s.file_start) as usize;
-            let to = (end.min(s.file_end) - s.file_start) as usize;
+            let from = (start.max(s.source_file_start) - s.source_file_start) as usize;
+            let to = (end.min(s.source_file_end) - s.source_file_start) as usize;
             // 提取并追加子片段
             buf.extend_from_slice(&s.data.text(from..=to).to_vec());
             // 如果选区在此块内完全结束，则跳出循环
-            if end <= s.file_end {
+            if end <= s.source_file_end {
                 break;
             }
             // 更新起点为当前块末尾，继续下一块
-            start = s.file_end;
+            start = s.source_file_end;
         }
         buf
     }
@@ -733,7 +739,9 @@ impl Text for HexText {
     fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
         let with = state.line_file_end - state.line_file_start;
         for (i, b) in self.blocks.iter().enumerate() {
-            if state.line_file_start > b.file_end || state.line_file_start < b.file_start {
+            if state.line_file_start > b.source_file_end
+                || state.line_file_start < b.source_file_start
+            {
                 continue;
             }
             let buffer = b.text_from_file_seek(state.line_file_start..);
@@ -755,7 +763,7 @@ impl Text for HexText {
                             return Some(LineStr {
                                 data: LineData::Own(v),
                                 block_id: b.block_id,
-                                block_offset: state.line_file_start - b.file_start,
+                                block_offset: state.line_file_start - b.source_file_start,
                                 line_file_start: line_start,
                                 line_file_end: line_start + len + buf1.len(),
                             });
@@ -766,7 +774,7 @@ impl Text for HexText {
                             return Some(LineStr {
                                 data: LineData::Own(v),
                                 block_id: b.block_id,
-                                block_offset: state.line_file_start - b.file_start,
+                                block_offset: state.line_file_start - b.source_file_start,
                                 line_file_start: line_start,
                                 line_file_end: line_start + with,
                             });
@@ -775,7 +783,7 @@ impl Text for HexText {
                         return Some(LineStr {
                             data: LineData::GapBytes(buffer),
                             block_id: b.block_id,
-                            block_offset: state.line_file_start - b.file_start,
+                            block_offset: state.line_file_start - b.source_file_start,
                             line_file_start: line_start,
                             line_file_end: state.line_file_end,
                         });
@@ -784,7 +792,7 @@ impl Text for HexText {
                     return Some(LineStr {
                         data: LineData::GapBytes(buffer),
                         block_id: b.block_id,
-                        block_offset: state.line_file_start - b.file_start,
+                        block_offset: state.line_file_start - b.source_file_start,
                         line_file_start: line_start,
                         line_file_end: line_start + len,
                     });
@@ -793,7 +801,7 @@ impl Text for HexText {
                 return Some(LineStr {
                     data: LineData::GapBytes(buffer.text(..with)),
                     block_id: b.block_id,
-                    block_offset: state.line_file_start - b.file_start,
+                    block_offset: state.line_file_start - b.source_file_start,
                     line_file_start: line_start,
                     line_file_end: line_start + with,
                 });
@@ -831,8 +839,8 @@ impl Text for HexText {
                 return HexTextIter::new([None, None], HEX_WITH, line_state.line_file_start);
             }
             for (i, block) in self.blocks.iter().enumerate() {
-                if line_state.line_file_start >= block.file_start
-                    && line_state.line_file_start < block.file_end
+                if line_state.line_file_start >= block.source_file_start
+                    && line_state.line_file_start < block.source_file_end
                 {
                     j = Some(i);
                     break;
@@ -841,7 +849,7 @@ impl Text for HexText {
             if let Some(j) = j {
                 if j == 0 {
                     let b = self.blocks.get(0).unwrap();
-                    let block_seek = b.file_start;
+                    let block_seek = b.source_file_start;
                     let block_num = b.block_id;
                     if block_seek == 0 {
                         //已经是第一个块无需弹出
@@ -865,7 +873,7 @@ impl Text for HexText {
                 } else if j == self.blocks.len() - 1 {
                     //最后一个块
                     //读取下一个块 把第一个块弹出
-                    let next_file_seek = self.blocks.get(j).unwrap().file_end;
+                    let next_file_seek = self.blocks.get(j).unwrap().source_file_end;
                     let block_num = self.blocks.get(j).unwrap().block_id;
                     if next_file_seek >= self.file_size {
                         return HexTextIter::new(
@@ -902,7 +910,8 @@ impl Text for HexText {
     ) -> impl Iterator<Item = u8> {
         let mut j = None;
         for (i, block) in self.blocks.iter().enumerate() {
-            if line_file_start >= block.file_start && line_file_start < block.file_end {
+            if line_file_start >= block.source_file_start && line_file_start < block.source_file_end
+            {
                 j = Some(i);
                 break;
             }
@@ -911,7 +920,7 @@ impl Text for HexText {
             self.chk_iter = self.blocks.get(j).unwrap().clone();
             return HexTextU8Iter::new(
                 self,
-                line_file_start - self.blocks.get(j).unwrap().file_start,
+                line_file_start - self.blocks.get(j).unwrap().source_file_start,
             );
         }
         // 如果没有找到块 从新重读chunks
@@ -920,7 +929,11 @@ impl Text for HexText {
         let block_num = chunk_start / HEX_CHUNK_SIZE;
         let chk_iter = self.read_one_chunk(block_num, chunk_start).unwrap();
         self.chk_iter = chk_iter;
-        return HexTextU8Iter::new(self, line_file_start - self.chk_iter.file_start);
+        return HexTextU8Iter::new(self, line_file_start - self.chk_iter.source_file_start);
+    }
+
+    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>> {
+        Ok(None)
     }
 }
 
@@ -954,7 +967,7 @@ impl<'a> Iterator for HexTextU8Iter<'a> {
                 self.i += 1;
                 return Some(byte);
             }
-            let next_block_seek = self.hex_text.chk_iter.file_end;
+            let next_block_seek = self.hex_text.chk_iter.source_file_end;
             let next_block_num = self.hex_text.chk_iter.block_id + 1;
             if let Ok(chk) = self
                 .hex_text
@@ -1005,7 +1018,9 @@ impl<'a> Iterator for HexTextIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         for (i, block) in self.hex_chunk.iter().enumerate() {
             if let Some(b) = block {
-                if self.line_file_start >= b.file_end || self.line_file_start < b.file_start {
+                if self.line_file_start >= b.source_file_end
+                    || self.line_file_start < b.source_file_start
+                {
                     continue;
                 }
                 let line_start = self.line_file_start;
@@ -1031,7 +1046,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 return Some(LineStr {
                                     data: LineData::Own(v),
                                     block_id: b.block_id,
-                                    block_offset: line_start - b.file_start,
+                                    block_offset: line_start - b.source_file_start,
                                     line_file_start: line_start,
                                     line_file_end: line_start + len + buf1.len(),
                                 });
@@ -1043,7 +1058,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                                 return Some(LineStr {
                                     data: LineData::Own(v),
                                     block_id: b.block_id,
-                                    block_offset: line_start - b.file_start,
+                                    block_offset: line_start - b.source_file_start,
                                     line_file_start: line_start,
                                     line_file_end: line_start + self.with,
                                 });
@@ -1053,7 +1068,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                             return Some(LineStr {
                                 data: LineData::GapBytes(buffer),
                                 block_id: b.block_id,
-                                block_offset: line_start - b.file_start,
+                                block_offset: line_start - b.source_file_start,
                                 line_file_start: line_start,
                                 line_file_end: line_start + len,
                             });
@@ -1063,7 +1078,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                         return Some(LineStr {
                             data: LineData::GapBytes(buffer),
                             block_id: b.block_id,
-                            block_offset: line_start - b.file_start,
+                            block_offset: line_start - b.source_file_start,
                             line_file_start: line_start,
                             line_file_end: line_start + len,
                         });
@@ -1074,7 +1089,7 @@ impl<'a> Iterator for HexTextIter<'a> {
                         // line: buffer.text(..self.with),
                         data: LineData::GapBytes(buffer.text(..self.with)),
                         block_id: b.block_id,
-                        block_offset: line_start - b.file_start,
+                        block_offset: line_start - b.source_file_start,
                         line_file_start: line_start,
                         line_file_end: line_start + self.with,
                     });

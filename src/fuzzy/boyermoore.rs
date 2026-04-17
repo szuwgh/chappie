@@ -1,4 +1,5 @@
 use std::cmp::max;
+use std::collections::VecDeque;
 // https://go.dev/src/strings/search.go
 // https://en.wikipedia.org/wiki/Boyer-Moore_string_search_algorithm
 
@@ -11,7 +12,7 @@ pub(crate) struct BoyerMoore<'a> {
 }
 
 impl<'a> BoyerMoore<'a> {
-    pub(crate) fn new(pattern: &[u8]) -> BoyerMoore {
+    pub(crate) fn new(pattern: &'a [u8]) -> BoyerMoore<'a> {
         if pattern.is_empty() {
             panic!("Pattern must not be empty");
         }
@@ -86,50 +87,57 @@ impl<'a> BoyerMoore<'a> {
         'a: 'b,
     {
         let pattern_bytes = self.pattern;
+        let bad_char_skip = &self.bad_char_skip;
+        let good_suffix_skip = &self.good_suffix_skip;
         let m = pattern_bytes.len();
-        let mut window = Vec::with_capacity(m);
+        let mut window = VecDeque::with_capacity(m);
         let mut idx = 0;
+
         // Pre-fill initial window
-        for _ in 0..m {
+        while window.len() < m {
             match text.next() {
-                Some(b) => window.push(b),
-                None => {}
+                Some(b) => window.push_back(b),
+                None => break,
             }
         }
+
         std::iter::from_fn(move || {
             while window.len() == m {
-                // Compare from end
-                let mut j = (m - 1) as isize;
-                while j >= 0 && window[j as usize] == pattern_bytes[j as usize] {
+                // Compare from end using usize, avoid isize casts in hot path.
+                let mut j = m;
+                while j > 0 && window[j - 1] == pattern_bytes[j - 1] {
                     j -= 1;
                 }
-                if j < 0 {
+
+                if j == 0 {
                     // Match at idx
                     let match_pos = idx;
                     // Slide by pattern length
                     for _ in 0..m {
-                        window.remove(0);
+                        let _ = window.pop_front();
                         if let Some(b) = text.next() {
-                            window.push(b);
+                            window.push_back(b);
                         }
                     }
                     idx += m;
                     return Some(match_pos);
                 } else {
                     // Compute shift
-                    let bad = self.bad_char_skip[window[j as usize] as usize];
-                    let good = self.good_suffix_skip[j as usize];
+                    let mismatch = j - 1;
+                    let bad = bad_char_skip[window[mismatch] as usize];
+                    let good = good_suffix_skip[mismatch];
                     let shift = bad.max(good);
+
                     // Slide window by shift
                     for _ in 0..shift {
-                        window.remove(0);
+                        let _ = window.pop_front();
                         if let Some(b) = text.next() {
-                            window.push(b);
+                            window.push_back(b);
+                            idx += 1;
                         } else {
                             // Not enough data
                             return None;
                         }
-                        idx += 1;
                     }
                 }
             }
@@ -154,6 +162,8 @@ fn has_prefix_bytes(s: &[u8], prefix: &[u8]) -> bool {
 mod tests {
 
     use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
 
     #[test]
     fn test_longest_common_suffix() {
@@ -194,5 +204,46 @@ mod tests {
                 String::from_utf8_lossy(&text.as_bytes()[i..i + pattern.as_bytes().len()])
             );
         }
+    }
+
+    #[test]
+    #[ignore = "benchmark-style perf test; run with --ignored --nocapture"]
+    fn test_boyermoore_stream_perf() {
+        let pattern = b"XYZXYZ12";
+        let bm = BoyerMoore::new(pattern);
+
+        let rounds = 200_000usize;
+        let mut text = Vec::with_capacity(rounds * 64);
+        let mut expected_matches = 0usize;
+        for i in 0..rounds {
+            text.extend_from_slice(b"abcdefghijklmnopqrstuvwxyz0123456789________");
+            if i % 16 == 0 {
+                text.extend_from_slice(pattern);
+                expected_matches += 1;
+            } else {
+                text.extend_from_slice(b"........");
+            }
+        }
+
+        // Warm-up
+        let warmup = bm.stream(text.iter().copied()).count();
+        assert_eq!(warmup, expected_matches);
+
+        let start = Instant::now();
+        let match_count = bm.stream(text.iter().copied()).count();
+        let elapsed = start.elapsed();
+        black_box(match_count);
+
+        let mb = text.len() as f64 / (1024.0 * 1024.0);
+        let throughput = mb / elapsed.as_secs_f64();
+        println!(
+            "boyermoore::stream perf => bytes={}, matches={}, elapsed={:?}, throughput={:.2} MiB/s",
+            text.len(),
+            match_count,
+            elapsed,
+            throughput
+        );
+
+        assert_eq!(match_count, expected_matches);
     }
 }

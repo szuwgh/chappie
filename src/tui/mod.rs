@@ -171,6 +171,12 @@ impl TextView {
     }
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum InputFocus {
+    Text,
+    Command,
+}
+
 pub(crate) struct CmdInput {
     input: String,
     rect: Rect,
@@ -266,9 +272,22 @@ pub(crate) struct ChapTui {
     pub(crate) endian: Endian,           // 字节序
     pub(crate) assist_tv2_data: String,  // 辅助窗口2数据
     pub(crate) undo: Option<UndoFile>,
+    input_focus: InputFocus,
 }
 
 impl ChapTui {
+    fn enter_command_mode(&mut self) {
+        self.input_focus = InputFocus::Command;
+    }
+
+    fn enter_text_mode(&mut self) {
+        self.input_focus = InputFocus::Text;
+    }
+
+    pub(crate) fn in_command_mode(&self) -> bool {
+        self.input_focus == InputFocus::Command
+    }
+
     pub(crate) fn new(
         chap_mod: ChapMod,
         ui_type: UIType,
@@ -300,6 +319,7 @@ impl ChapTui {
             endian: Endian::Little, // 默认字节序为小端
             assist_tv2_data: String::new(),
             undo: undo,
+            input_focus: InputFocus::Text,
         })
     }
 
@@ -564,9 +584,48 @@ impl ChapTui {
                         event::Event::Key(KeyEvent {
                             code, modifiers, ..
                         }) => {
+                            // let edit_focus_enabled = matches!(self.chap_mod, ChapMod::Edit);
+                            // match (code, modifiers) {
+                            //     (KeyCode::Esc, _) if edit_focus_enabled => {
+                            //         if !self.in_command_mode() {
+                            //             hand.handle_esc(self)?;
+                            //             self.enter_command_mode();
+                            //         }
+                            //         break 'key;
+                            //     }
+                            //     // (KeyCode::Esc, _) => {
+                            //     //     hand.handle_esc(self)?;
+                            //     //     break 'key;
+                            //     // }
+                            //     (KeyCode::Char('x'), KeyModifiers::CONTROL)
+                            //         if edit_focus_enabled && self.in_command_mode() =>
+                            //     {
+                            //         self.enter_text_mode();
+                            //         break 'key;
+                            //     }
+                            //     _ => {}
+                            // }
+
+                            // if edit_focus_enabled && self.in_command_mode() {
+                            //     match (code, modifiers) {
+                            //         (KeyCode::Backspace, _) => {
+                            //             self.elem.cmd_inp.pop();
+                            //         }
+                            //         (KeyCode::Char(c), m)
+                            //             if !m.contains(KeyModifiers::CONTROL)
+                            //                 && !m.contains(KeyModifiers::ALT) =>
+                            //         {
+                            //             self.elem.cmd_inp.push(c);
+                            //         }
+                            //         _ => {}
+                            //     }
+                            //     break 'key;
+                            // }
+
                             match (code, modifiers) {
                                 (KeyCode::Esc, _) => {
                                     hand.handle_esc(self)?;
+                                    self.enter_command_mode();
                                 }
                                 (KeyCode::Up, KeyModifiers::CONTROL) => {
                                     if let Err(e) = hand.handle_shift_up(self, &line_meta, &td) {
@@ -623,19 +682,26 @@ impl ChapTui {
                                         self.assist_tv2_data = e.to_string(); // 记录错误信息
                                     }
                                 }
+                                (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                                    self.elem.cmd_inp.clear();
+                                    self.enter_text_mode();
+                                }
                                 (KeyCode::Enter, _) => {
                                     if let Err(e) = hand.handle_enter(self, line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                        self.assist_tv2_data = e.to_string();
+                                        // 记录错误信息
                                     }
                                 }
                                 (KeyCode::Backspace, _) => {
                                     if let Err(e) = hand.handle_backspace(self, line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                        self.assist_tv2_data = e.to_string();
+                                        // 记录错误信息
                                     }
                                 }
                                 (KeyCode::Char(c), _) => {
                                     if let Err(e) = hand.handle_char(self, line_meta, &td, c) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                        self.assist_tv2_data = e.to_string();
+                                        // 记录错误信息
                                     }
                                 }
 
@@ -647,9 +713,14 @@ impl ChapTui {
                         }
                         event::Event::Paste(mut pasted_string) => {
                             pasted_string = pasted_string.replace('\r', "\n");
-                            if let Err(e) = hand.handle_paste(self, &line_meta, &td, &pasted_string)
-                            {
-                                self.assist_tv2_data = e.to_string(); // 记录错误信息
+                            if matches!(self.chap_mod, ChapMod::Edit) && self.in_command_mode() {
+                                self.elem.cmd_inp.push_str(&pasted_string);
+                            } else {
+                                if let Err(e) =
+                                    hand.handle_paste(self, &line_meta, &td, &pasted_string)
+                                {
+                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
+                                }
                             }
                             break 'key;
                         }
@@ -671,32 +742,59 @@ impl ChapTui {
     ) -> ChapResult<&'a RingVec<LineState>> {
         let line_meta = {
             let (content, meta) = td.get_current_page()?;
+            let command_focus =
+                matches!(self.chap_mod, ChapMod::EditBlock) && self.in_command_mode();
+            let cmd_rect = self.elem.cmd_inp.get_rect();
+            // let cmd_input_len = self.elem.cmd_inp.get_inp().len() as u16;
+            let tv_rect = self.elem.tv.get_rect();
+            let tv_height = self.elem.tv.get_height();
+            let tv_width = self.elem.tv.get_width();
+            let navi_rect = self.elem.navi.get_rect();
+            let navi_cur_line = self.elem.navi.get_cur_line();
+            let select_line = self.elem.navi.select_line;
+            let cursor_x_vis = self.cursor_x;
+            let cursor_y_vis = self.cursor_y;
+            //let column_offset = self.column_offset;
             self.terminal.draw(|f| {
                 let (navi, visible_content, byte_cursor, last_char_bytes_size) = get_edit_content(
                     content,
-                    self.elem.tv.get_width(),
+                    tv_width,
                     &meta,
-                    self.elem.navi.get_cur_line(),
-                    &self.elem.navi.select_line,
-                    self.elem.tv.get_height(),
+                    navi_cur_line,
+                    &select_line,
+                    tv_height,
                     offset.saturating_sub(self.elem.tv.width),
-                    cursor_y,
-                    cursor_x,
+                    cursor_y_vis,
+                    cursor_x_vis,
                 );
                 self.bytes_cursor = byte_cursor;
                 self.bytes_cursor_size = last_char_bytes_size;
                 let text_para = Paragraph::new(visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
-                f.render_widget(text_para, self.elem.tv.get_rect());
+                f.render_widget(text_para, tv_rect);
 
                 let nav_paragraph = Paragraph::new(navi);
-                f.render_widget(nav_paragraph, self.elem.navi.get_rect());
+                f.render_widget(nav_paragraph, navi_rect);
 
-                let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
-                    .block(Block::default().title(":"))
-                    .style(Style::default().fg(Color::White)); // 设置输入框样式
-                f.render_widget(input_box, self.elem.cmd_inp.get_rect());
+                // let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
+                //     .block(Block::default())
+                //     .style(Style::default().fg(Color::White)); // 设置输入框样式
+                let prompt = if command_focus { ">: " } else { "" };
+                let input = format!("{prompt}{}", self.elem.cmd_inp.get_inp());
+                let input_para = Paragraph::new(Text::raw(input))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(input_para, cmd_rect);
+
+                // if command_focus {
+                //     f.set_cursor(cmd_rect.x + cmd_input_len, cmd_rect.y);
+                // } else {
+                //     let cursor_x =
+                //         tv_rect.x + cursor_x_vis.saturating_sub(column_offset).min(tv_width) as u16;
+                //     let cursor_y = tv_rect.y + cursor_y_vis.min(tv_height.saturating_sub(1)) as u16;
+                //     f.set_cursor(cursor_x, cursor_y);
+                // }
             })?;
             meta
         };
@@ -779,6 +877,7 @@ impl ChapTui {
             endian: crate::byteutil::Endian::Little,
             assist_tv2_data: String::new(),
             undo: None,
+            input_focus: InputFocus::Text,
         }
     }
 }

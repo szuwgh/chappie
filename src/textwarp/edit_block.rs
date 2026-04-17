@@ -1,20 +1,24 @@
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::ring_vec::RingVec;
+use crate::fuzzy::boyermoore;
 use crate::textwarp::block::Block;
 use crate::textwarp::block::BlockId;
 use crate::textwarp::block::BlockIndex;
+use crate::textwarp::block::BlockPtr;
 use crate::textwarp::block::BLOCK_SIZE;
 use crate::textwarp::block::BLOKK_NUM;
 use crate::textwarp::block::CHAR_GAP_SIZE;
 use crate::textwarp::block::EMPTY_BLOCK_ID;
 use crate::textwarp::BlockLineData;
+use crate::textwarp::BoyerMoore;
 use crate::textwarp::ChapResult;
 use crate::textwarp::EditText;
 use crate::textwarp::Line;
 use crate::textwarp::LineBlockStr;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
+use crate::textwarp::LineStateBuilder;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
@@ -63,6 +67,19 @@ impl TextIndex for GapBlockText {
 }
 
 impl GapBlockText {
+    fn source_file_size(&self) -> ChapResult<usize> {
+        Ok(self.reader.get_ref().metadata()?.len() as usize)
+    }
+
+    fn sync_block_source_mirror(
+        block: &mut Block,
+        source_file_start: usize,
+        source_file_end: usize,
+    ) {
+        block.source_file_start = source_file_start;
+        block.source_file_end = source_file_end;
+    }
+
     fn cache_block_snapshot(&mut self, block: Block) {
         if block.is_modified {
             self.cache.insert(block.block_id, block);
@@ -111,7 +128,7 @@ impl GapBlockText {
         loop {
             match Block::from_reader(reader, &mut buf, block_start_offset, block_id, None) {
                 Ok((block, Some(block_index))) => {
-                    let size = block_index.block_size;
+                    let size = block_index.logic_block_size;
                     if blocks.len() < BLOKK_NUM {
                         blocks.push(block);
                     }
@@ -151,14 +168,14 @@ impl GapBlockText {
     fn read_one_block(
         &mut self,
         block_id: BlockId,
-        file_start: usize,
+        _logic_file_start: usize,
         source_file_start: usize,
+        source_file_end: usize,
         check_sum: Option<u32>,
     ) -> ChapResult<(Block, Option<BlockIndex>)> {
         // 优先从 cache 取（修改过的块存在 cache 中，key = stable block_id）
         if let Some(mut o) = self.cache.remove(&block_id) {
-            o.file_start = file_start;
-            o.file_end = file_start + o.block_size();
+            Self::sync_block_source_mirror(&mut o, source_file_start, source_file_end);
             return Ok((o, None));
         }
         let mut buf = [0u8; BLOCK_SIZE];
@@ -169,20 +186,101 @@ impl GapBlockText {
             block_id,
             check_sum,
         )?;
-        block.file_start = file_start;
-        block.file_end = file_start + block.block_size();
+        Self::sync_block_source_mirror(&mut block, source_file_start, source_file_end);
         Ok((block, block_index))
+    }
+
+    fn read_one_block_ptr(
+        &mut self,
+        block_id: BlockId,
+        _logic_file_start: usize,
+        source_file_start: usize,
+        source_file_end: usize,
+        check_sum: Option<u32>,
+    ) -> ChapResult<(BlockPtr<'_>, Option<BlockIndex>)> {
+        // 优先从 cache 取（修改过的块存在 cache 中，key = stable block_id）
+        if let Some(o) = self.cache.get(&block_id) {
+            // o.file_start = file_start;
+            // o.file_end = file_start + o.block_size();
+            return Ok((BlockPtr::Borrowed(o), None));
+        }
+        let mut buf = [0u8; BLOCK_SIZE];
+        let (mut block, block_index) = Block::from_reader(
+            &mut self.reader,
+            &mut buf,
+            source_file_start,
+            block_id,
+            check_sum,
+        )?;
+        Self::sync_block_source_mirror(&mut block, source_file_start, source_file_end);
+        Ok((BlockPtr::Own(block), block_index))
+    }
+
+    // fn read_unindexed_source_block_ptr(
+    //     &mut self,
+    //     block_id: BlockId,
+    //     logic_file_start: usize,
+    //     source_file_start: usize,
+    //     source_file_end: usize,
+    //     check_sum: Option<u32>,
+    // ) -> ChapResult<BlockPtr<'_>> {
+    //   let  read_unindexed_source_block
+    // }
+
+    fn read_unindexed_source_block(
+        &mut self,
+        block_id: BlockId,
+        logic_file_start: usize,
+        source_file_start: usize,
+    ) -> ChapResult<(Block, BlockIndex)> {
+        let mut buf = [0u8; BLOCK_SIZE];
+        let (mut block, block_index) = Block::from_reader(
+            &mut self.reader,
+            &mut buf,
+            source_file_start,
+            block_id,
+            None,
+        )?;
+        let mut block_index = block_index.ok_or_else(|| {
+            ChapError::Unexpected("read_unindexed_source_block: missing block index".to_string())
+        })?;
+        block_index.logic_file_start = logic_file_start;
+        Self::sync_block_source_mirror(
+            &mut block,
+            block_index.source_file_start,
+            block_index.source_file_end,
+        );
+        Ok((block, block_index))
+    }
+
+    fn next_unindexed_block_start(&self) -> ChapResult<Option<(usize, usize)>> {
+        let Some(last_bi) = self.block_indexs.last() else {
+            return Ok(None);
+        };
+        let next_logic_file_start = last_bi.file_end();
+        let next_source_file_start = last_bi.source_file_end();
+        if next_source_file_start >= self.source_file_size()? {
+            return Ok(None);
+        }
+        Ok(Some((next_logic_file_start, next_source_file_start)))
     }
 
     //获取上一个block 并弹入列表中
     fn read_prev_block(
         &mut self,
         block_id: BlockId,
-        file_start: usize,
+        logic_file_start: usize,
         source_file_start: usize,
+        source_file_end: usize,
         check_sum: Option<u32>,
     ) -> ChapResult<()> {
-        let (block, _) = self.read_one_block(block_id, file_start, source_file_start, check_sum)?;
+        let (block, _) = self.read_one_block(
+            block_id,
+            logic_file_start,
+            source_file_start,
+            source_file_end,
+            check_sum,
+        )?;
         let old = self.blocks.push_front(block);
         if let Some(o) = old {
             // 修复：用被驱逐块自身的 block_id 作为 key，而不是新块的 file_start
@@ -194,19 +292,22 @@ impl GapBlockText {
     fn read_next_block(
         &mut self,
         block_id: BlockId,
-        file_start: usize,
+        logic_file_start: usize,
         source_file_start: usize,
+        source_file_end: usize,
         check_sum: Option<u32>,
-        no_index: bool,
     ) -> ChapResult<()> {
-        let (block, block_index) =
-            self.read_one_block(block_id, file_start, source_file_start, check_sum)?;
+        // 这里只负责加载“已经存在于 block_indexs 中的块”。
+        // 需要扩展索引的新块必须走 read_unindexed_source_block()，
+        // 否则容易把 source_* 读取路径和 logic_* 建索引路径重新混在一起。
+        let (block, _) = self.read_one_block(
+            block_id,
+            logic_file_start,
+            source_file_start,
+            source_file_end,
+            check_sum,
+        )?;
         let old = self.blocks.push(block);
-        if let Some(index) = block_index {
-            if no_index {
-                self.block_indexs.push(index);
-            }
-        }
         if let Some(o) = old {
             // 修复：用被驱逐块自身的 block_id 作为 key
             self.cache_block_snapshot(o);
@@ -220,7 +321,7 @@ impl GapBlockText {
         block_line_index: usize,
         block_offset: usize,
     ) -> ChapResult<GapBlockTextIterRev<'_>> {
-        let block3: Block3<'_> = self.get_block3(block_id, block_line_index, block_offset)?;
+        let block3 = self.get_block3(block_id, block_line_index, block_offset)?;
         Ok(GapBlockTextIterRev {
             blocks: block3,
             cur_block_id: block_id,
@@ -235,7 +336,7 @@ impl GapBlockText {
         block_id: BlockId,
         block_line_index: usize,
         block_offset: usize,
-    ) -> ChapResult<Block3<'_>> {
+    ) -> ChapResult<Block3<'_, [Option<BlockPtr<'_>>; 3]>> {
         //查找当前 block_id 是否在内存 blocks 列表中
         loop {
             let j = self
@@ -254,7 +355,11 @@ impl GapBlockText {
                     if pos_in_idx == 0 {
                         // 已经是第一个块，没有前驱
                         return Ok(Block3 {
-                            blocks: [self.blocks.get(0), self.blocks.get(1), self.blocks.get(2)],
+                            blocks: [
+                                self.blocks.get(0).map(BlockPtr::from_block),
+                                self.blocks.get(1).map(BlockPtr::from_block),
+                                self.blocks.get(2).map(BlockPtr::from_block),
+                            ],
                             block_indexs: &self.block_indexs,
                         });
                     } else {
@@ -262,12 +367,17 @@ impl GapBlockText {
                         let prev_bi = self.block_indexs[pos_in_idx - 1].clone();
                         self.read_prev_block(
                             prev_bi.block_id,
-                            prev_bi.file_start,
+                            prev_bi.logic_file_start,
                             prev_bi.source_file_start,
+                            prev_bi.source_file_end,
                             Some(prev_bi.check_sum),
                         )?;
                         return Ok(Block3 {
-                            blocks: [self.blocks.get(1), self.blocks.get(2), self.blocks.get(3)],
+                            blocks: [
+                                self.blocks.get(1).map(BlockPtr::from_block),
+                                self.blocks.get(2).map(BlockPtr::from_block),
+                                self.blocks.get(3).map(BlockPtr::from_block),
+                            ],
                             block_indexs: &self.block_indexs,
                         });
                     }
@@ -276,42 +386,44 @@ impl GapBlockText {
                     if let Some(next_bi) = self.block_indexs.get(pos_in_idx + 1).cloned() {
                         self.read_next_block(
                             next_bi.block_id,
-                            next_bi.file_start,
+                            next_bi.logic_file_start,
                             next_bi.source_file_start,
+                            next_bi.source_file_end,
                             Some(next_bi.check_sum),
-                            false,
                         )?;
                         return Ok(Block3 {
                             blocks: [
-                                self.blocks.get(i - 1),
-                                self.blocks.get(i),
-                                self.blocks.get(i + 1),
+                                self.blocks.get(i - 1).map(BlockPtr::from_block),
+                                self.blocks.get(i).map(BlockPtr::from_block),
+                                self.blocks.get(i + 1).map(BlockPtr::from_block),
                             ],
                             block_indexs: &self.block_indexs,
                         });
                     } else {
                         // 从磁盘上取未索引的块
-                        let cur_bi = self.block_indexs[pos_in_idx].clone();
-                        let next_block_file_start = cur_bi.file_end();
-                        if next_block_file_start >= self.file_size {
+                        let Some((next_logic_file_start, next_source_file_start)) =
+                            self.next_unindexed_block_start()?
+                        else {
                             return Ok(Block3 {
-                                blocks: [self.blocks.get(i), None, None],
+                                blocks: [self.blocks.get(i).map(BlockPtr::from_block), None, None],
                                 block_indexs: &self.block_indexs,
                             });
-                        }
+                        };
                         let new_block_id = self.alloc_id();
-                        self.read_next_block(
+                        let (block, block_index) = self.read_unindexed_source_block(
                             new_block_id,
-                            next_block_file_start,
-                            next_block_file_start,
-                            None,
-                            true,
+                            next_logic_file_start,
+                            next_source_file_start,
                         )?;
+                        self.block_indexs.push(block_index);
+                        if let Some(evicted) = self.blocks.push(block) {
+                            self.cache_block_snapshot(evicted);
+                        }
                         return Ok(Block3 {
                             blocks: [
-                                self.blocks.get(i - 1),
-                                self.blocks.get(i),
-                                self.blocks.get(i + 1),
+                                self.blocks.get(i - 1).map(BlockPtr::from_block),
+                                self.blocks.get(i).map(BlockPtr::from_block),
+                                self.blocks.get(i + 1).map(BlockPtr::from_block),
                             ],
                             block_indexs: &self.block_indexs,
                         });
@@ -320,9 +432,9 @@ impl GapBlockText {
                     // 不是第一个也不是最后一个块
                     return Ok(Block3 {
                         blocks: [
-                            self.blocks.get(i),
-                            self.blocks.get(i + 1),
-                            self.blocks.get(i + 2),
+                            self.blocks.get(i).map(BlockPtr::from_block),
+                            self.blocks.get(i + 1).map(BlockPtr::from_block),
+                            self.blocks.get(i + 2).map(BlockPtr::from_block),
                         ],
                         block_indexs: &self.block_indexs,
                     });
@@ -348,14 +460,14 @@ impl GapBlockText {
         })
     }
 
-    fn find_block(&self, file_start: usize) -> Option<&Block> {
-        for b in self.blocks.iter() {
-            if file_start == b.file_start {
-                return Some(b);
-            }
-        }
-        None
-    }
+    // fn find_block(&self, file_start: usize) -> Option<&Block> {
+    //     for b in self.blocks.iter() {
+    //         if file_start == b.file_start {
+    //             return Some(b);
+    //         }
+    //     }
+    //     None
+    // }
 
     /// 确保 block_id 对应的块在内存（self.blocks）中。
     ///
@@ -394,8 +506,9 @@ impl GapBlockText {
         // 4. read_one_block 优先从 cache 取（key = block_id）
         let (block, _) = self.read_one_block(
             block_id,
-            target.file_start,
+            target.logic_file_start,
             target.source_file_start,
+            target.source_file_end,
             Some(target.check_sum),
         )?;
 
@@ -437,7 +550,7 @@ impl GapBlockText {
             .iter()
             .find(|bi| file_offset < bi.file_end())
             .or_else(|| self.block_indexs.last())?;
-        Some((bi.block_id, file_offset.saturating_sub(bi.file_start)))
+        Some((bi.block_id, file_offset.saturating_sub(bi.logic_file_start)))
     }
 
     fn reset_blocks(&mut self, block_id: BlockId) -> ChapResult<()> {
@@ -457,13 +570,19 @@ impl GapBlockText {
             let mut new_blocks = RingVec::with_capacity(BLOKK_NUM);
             for i in 0..BLOKK_NUM {
                 if let Some(bi) = self.block_indexs.get(start_pos + i).cloned() {
-                    if let Some(cached) = self.cache.remove(&bi.block_id) {
+                    if let Some(mut cached) = self.cache.remove(&bi.block_id) {
+                        Self::sync_block_source_mirror(
+                            &mut cached,
+                            bi.source_file_start,
+                            bi.source_file_end,
+                        );
                         new_blocks.push(cached);
                     } else {
                         match self.read_one_block(
                             bi.block_id,
-                            bi.file_start,
+                            bi.logic_file_start,
                             bi.source_file_start,
+                            bi.source_file_end,
                             Some(bi.check_sum),
                         ) {
                             Ok((block, _)) => {
@@ -474,21 +593,18 @@ impl GapBlockText {
                     }
                 } else {
                     // 需要从磁盘加载新块并扩展索引
-                    let last_bi = self.block_indexs.last().unwrap().clone();
-                    let next_file_start = last_bi.file_end();
-                    if next_file_start >= self.file_size {
+                    let Some((next_logic_file_start, next_source_file_start)) =
+                        self.next_unindexed_block_start()?
+                    else {
                         break;
-                    }
+                    };
                     let new_id = self.alloc_id();
-                    let mut buf = [0u8; BLOCK_SIZE];
-                    match Block::from_reader(
-                        &mut self.reader,
-                        &mut buf,
-                        next_file_start,
+                    match self.read_unindexed_source_block(
                         new_id,
-                        None,
+                        next_logic_file_start,
+                        next_source_file_start,
                     ) {
-                        Ok((block, Some(bi))) => {
+                        Ok((block, bi)) => {
                             self.block_indexs.push(bi);
                             new_blocks.push(block);
                         }
@@ -499,17 +615,19 @@ impl GapBlockText {
             self.blocks = new_blocks;
         } else {
             // block_id 不在索引中：从文件末尾继续加载，直到找到为止
-            let mut buf = [0u8; BLOCK_SIZE];
             'out: loop {
-                let last_bi = self.block_indexs.last().unwrap().clone();
-                let next_file_start = last_bi.file_end();
-                if next_file_start >= self.file_size {
+                let Some((next_logic_file_start, next_source_file_start)) =
+                    self.next_unindexed_block_start()?
+                else {
                     break;
-                }
+                };
                 let new_id = self.alloc_id();
-                match Block::from_reader(&mut self.reader, &mut buf, next_file_start, new_id, None)
-                {
-                    Ok((block, Some(bi))) => {
+                match self.read_unindexed_source_block(
+                    new_id,
+                    next_logic_file_start,
+                    next_source_file_start,
+                ) {
+                    Ok((block, bi)) => {
                         self.block_indexs.push(bi);
                         let found = block.block_id == block_id;
                         if let Some(evicted) = self.blocks.push(block) {
@@ -546,14 +664,14 @@ impl Text for GapBlockText {
         if let Some(i) = j {
             let blocks = Block3 {
                 blocks: [
-                    self.blocks.get(i),
-                    self.blocks.get(i + 1),
-                    self.blocks.get(i + 2),
+                    self.blocks.get(i).map(BlockPtr::from_block),
+                    self.blocks.get(i + 1).map(BlockPtr::from_block),
+                    self.blocks.get(i + 2).map(BlockPtr::from_block),
                 ],
                 block_indexs: &self.block_indexs,
             };
-            let (l, _) = blocks.get_line(block_id, block_offset)?;
-            return Some(l);
+            let (l, _, _) = blocks.get_line(block_id, block_offset)?;
+            return Some(unsafe { std::mem::transmute::<LineBlockStr<'_>, LineBlockStr<'a>>(l) });
         }
         None
     }
@@ -572,13 +690,13 @@ impl Text for GapBlockText {
         let line = self.get_line(&state).unwrap();
         let mut next_block_id = block_id;
         if state.get_line_end() >= line.text_len() {
-            if state.get_block_line_end() >= block_index.block_size - 1 {
+            if state.get_block_line_end() >= block_index.logic_block_size - 1 {
                 // 越过当前块，进入下一块
                 next_block_id = self.block_indexs.get(pos + 1)?.block_id;
                 block_line_index = 0;
                 block_offset = state
                     .get_block_line_end()
-                    .saturating_sub(block_index.block_size);
+                    .saturating_sub(block_index.logic_block_size);
                 line_end = 0;
             } else {
                 line_end = 0;
@@ -721,7 +839,7 @@ impl Text for GapBlockText {
     fn has_next_line(&self, meta: &LineState) -> bool {
         let last_block_index = self.block_indexs.last().unwrap();
         if meta.get_block_num() == last_block_index.block_id
-            && meta.get_block_line_end() >= last_block_index.block_size
+            && meta.get_block_line_end() >= last_block_index.logic_block_size
         {
             return false;
         }
@@ -745,6 +863,25 @@ impl Text for GapBlockText {
         line_file_start: usize,
     ) -> impl Iterator<Item = u8> {
         iter::empty()
+    }
+
+    //搜索
+    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>> {
+        let scroll_iter = GapBlockScollTextIter::new(
+            self,
+            state.block_num,
+            state.block_line_index,
+            state.block_offset,
+            state.line_index,
+        )?;
+        let mut results = Vec::new();
+        let boyermoore = BoyerMoore::new(partten);
+        for (line, index) in scroll_iter {
+            if boyermoore.stream(line.iter_u8()).next().is_some() {
+                results.push(index);
+            }
+        }
+        Ok((!results.is_empty()).then_some(results))
     }
 }
 
@@ -807,8 +944,8 @@ impl GapBlockText {
             "resolve_insert_target: pos={}, block_id={}, block_offset={}, line_offset={}, bytes_cursor={}, computed insert_offset={}",
             pos, block_id, line_meta.get_block_offset(), line_meta.get_line_offset(), bytes_cursor, insert_offset
         );
-        while insert_offset >= self.block_indexs[pos].block_size {
-            insert_offset -= self.block_indexs[pos].block_size;
+        while insert_offset >= self.block_indexs[pos].logic_block_size {
+            insert_offset -= self.block_indexs[pos].logic_block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
             block_line_index = 0;
@@ -863,38 +1000,8 @@ impl GapBlockText {
     // }
 
     /// 设计说明：
-    /// `block_indexs` 保存的是“当前文档视图”的逻辑区间，而 `blocks/cache` 里是已经加载到内存中的块对象。
-    /// 编辑发生后，后续块的逻辑 `file_start` 可能整体平移，因此需要把这些逻辑位置同步回已加载块，
-    /// 否则运行时看到的块元数据会和索引脱节。
-    ///
-    /// 这里刻意只更新已经在 `blocks` 或 `cache` 中的块，不去加载缺失块：
-    /// 未加载块可能仍然对应原始 backing file 的旧物理位置，它们之后应通过 `source_file_start`
-    /// 按原文件内容懒加载；如果此处为了同步 offset 把整个后缀 materialize 进内存，大文件前部的每次编辑
-    /// 都会把后缀块成批读入，插入/删除就会退化成接近 O(后缀大小) 的操作。
-    ///
-    /// 因此这个函数的职责仅限于：
-    /// 1. 让“已经在内存里的块对象”跟上逻辑索引的位置变化
-    /// 2. 一旦逻辑区间变化，就标记为 modified，保证后续保存按新布局写出
-    fn sync_block_storage_pos(&mut self, block_id: BlockId, file_start: usize, block_size: usize) {
-        if let Some(block) = self.blocks.iter_mut().find(|b| b.block_id == block_id) {
-            if block.file_start != file_start || block.file_end != file_start + block_size {
-                block.is_modified = true;
-            }
-            block.file_start = file_start;
-            block.file_end = file_start + block_size;
-        }
-        if let Some(block) = self.cache.get_mut(&block_id) {
-            if block.file_start != file_start || block.file_end != file_start + block_size {
-                block.is_modified = true;
-            }
-            block.file_start = file_start;
-            block.file_end = file_start + block_size;
-        }
-    }
-
-    /// 设计说明：
-    /// 块编辑后，`start_pos` 之后所有块的逻辑 `file_start` 都可能发生连锁变化。
-    /// 这里负责把 `block_indexs` 重新串成一个连续的逻辑视图，并把这份逻辑视图同步给已加载块。
+    /// 块编辑后，`start_pos` 之后所有块的逻辑 `logic_file_start` 都可能发生连锁变化。
+    /// 这里负责把 `block_indexs` 重新串成一个连续的逻辑视图，并重算 `file_size`。
     ///
     /// 关键点是：这里维护的是“逻辑偏移”，不是“原文件物理偏移”。
     /// 未加载块仍然保留各自的 `source_file_start`，以后如果真的访问到它们，再从原始 backing file
@@ -903,12 +1010,11 @@ impl GapBlockText {
     ///
     /// 换句话说，这个函数做的是：
     /// - 更新逻辑索引里的连续区间
-    /// - 修正已加载块的运行时 `file_start/file_end`
     /// - 重新计算 `file_size`
     ///
     /// 它刻意不做的是：
     /// - 不回读未加载块
-    /// - 不修改未加载块的 `source_file_start`
+    /// - 不修改 `Block` 上的 `source_*` 冗余镜像
     fn sync_block_offsets_from(&mut self, start_pos: usize) {
         if self.block_indexs.is_empty() {
             self.file_size = 0;
@@ -918,40 +1024,36 @@ impl GapBlockText {
         let mut pos = if start_pos == 0 { 0 } else { start_pos };
         if pos > 0 {
             let prev = &self.block_indexs[pos - 1];
-            let expected_start = prev.file_start + prev.block_size;
-            if self.block_indexs[pos].file_start != expected_start {
-                self.block_indexs[pos].file_start = expected_start;
+            let expected_start = prev.logic_file_start + prev.logic_block_size;
+            if self.block_indexs[pos].logic_file_start != expected_start {
+                self.block_indexs[pos].logic_file_start = expected_start;
             }
         }
         while pos < self.block_indexs.len() {
             if pos > 0 {
-                let prev_end =
-                    self.block_indexs[pos - 1].file_start + self.block_indexs[pos - 1].block_size;
-                self.block_indexs[pos].file_start = prev_end;
+                let prev_end = self.block_indexs[pos - 1].logic_file_start
+                    + self.block_indexs[pos - 1].logic_block_size;
+                self.block_indexs[pos].logic_file_start = prev_end;
             }
-            let file_start = self.block_indexs[pos].file_start;
-            let block_id = self.block_indexs[pos].block_id;
-            let block_size = self.block_indexs[pos].block_size;
-            self.sync_block_storage_pos(block_id, file_start, block_size);
             pos += 1;
         }
-        self.file_size = self.block_indexs.iter().map(|bi| bi.block_size).sum();
+        self.file_size = self.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
     }
 
     #[cfg(debug_assertions)]
     fn debug_assert_storage_consistent(&self) {
-        let total: usize = self.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let total: usize = self.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         debug_assert_eq!(
             total, self.file_size,
-            "sum(block_size) must equal file_size"
+            "sum(logic_block_size) must equal file_size"
         );
         for (i, bi) in self.block_indexs.iter().enumerate() {
             if i > 0 {
                 let prev = &self.block_indexs[i - 1];
                 debug_assert_eq!(
-                    bi.file_start,
-                    prev.file_start + prev.block_size,
-                    "block {} file_start must be contiguous",
+                    bi.logic_file_start,
+                    prev.logic_file_start + prev.logic_block_size,
+                    "block {} logic_file_start must be contiguous",
                     i
                 );
             }
@@ -969,7 +1071,7 @@ impl GapBlockText {
                     i, line_idx
                 );
                 debug_assert!(
-                    line.block_start <= line.block_end && line.block_end <= bi.block_size,
+                    line.block_start <= line.block_end && line.block_end <= bi.logic_block_size,
                     "block {} line {} range must be within block",
                     i,
                     line_idx
@@ -977,9 +1079,9 @@ impl GapBlockText {
                 expected_start = line.block_end;
             }
             if let Some(block) = self.blocks.iter().find(|b| b.block_id == bi.block_id) {
-                debug_assert_eq!(block.file_start, bi.file_start);
-                debug_assert_eq!(block.file_end, bi.file_start + bi.block_size);
-                debug_assert_eq!(block.block_size(), bi.block_size);
+                debug_assert_eq!(block.source_file_start, bi.source_file_start);
+                debug_assert_eq!(block.source_file_end, bi.source_file_end);
+                debug_assert_eq!(block.block_size(), bi.logic_block_size);
             }
         }
     }
@@ -989,38 +1091,39 @@ impl GapBlockText {
 
     #[cfg(test)]
     pub(crate) fn assert_storage_consistent_for_test(&self) {
-        let total: usize = self.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let total: usize = self.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(
             total, self.file_size,
-            "所有 block_size 之和必须等于 file_size"
+            "所有 logic_block_size 之和必须等于 file_size"
         );
         for (i, bi) in self.block_indexs.iter().enumerate() {
             if i > 0 {
                 let prev = &self.block_indexs[i - 1];
                 assert_eq!(
-                    bi.file_start,
-                    prev.file_start + prev.block_size,
-                    "block {} 的 file_start 应紧跟前一个 block",
+                    bi.logic_file_start,
+                    prev.logic_file_start + prev.logic_block_size,
+                    "block {} 的 logic_file_start 应紧跟前一个 block",
                     i
                 );
             }
             if let Some(block) = self.blocks.iter().find(|b| b.block_id == bi.block_id) {
                 assert_eq!(
-                    block.file_start, bi.file_start,
-                    "已加载 block 的 file_start 必须与索引一致"
+                    block.source_file_start, bi.source_file_start,
+                    "已加载 block 的 source_file_start 必须与索引一致"
                 );
                 assert_eq!(
-                    block.file_end,
-                    bi.file_start + bi.block_size,
-                    "已加载 block 的 file_end 必须与索引一致"
+                    block.source_file_end, bi.source_file_end,
+                    "已加载 block 的 source_file_end 必须与索引一致"
                 );
             }
         }
     }
 
     fn rebuild_block_index(&mut self, pos: usize) -> ChapResult<()> {
-        let file_start = self.block_indexs[pos].file_start;
+        let logic_file_start = self.block_indexs[pos].logic_file_start;
         let block_id = self.block_indexs[pos].block_id;
+        let source_file_start = self.block_indexs[pos].source_file_start;
+        let source_file_end = self.block_indexs[pos].source_file_end;
         let (left, right, block_size, check_sum) = {
             let block = self
                 .blocks
@@ -1040,10 +1143,29 @@ impl GapBlockText {
                 Self::block_checksum_slices(left, right),
             )
         };
-        let new_block_index =
-            BlockIndex::from_gap_slices(left, right, file_start, block_id, block_size, check_sum)?;
+        let new_block_index = BlockIndex::from_gap_slices(
+            left,
+            right,
+            logic_file_start,
+            source_file_start,
+            source_file_end,
+            block_id,
+            block_size,
+            check_sum,
+        )?;
         self.block_indexs[pos] = new_block_index;
         Ok(())
+    }
+
+    fn sort_loaded_blocks_by_logic_order(&mut self) {
+        let order: HashMap<BlockId, usize> = self
+            .block_indexs
+            .iter()
+            .enumerate()
+            .map(|(pos, bi)| (bi.block_id, pos))
+            .collect();
+        self.blocks
+            .sort_by_key(|b| order.get(&b.block_id).copied().unwrap_or(usize::MAX));
     }
 
     fn remove_block_by_id(&mut self, block_id: BlockId) {
@@ -1067,7 +1189,7 @@ impl GapBlockText {
             let Some(next_pos) = self.block_pos(next_id) else {
                 continue;
             };
-            if self.block_indexs[next_pos].block_size <= BLOCK_SIZE {
+            if self.block_indexs[next_pos].logic_block_size <= BLOCK_SIZE {
                 continue;
             }
             if let Some((left_id, right_id)) = self.split_block_once(next_id)? {
@@ -1086,11 +1208,11 @@ impl GapBlockText {
         let pos = self.block_pos(block_id).ok_or_else(|| {
             ChapError::Unexpected(format!("split_block: block_id {} not found", block_id))
         })?;
-        let block_size = self.block_indexs[pos].block_size;
-        let file_start = self.block_indexs[pos].file_start;
+        let logic_block_size = self.block_indexs[pos].logic_block_size;
+        let logic_file_start = self.block_indexs[pos].logic_file_start;
 
-        // ① 找切分点：is_complete 行中 block_end 最接近 block_size/2 的那条
-        let half = block_size / 2;
+        // ① 找切分点：完整行结尾里最接近逻辑块中点的那条；找不到时退化到中点切分
+        let half = logic_block_size / 2;
         let split_byte = self.block_indexs[pos]
             .lines_index
             .iter()
@@ -1099,12 +1221,12 @@ impl GapBlockText {
             .map(|l| l.block_end)
             .unwrap_or(half);
 
-        if split_byte == 0 || split_byte >= block_size {
+        if split_byte == 0 || split_byte >= logic_block_size {
             return Ok(None); // 无法切分（整块只有一行且超大）
         }
 
         // ② 基于左右字节重建两个新块及其索引，保证超长行中间切分时 lines_index 也正确
-        let (left_bytes, right_bytes) = {
+        let (left_bytes, right_bytes, source_file_start, source_file_end) = {
             let block = self
                 .blocks
                 .iter_mut()
@@ -1116,13 +1238,20 @@ impl GapBlockText {
                     ))
                 })?;
             let bytes = block.as_continuous();
-            (bytes[..split_byte].to_vec(), bytes[split_byte..].to_vec())
+            (
+                bytes[..split_byte].to_vec(),
+                bytes[split_byte..].to_vec(),
+                block.source_file_start,
+                block.source_file_end,
+            )
         }; // self.blocks 借用在此结束
         let data_a = GapBuffer::from_bytes(&left_bytes, CHAR_GAP_SIZE);
         let data_b = GapBuffer::from_bytes(&right_bytes, CHAR_GAP_SIZE);
         let left_index = BlockIndex::from_block_bytes(
             &left_bytes,
-            file_start,
+            logic_file_start,
+            source_file_start,
+            source_file_end,
             block_id,
             left_bytes.len(),
             Self::block_checksum(&left_bytes),
@@ -1132,7 +1261,9 @@ impl GapBlockText {
         let new_block_id = self.alloc_id();
         let right_index = BlockIndex::from_block_bytes(
             &right_bytes,
-            file_start + split_byte,
+            logic_file_start + split_byte,
+            source_file_start,
+            source_file_end,
             new_block_id,
             right_bytes.len(),
             Self::block_checksum(&right_bytes),
@@ -1141,8 +1272,8 @@ impl GapBlockText {
         // 构造 Block B
         let block_b = Block {
             data: data_b,
-            file_start: file_start + split_byte,
-            file_end: file_start + block_size,
+            source_file_start: source_file_start,
+            source_file_end: source_file_end,
             block_id: new_block_id,
             is_modified: true,
         };
@@ -1154,7 +1285,7 @@ impl GapBlockText {
                 .find(|b| b.block_id == block_id)
                 .unwrap();
             block.data = data_a;
-            block.file_end = file_start + split_byte;
+            Self::sync_block_source_mirror(block, source_file_start, source_file_end);
             block.is_modified = true;
         }
 
@@ -1167,8 +1298,8 @@ impl GapBlockText {
         if let Some(evicted) = self.blocks.push(block_b) {
             self.cache_block_snapshot(evicted);
         }
-        // 按 file_start 排序，维持物理顺序供 Block3 窗口使用
-        self.blocks.sort_by_key(|b| b.file_start);
+        // 分裂后的子块共享同一 source_* 区间，已不能再靠 source_file_start 推导文本顺序。
+        self.sort_loaded_blocks_by_logic_order();
 
         Ok(Some((block_id, new_block_id)))
     }
@@ -1221,7 +1352,7 @@ impl EditText for GapBlockText {
                     break;
                 }
                 pos -= 1;
-                insert_offset = self.block_indexs[pos].block_size;
+                insert_offset = self.block_indexs[pos].logic_block_size;
                 continue;
             }
 
@@ -1255,7 +1386,7 @@ impl EditText for GapBlockText {
                 break;
             }
             pos -= 1;
-            insert_offset = self.block_indexs[pos].block_size;
+            insert_offset = self.block_indexs[pos].logic_block_size;
         }
 
         deleted_parts.reverse();
@@ -1376,8 +1507,8 @@ impl EditText for GapBlockText {
         let mut block_line_index = line_meta.get_block_line_index();
         let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
         let mut pos = self.block_pos(block_id).unwrap();
-        while insert_offset >= self.block_indexs[pos].block_size {
-            insert_offset -= self.block_indexs[pos].block_size;
+        while insert_offset >= self.block_indexs[pos].logic_block_size {
+            insert_offset -= self.block_indexs[pos].logic_block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
             block_line_index = 0;
@@ -1405,7 +1536,7 @@ impl EditText for GapBlockText {
                 .backspace(insert_offset, 1);
             // blocks 的可变借用在上一语句结束后由 NLL 释放
             let cur_block_index = &mut self.block_indexs[pos];
-            cur_block_index.block_size = cur_block_index.block_size.saturating_sub(1);
+            cur_block_index.logic_block_size = cur_block_index.logic_block_size.saturating_sub(1);
             cur_block_index.lines_index[block_line_index - 1].block_end =
                 cur_block_index.lines_index[block_line_index].block_end - 1;
             cur_block_index.lines_index.remove(block_line_index);
@@ -1442,8 +1573,9 @@ impl EditText for GapBlockText {
                     .last_mut()
                     .unwrap()
                     .is_complete = false;
-                self.block_indexs[pos - 1].block_size =
-                    self.block_indexs[pos - 1].block_size.saturating_sub(1);
+                self.block_indexs[pos - 1].logic_block_size = self.block_indexs[pos - 1]
+                    .logic_block_size
+                    .saturating_sub(1);
                 self.block_indexs[pos - 1].line_count = self.block_indexs[pos - 1]
                     .lines_index
                     .iter()
@@ -1490,38 +1622,111 @@ impl EditText for GapBlockText {
     }
 }
 
-struct Block3<'a> {
-    blocks: [Option<&'a Block>; 3],
+trait Block3Containter<'a> {
+    type Iter: Iterator<Item = &'a Option<BlockPtr<'a>>>;
+
+    fn iter_block(&'a self) -> Self::Iter;
+    fn get_block(&'a self, i: usize) -> Option<&'a Option<BlockPtr<'a>>>;
+    fn last_block(&'a self) -> Option<&'a Option<BlockPtr<'a>>> {
+        self.iter_block().last()
+    }
+    fn push(&mut self, block: BlockPtr<'a>);
+}
+
+impl<'a> Block3Containter<'a> for [Option<BlockPtr<'a>>; 3] {
+    type Iter = std::slice::Iter<'a, Option<BlockPtr<'a>>>;
+
+    fn iter_block(&'a self) -> Self::Iter {
+        self.iter()
+    }
+
+    fn get_block(&'a self, i: usize) -> Option<&'a Option<BlockPtr<'a>>> {
+        self.get(i)
+    }
+
+    fn push(&mut self, block: BlockPtr<'a>) {
+        todo!()
+    }
+}
+
+struct RingVecBlockIter<'a> {
+    blocks: &'a RingVec<Option<BlockPtr<'a>>>,
+    index: usize,
+}
+
+impl<'a> Iterator for RingVecBlockIter<'a> {
+    type Item = &'a Option<BlockPtr<'a>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let slot = self.blocks.get(self.index)?;
+        self.index += 1;
+        Some(slot)
+    }
+}
+
+impl<'a> Block3Containter<'a> for RingVec<Option<BlockPtr<'a>>> {
+    type Iter = RingVecBlockIter<'a>;
+
+    fn iter_block(&'a self) -> Self::Iter {
+        RingVecBlockIter {
+            blocks: self,
+            index: 0,
+        }
+    }
+
+    fn get_block(&'a self, i: usize) -> Option<&'a Option<BlockPtr<'a>>> {
+        self.get(i)
+    }
+
+    fn push(&mut self, block: BlockPtr<'a>) {
+        self.push(Some(block));
+    }
+}
+
+struct Block3<'a, T: Block3Containter<'a>> {
+    blocks: T,
     block_indexs: &'a [BlockIndex],
 }
 
-impl<'a> Block3<'a> {
+impl<'a, T: Block3Containter<'a>> Block3<'a, T> {
+    fn last_block(&'a self) -> Option<&'a Option<BlockPtr<'a>>> {
+        self.blocks.last_block()
+    }
+
+    fn push(&mut self, block: BlockPtr<'a>) {
+        self.blocks.push(block);
+    }
+
     fn get_line(
-        &self,
+        &'a self,
         cur_block_id: BlockId,
         cur_block_offset: usize,
-    ) -> Option<(LineBlockStr<'a>, &BlockIndex)> {
-        for (i, block) in self.blocks.iter().enumerate() {
+    ) -> Option<(LineBlockStr<'a>, &'a BlockIndex, usize)> {
+        let mut index = 0;
+        for (i, block) in self.blocks.iter_block().enumerate() {
             if let Some(b) = block {
+                // 跳过不是目标块的块
+                if b.as_block().block_id != cur_block_id {
+                    continue;
+                }
                 // 通过 block_id 找对应的 BlockIndex
                 let block_index = self
                     .block_indexs
                     .iter()
-                    .find(|bi| bi.block_id == b.block_id)?;
-                // 跳过不是目标块的块
-                if b.block_id != cur_block_id {
-                    continue;
-                }
+                    .find(|bi| bi.block_id == b.as_block().block_id)?;
                 let option_line_info = block_index.get_line_index(cur_block_offset);
                 if option_line_info.is_none() {
                     return None;
                 }
+                index = i; // 记录当前块在 block_indexs 中的位置
                 let line_info = option_line_info.unwrap();
                 let line_str1 = BlockLineData {
                     data: LineData::GapBytes(
-                        b.data.text(line_info.block_start..line_info.block_end),
+                        b.as_block()
+                            .data
+                            .text(line_info.block_start..line_info.block_end),
                     ),
-                    block_file_start: block_index.file_start,
+                    block_file_start: block_index.logic_file_start,
                     block_id: block_index.block_id, // block_id 字段存储 block_id
                     block_line_index: line_info.index_num,
                     block_offset: line_info.block_start,
@@ -1529,38 +1734,38 @@ impl<'a> Block3<'a> {
                 if line_info.is_complete {
                     //是完整的行
                     let ret: LineBlockStr<'_> = LineBlockStr(Some(line_str1), None);
-                    return Some((ret, block_index));
+                    return Some((ret, block_index, index));
                 } else {
                     //不完整行 需要合并一行的下部分 一行的下一个部分在 下一个 block中
                     //获取下一个block
-                    if i == 0 {
+                    if i < 2 {
                         // 找当前块在 block_indexs 中的位置，取下一个
                         let cur_pos = self
                             .block_indexs
                             .iter()
-                            .position(|bi| bi.block_id == b.block_id)?;
+                            .position(|bi| bi.block_id == b.as_block().block_id)?;
                         let next_block_index = self.block_indexs.get(cur_pos + 1)?;
-                        if let Some(next_block) = self.blocks[1] {
+                        if let Some(next_block) = self.blocks.get_block(i + 1).unwrap() {
                             if !next_block_index.lines_index.is_empty() {
                                 let next_line_info = &next_block_index.lines_index[0];
                                 let line_str2 = BlockLineData {
-                                    data: LineData::GapBytes(next_block.data.text(
+                                    data: LineData::GapBytes(next_block.as_block().data.text(
                                         next_line_info.block_start..next_line_info.block_end,
                                     )),
-                                    block_file_start: next_block_index.file_start,
+                                    block_file_start: next_block_index.logic_file_start,
                                     block_id: next_block_index.block_id, // block_id
                                     block_line_index: next_line_info.index_num,
                                     block_offset: next_line_info.block_start,
                                 };
                                 let ret: LineBlockStr<'_> =
                                     LineBlockStr(Some(line_str1), Some(line_str2));
-                                return Some((ret, block_index));
+                                return Some((ret, block_index, index));
                             }
                         }
                     }
                     let ret: LineBlockStr<'_> = LineBlockStr(Some(line_str1), None);
                     //self.cur_block_offset += ret.text_len();
-                    return Some((ret, block_index));
+                    return Some((ret, block_index, index));
                 }
             }
         }
@@ -1569,7 +1774,7 @@ impl<'a> Block3<'a> {
 }
 
 struct GapBlockTextIterRev<'a> {
-    blocks: Block3<'a>,
+    blocks: Block3<'a, [Option<BlockPtr<'a>>; 3]>,
     cur_block_id: BlockId,       //当前块的稳定 block_id
     cur_block_line_index: usize, //块内行索引
     cur_block_offset: usize,     //块内偏移
@@ -1583,9 +1788,10 @@ impl<'a> Iterator for GapBlockTextIterRev<'a> {
         if self.exhausted {
             return None;
         }
-        let (ret, _) = self
+        let (ret, _, _) = self
             .blocks
             .get_line(self.cur_block_id, self.cur_block_offset)?;
+        let ret = unsafe { std::mem::transmute::<LineBlockStr<'_>, LineBlockStr<'a>>(ret) };
         let block_index = self
             .blocks
             .block_indexs
@@ -1618,8 +1824,174 @@ impl<'a> Iterator for GapBlockTextIterRev<'a> {
     }
 }
 
+struct GapBlockScollTextIter<'a> {
+    blocks: Block3<'a, RingVec<Option<BlockPtr<'a>>>>,
+    text: *mut GapBlockText,
+    cur_block_id: BlockId,
+    cur_block_line_index: usize,
+    cur_block_offset: usize,
+    cur_line_index: usize,
+    _marker: std::marker::PhantomData<&'a mut GapBlockText>,
+}
+
+impl<'a> GapBlockScollTextIter<'a> {
+    fn text(&self) -> &GapBlockText {
+        unsafe { &*self.text }
+    }
+
+    fn text_mut(&mut self) -> &mut GapBlockText {
+        unsafe { &mut *self.text }
+    }
+
+    fn new(
+        text: &'a mut GapBlockText,
+        cur_block_id: BlockId,
+        cur_block_line_index: usize,
+        cur_block_offset: usize,
+        cur_line_index: usize,
+    ) -> ChapResult<Self> {
+        let pos = text
+            .block_indexs
+            .iter()
+            .position(|bi| bi.block_id == cur_block_id)
+            .ok_or_else(|| {
+                ChapError::Unexpected("cur_block_id not found in block_indexs".into())
+            })?;
+
+        // 先克隆需要的 BlockIndex，避免后续 &mut 冲突
+        let indices: Vec<BlockIndex> = text.block_indexs[pos..].iter().take(3).cloned().collect();
+
+        let mut ring: RingVec<Option<BlockPtr<'a>>> = RingVec::with_capacity(3);
+        for bi in &indices {
+            let (block_ptr, _) = text.read_one_block_ptr(
+                bi.block_id,
+                bi.logic_file_start,
+                bi.source_file_start,
+                bi.source_file_end,
+                Some(bi.check_sum),
+            )?;
+            // 提取 Block 并重新包装为 Own，消除短生命周期
+            let block = match block_ptr {
+                BlockPtr::Own(b) => b,
+                BlockPtr::Borrowed(b) => b.clone(),
+            };
+            ring.push(Some(BlockPtr::Own(block)));
+        }
+
+        let ptr = text as *mut GapBlockText;
+        let block_indexs: &'a [BlockIndex] = unsafe { &(*ptr).block_indexs };
+        Ok(Self {
+            blocks: Block3 {
+                blocks: ring,
+                block_indexs,
+            },
+            text: ptr,
+            cur_block_id,
+            cur_block_line_index,
+            cur_block_offset,
+            cur_line_index,
+            _marker: std::marker::PhantomData,
+        })
+    }
+}
+
+impl<'a> Iterator for GapBlockScollTextIter<'a> {
+    type Item = (LineBlockStr<'a>, LineState);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (ret, block_index, index) = self
+            .blocks
+            .get_line(self.cur_block_id, self.cur_block_offset)?;
+        let ret = unsafe { std::mem::transmute::<LineBlockStr<'_>, LineBlockStr<'a>>(ret) };
+        let block_size = block_index.logic_block_size;
+        let line_state = LineStateBuilder::new()
+            .block_num(ret.get_block_id())
+            .block_line_index(ret.get_block_line_index())
+            .block_offset(ret.get_block_offset())
+            .line_index(self.cur_line_index)
+            .line_num(self.cur_line_index + 1)
+            .line_file_start(ret.get_line_file_start())
+            .line_file_end(ret.get_line_file_end())
+            .start_line_num(self.cur_line_index + 1)
+            .start_page_num(1)
+            .build();
+        self.cur_block_offset += ret.text_len();
+        self.cur_line_index += 1;
+
+        if self.cur_block_offset >= block_size {
+            if let Some(cur_pos) = self
+                .text()
+                .block_indexs
+                .iter()
+                .position(|bi| bi.block_id == self.cur_block_id)
+            {
+                if let Some(next_bi) = self.text().block_indexs.get(cur_pos + 1).cloned() {
+                    self.cur_block_id = next_bi.block_id;
+                    self.cur_block_offset = self.cur_block_offset.saturating_sub(block_size);
+                    self.cur_block_line_index = next_bi
+                        .get_line_index(self.cur_block_offset)
+                        .map(|line| line.index_num)
+                        .unwrap_or(0);
+                }
+            }
+        } else {
+            self.cur_block_line_index = block_index
+                .get_line_index(self.cur_block_offset)
+                .map(|line| line.index_num)
+                .unwrap_or(self.cur_block_line_index + 1);
+        }
+
+        // 读到第2个块时，预加载下一个块
+        if index == 1 {
+            let last_block = self.blocks.last_block().unwrap().as_ref().unwrap();
+            let last_block_id = last_block.as_block().block_id;
+
+            let next_bi = self
+                .text()
+                .block_indexs
+                .iter()
+                .position(|bi| bi.block_id == last_block_id)
+                .and_then(|p| self.text().block_indexs.get(p + 1).cloned());
+
+            if let Some(next_bi) = next_bi {
+                let (block_ptr, _) = self
+                    .text_mut()
+                    .read_one_block_ptr(
+                        next_bi.block_id,
+                        next_bi.logic_file_start,
+                        next_bi.source_file_start,
+                        next_bi.source_file_end,
+                        Some(next_bi.check_sum),
+                    )
+                    .unwrap();
+                let block = match block_ptr {
+                    BlockPtr::Own(b) => b,
+                    BlockPtr::Borrowed(b) => b.clone(),
+                };
+                self.blocks.push(BlockPtr::Own(block));
+            } else if let Some((next_logic_file_start, next_source_file_start)) =
+                self.text().next_unindexed_block_start().unwrap()
+            {
+                let new_block_id = self.text_mut().alloc_id();
+                let (block, block_index) = self
+                    .text_mut()
+                    .read_unindexed_source_block(
+                        new_block_id,
+                        next_logic_file_start,
+                        next_source_file_start,
+                    )
+                    .unwrap();
+                self.text_mut().block_indexs.push(block_index);
+                self.blocks.push(BlockPtr::Own(block));
+            }
+        }
+
+        Some((ret, line_state))
+    }
+}
+
 struct GapBlockTextIter<'a> {
-    blocks: Block3<'a>,
+    blocks: Block3<'a, [Option<BlockPtr<'a>>; 3]>,
     cur_block_id: BlockId,       //当前块的稳定 block_id
     cur_block_line_index: usize, //块内行索引
     cur_block_offset: usize,     //块内偏移
@@ -1629,16 +2001,17 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
     type Item = LineBlockStr<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (ret, block_index) = self
+        let (ret, block_index, _) = self
             .blocks
             .get_line(self.cur_block_id, self.cur_block_offset)?;
+        let ret = unsafe { std::mem::transmute::<LineBlockStr<'_>, LineBlockStr<'a>>(ret) };
         // log::debug!("GapBlockTextIter next: ret:{}", ret);
         self.cur_block_line_index += 1;
         self.cur_block_offset += ret.text_len();
         // log::debug!("GapBlockTextIter next: after update offset: cur_block_line_index {}, cur_block_offset {}, block_size:{}, ret:{}",
         //     self.cur_block_line_index, self.cur_block_offset, block_index.block_size, ret);
         //查看是否大于当前块
-        if self.cur_block_offset >= block_index.block_size {
+        if self.cur_block_offset >= block_index.logic_block_size {
             // 通过 block_indexs 找下一个块的 block_id
             if let Some(cur_pos) = self
                 .blocks
@@ -1649,8 +2022,9 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
                 if let Some(next_bi) = self.blocks.block_indexs.get(cur_pos + 1) {
                     self.cur_block_id = next_bi.block_id;
                     self.cur_block_line_index = 0;
-                    self.cur_block_offset =
-                        self.cur_block_offset.saturating_sub(block_index.block_size);
+                    self.cur_block_offset = self
+                        .cur_block_offset
+                        .saturating_sub(block_index.logic_block_size);
                 }
             }
         }
@@ -1696,7 +2070,7 @@ mod tests {
             .iter()
             .find(|bi| bi.block_id == block_id)
             .expect("block index not found");
-        let mut buf = vec![0u8; bi.block_size];
+        let mut buf = vec![0u8; bi.logic_block_size];
         gbt.reader
             .seek(SeekFrom::Start(bi.source_file_start as u64))
             .expect("seek block");
@@ -1781,8 +2155,8 @@ mod tests {
             .map(|bi| {
                 (
                     bi.block_id,
-                    bi.file_start,
-                    bi.block_size,
+                    bi.logic_file_start,
+                    bi.logic_block_size,
                     bi.line_count,
                     bi.lines_index
                         .iter()
@@ -1818,16 +2192,15 @@ mod tests {
             );
             assert_eq!(
                 line_count,
-                expected_lines.iter().filter(|(_, _, complete)| *complete).count(),
+                expected_lines
+                    .iter()
+                    .filter(|(_, _, complete)| *complete)
+                    .count(),
                 "{label}: block {block_id} line_count mismatch"
             );
         }
 
-        assert_eq!(
-            gbt.file_size,
-            expected.len(),
-            "{label}: file_size mismatch"
-        );
+        assert_eq!(gbt.file_size, expected.len(), "{label}: file_size mismatch");
         assert_block_storage_consistent(gbt);
     }
 
@@ -1917,7 +2290,7 @@ mod tests {
             .or_else(|| {
                 if abs_line_start == bytes.len() && !gbt.block_indexs.is_empty() {
                     let bi = gbt.block_indexs.last().unwrap();
-                    Some((bi.block_id, bi.block_size))
+                    Some((bi.block_id, bi.logic_block_size))
                 } else {
                     None
                 }
@@ -2191,7 +2564,7 @@ mod tests {
         let data = get_block_text(&mut gbt, 0);
         assert_eq!(String::from_utf8_lossy(&data), "a中bc\n");
         // 验证 block_size 增加了 3（中文 UTF-8 占 3 字节）
-        assert_eq!(gbt.block_indexs[0].block_size, 7);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, 7);
     }
 
     #[test]
@@ -2202,7 +2575,7 @@ mod tests {
         gbt.insert_char(0, 1, &state, '😀').unwrap();
         let data = get_block_text(&mut gbt, 0);
         assert_eq!(String::from_utf8_lossy(&data), "a😀b\n");
-        assert_eq!(gbt.block_indexs[0].block_size, 7); // 1+4+1+1
+        assert_eq!(gbt.block_indexs[0].logic_block_size, 7); // 1+4+1+1
     }
 
     #[test]
@@ -2334,10 +2707,10 @@ mod tests {
     #[test]
     fn test_short_backspace_block_size_update() {
         let mut gbt = create_gap_block_text("hello\n");
-        let orig = gbt.block_indexs[0].block_size;
+        let orig = gbt.block_indexs[0].logic_block_size;
         let state = default_line_state();
         gbt.backspace(0, 2, 1, &state).unwrap();
-        assert_eq!(gbt.block_indexs[0].block_size, orig - 1);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, orig - 1);
     }
 
     #[test]
@@ -2467,7 +2840,7 @@ mod tests {
         gbt.insert_bytes(0, 1, &state, b"123", false).unwrap();
         let bi = &gbt.block_indexs[0];
         assert_eq!(bi.lines_index.len(), 3); // 仍然 3 行
-        assert_eq!(bi.block_size, 12); // 原始 9 + 3
+        assert_eq!(bi.logic_block_size, 12); // 原始 9 + 3
     }
 
     #[test]
@@ -2672,8 +3045,9 @@ mod tests {
             assert_eq!(gbt.block_indexs[i].block_id, i);
             if i > 0 {
                 assert_eq!(
-                    gbt.block_indexs[i].file_start,
-                    gbt.block_indexs[i - 1].file_start + gbt.block_indexs[i - 1].block_size,
+                    gbt.block_indexs[i].logic_file_start,
+                    gbt.block_indexs[i - 1].logic_file_start
+                        + gbt.block_indexs[i - 1].logic_block_size,
                     "block {} 的 file_start 应等于前一个 block 的 file_end",
                     i
                 );
@@ -2686,7 +3060,7 @@ mod tests {
         let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
         let mut gbt = create_gap_block_text(&content);
         let state = default_line_state();
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         gbt.insert_char(0, 5, &state, 'Z').unwrap();
         let data = get_block_text(&mut gbt, 0);
         // 验证 block 0 的第一行头部
@@ -2696,7 +3070,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(first_line.starts_with("LINE-Z0000:"));
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 1);
     }
 
@@ -2723,10 +3097,10 @@ mod tests {
         let mut gbt = create_gap_block_text(&content);
         // 在 block 1 的第一行插入
         let first_line_offset = gbt.block_indexs[1].lines_index[0].block_start;
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         let state = make_line_state(1, 0, first_line_offset, 0);
         gbt.insert_char(0, 3, &state, 'Z').unwrap();
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 1);
     }
 
@@ -2735,9 +3109,9 @@ mod tests {
         let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
         let mut gbt = create_gap_block_text(&content);
         let state = default_line_state();
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         gbt.insert_bytes(0, 5, &state, b"ABCDE", false).unwrap();
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 5);
         assert_eq!(get_all_blocks_text(&mut gbt), {
             let mut expected = content.into_bytes();
@@ -2753,9 +3127,9 @@ mod tests {
         let bi1 = &gbt.block_indexs[1];
         let first_line_offset = bi1.lines_index[0].block_start;
         let state = make_line_state(1, 0, first_line_offset, 0);
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         gbt.insert_bytes(0, 2, &state, b"XY", false).unwrap();
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 2);
     }
 
@@ -2793,9 +3167,9 @@ mod tests {
         let content = generate_large_content(BLOCK_SIZE * 2 + 100, 80);
         let mut gbt = create_gap_block_text(&content);
         let state = default_line_state();
-        let orig_size = gbt.block_indexs[0].block_size;
+        let orig_size = gbt.block_indexs[0].logic_block_size;
         gbt.backspace(0, 5, 2, &state).unwrap();
-        assert_eq!(gbt.block_indexs[0].block_size, orig_size - 2);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, orig_size - 2);
     }
 
     #[test]
@@ -2804,10 +3178,10 @@ mod tests {
         let mut gbt = create_gap_block_text(&content);
         let bi1 = &gbt.block_indexs[1];
         let first_line_offset = bi1.lines_index[0].block_start;
-        let orig_size = bi1.block_size;
+        let orig_size = bi1.logic_block_size;
         let state = make_line_state(1, 0, first_line_offset, 0);
         gbt.backspace(0, 5, 1, &state).unwrap();
-        assert_eq!(gbt.block_indexs[1].block_size, orig_size - 1);
+        assert_eq!(gbt.block_indexs[1].logic_block_size, orig_size - 1);
     }
 
     #[test]
@@ -2833,7 +3207,7 @@ mod tests {
         let mut expected = content.clone();
         let mut gbt = create_gap_block_text_bytes(&content);
 
-        assert_eq!(gbt.block_indexs[0].block_size, BLOCK_SIZE);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, BLOCK_SIZE);
         let (delete_start, deleted) = backspace_at_abs(&mut gbt, &mut expected, BLOCK_SIZE, 1);
 
         assert_eq!(delete_start, BLOCK_SIZE - 1);
@@ -2946,10 +3320,10 @@ mod tests {
         let mut gbt = create_gap_block_text(&content);
         let last_idx = gbt.block_indexs[0].lines_index.len() - 1;
         let last_block_start = gbt.block_indexs[0].lines_index[last_idx].block_start;
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         let state = make_line_state(0, last_idx, last_block_start, 0);
         gbt.insert_char(0, 3, &state, 'Z').unwrap();
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 1);
     }
 
@@ -2974,9 +3348,9 @@ mod tests {
         let last_idx = bi.lines_index.len() - 1;
         let last_line = &bi.lines_index[last_idx];
         let state = make_line_state(0, last_idx, last_line.block_start, 0);
-        let orig_size = bi.block_size;
+        let orig_size = bi.logic_block_size;
         gbt.backspace(0, 5, 2, &state).unwrap();
-        assert_eq!(gbt.block_indexs[0].block_size, orig_size - 2);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, orig_size - 2);
     }
 
     #[test]
@@ -2984,11 +3358,11 @@ mod tests {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
         let state = default_line_state();
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         for i in 0..10 {
             gbt.insert_char(0, i, &state, 'A').unwrap();
         }
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 10);
     }
 
@@ -2997,11 +3371,11 @@ mod tests {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
         let state = default_line_state();
-        let orig_size = gbt.block_indexs[0].block_size;
+        let orig_size = gbt.block_indexs[0].logic_block_size;
         for _ in 0..5 {
             gbt.backspace(0, 10, 1, &state).unwrap();
         }
-        assert_eq!(gbt.block_indexs[0].block_size, orig_size - 5);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, orig_size - 5);
     }
 
     #[test]
@@ -3121,7 +3495,7 @@ mod tests {
             gbt.block_indexs.len()
         );
         // 所有 block 的 block_size 之和应等于 file_size
-        let total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(total, content.len());
     }
 
@@ -3131,14 +3505,14 @@ mod tests {
         let mut gbt = create_gap_block_text(&content);
         let state = default_line_state();
         let payload = vec![b'X'; 200];
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         gbt.insert_bytes(0, 5, &state, &payload, false).unwrap();
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 200);
         assert!(gbt
             .block_indexs
             .iter()
-            .all(|bi| bi.block_size <= BLOCK_SIZE));
+            .all(|bi| bi.logic_block_size <= BLOCK_SIZE));
     }
 
     #[test]
@@ -3194,7 +3568,7 @@ mod tests {
         // 文件大小恰好是 BLOCK_SIZE 的倍数
         let content = generate_padded_content(BLOCK_SIZE * 2);
         let gbt = create_gap_block_text(&content);
-        let total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(total, BLOCK_SIZE * 2);
     }
 
@@ -3203,10 +3577,10 @@ mod tests {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
         let first_line_offset = gbt.block_indexs[1].lines_index[0].block_start;
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         let state = make_line_state(1, 0, first_line_offset, 0);
         gbt.insert_char(0, 3, &state, '中').unwrap(); // 3 字节
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total + 3);
     }
 
@@ -3269,13 +3643,13 @@ mod tests {
     fn test_split_block_size_sum() {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
-        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let orig_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
 
         gbt.split_block(0).unwrap();
 
-        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.block_size).sum();
+        let new_total: usize = gbt.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
         assert_eq!(new_total, orig_total);
-        assert!(gbt.block_indexs.iter().all(|bi| bi.block_size > 0));
+        assert!(gbt.block_indexs.iter().all(|bi| bi.logic_block_size > 0));
     }
 
     /// 分裂点在原块 25%～75% 范围内（接近中点）
@@ -3283,19 +3657,19 @@ mod tests {
     fn test_split_block_near_midpoint() {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
-        let orig_size = gbt.block_indexs[0].block_size;
+        let orig_size = gbt.block_indexs[0].logic_block_size;
 
         gbt.split_block(0).unwrap();
 
         assert!(gbt
             .block_indexs
             .iter()
-            .all(|bi| bi.block_size <= BLOCK_SIZE));
-        assert!(gbt.block_indexs[0].block_size > 0);
+            .all(|bi| bi.logic_block_size <= BLOCK_SIZE));
+        assert!(gbt.block_indexs[0].logic_block_size > 0);
         assert_eq!(
             gbt.block_indexs
                 .iter()
-                .map(|bi| bi.block_size)
+                .map(|bi| bi.logic_block_size)
                 .sum::<usize>(),
             content.len()
         );
@@ -3324,13 +3698,13 @@ mod tests {
     fn test_split_block_file_start_continuity() {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
         let mut gbt = create_gap_block_text(&content);
-        let orig_file_start = gbt.block_indexs[0].file_start;
+        let orig_file_start = gbt.block_indexs[0].logic_file_start;
 
         gbt.split_block(0).unwrap();
 
-        let size_a = gbt.block_indexs[0].block_size;
+        let size_a = gbt.block_indexs[0].logic_block_size;
         assert_eq!(
-            gbt.block_indexs[1].file_start,
+            gbt.block_indexs[1].logic_file_start,
             orig_file_start + size_a,
             "B 的 file_start 应紧跟 A"
         );
@@ -3356,8 +3730,8 @@ mod tests {
         let content = generate_padded_content(BLOCK_SIZE * 3 + 100);
         let mut gbt = create_gap_block_text(&content);
         let b0_id = gbt.block_indexs[0].block_id;
-        let b0_size = gbt.block_indexs[0].block_size;
-        let b0_file_start = gbt.block_indexs[0].file_start;
+        let b0_size = gbt.block_indexs[0].logic_block_size;
+        let b0_file_start = gbt.block_indexs[0].logic_file_start;
         let b0_line_count = gbt.block_indexs[0].line_count;
         let b1_id = gbt.block_indexs[1].block_id; // = 1
         let b2_id = gbt.block_indexs[2].block_id; // = 2
@@ -3366,8 +3740,8 @@ mod tests {
 
         // block 0 完全不受影响
         assert_eq!(gbt.block_indexs[0].block_id, b0_id);
-        assert_eq!(gbt.block_indexs[0].block_size, b0_size);
-        assert_eq!(gbt.block_indexs[0].file_start, b0_file_start);
+        assert_eq!(gbt.block_indexs[0].logic_block_size, b0_size);
+        assert_eq!(gbt.block_indexs[0].logic_file_start, b0_file_start);
         assert_eq!(gbt.block_indexs[0].line_count, b0_line_count);
         // 分裂结果在 [1] 和 [2]：A 保持 block_id=b1_id，B 获得新 id
         assert_eq!(gbt.block_indexs[1].block_id, b1_id, "A 的 block_id 保持");
@@ -3385,7 +3759,7 @@ mod tests {
 
         gbt.split_block(0).unwrap();
 
-        let size_a = gbt.block_indexs[0].block_size;
+        let size_a = gbt.block_indexs[0].logic_block_size;
         for l in &gbt.block_indexs[0].lines_index {
             assert!(
                 l.block_end <= size_a,
@@ -3394,7 +3768,7 @@ mod tests {
                 size_a
             );
         }
-        let size_b = gbt.block_indexs[1].block_size;
+        let size_b = gbt.block_indexs[1].logic_block_size;
         for l in &gbt.block_indexs[1].lines_index {
             assert!(
                 l.block_end <= size_b,
@@ -3465,7 +3839,7 @@ mod tests {
         assert!(
             gbt.block_indexs
                 .iter()
-                .all(|idx| idx.block_size <= BLOCK_SIZE),
+                .all(|idx| idx.logic_block_size <= BLOCK_SIZE),
             "连续切分后所有块大小都应不超过 BLOCK_SIZE"
         );
     }
@@ -3477,7 +3851,7 @@ mod tests {
         let mut expected = original.clone();
         let mut gbt = create_gap_block_text(&content);
 
-        let delete_end = gbt.block_indexs[0].block_size + 10;
+        let delete_end = gbt.block_indexs[0].logic_block_size + 10;
         let delete_start = delete_end - 20;
 
         let (_, deleted) = backspace_at_abs(&mut gbt, &mut expected, delete_end, 20);
@@ -3626,13 +4000,13 @@ mod tests {
 
         // 手动向 cache 插入一个 block_id=2 的块（模拟已修改并被驱逐的 block）
         let fake_block_id: BlockId = 2;
-        let fake_file_start = gbt.block_indexs[2].file_start;
+        let fake_file_start = gbt.block_indexs[2].source_file_start;
         gbt.cache.insert(
             fake_block_id,
             Block {
                 data: GapBuffer::from_bytes(b"fake\n", CHAR_GAP_SIZE),
-                file_start: fake_file_start,
-                file_end: fake_file_start + 5,
+                source_file_start: fake_file_start,
+                source_file_end: fake_file_start + 5,
                 block_id: fake_block_id,
                 is_modified: true,
             },
@@ -3656,13 +4030,13 @@ mod tests {
 
         // 插入一个 block_id=1 的缓存块
         let fake_block_id: BlockId = 1;
-        let fake_file_start = gbt.block_indexs[1].file_start;
+        let fake_file_start = gbt.block_indexs[1].source_file_start;
         gbt.cache.insert(
             fake_block_id,
             Block {
                 data: GapBuffer::from_bytes(b"old\n", CHAR_GAP_SIZE),
-                file_start: fake_file_start,
-                file_end: fake_file_start + 4,
+                source_file_start: fake_file_start,
+                source_file_end: fake_file_start + 4,
                 block_id: fake_block_id,
                 is_modified: true,
             },
@@ -4570,6 +4944,129 @@ mod tests {
             &mut gbt,
             &expected,
             "mixed anchor sequence must preserve bytes and metadata after backspace",
+        );
+    }
+
+    #[test]
+    fn test_gap_block_scoll_text_iter_iterates_all_lines() {
+        let expected_content = generate_large_content(BLOCK_SIZE * 3 + 123, 80).into_bytes();
+        let mut gbt = create_gap_block_text_bytes(&expected_content);
+        let expected_ranges = collect_line_ranges(&expected_content);
+        let expected_states: Vec<LineState> = expected_ranges
+            .iter()
+            .enumerate()
+            .map(|(line_idx, (start, _))| {
+                make_line_state_for_abs_line_start(&gbt, &expected_content, line_idx + 1, *start)
+            })
+            .collect();
+
+        let first_block_id = gbt.block_indexs.first().expect("no blocks").block_id;
+        let mut iter = GapBlockScollTextIter::new(&mut gbt, first_block_id, 0, 0, 0)
+            .expect("failed to create iterator");
+
+        let mut line_idx = 0;
+        while let Some((line_block_str, line_state)) = iter.next() {
+            assert!(
+                line_idx < expected_ranges.len(),
+                "iterator produced more lines than expected (got line {})",
+                line_idx
+            );
+
+            let actual = line_block_str.to_bytes();
+            let (start, end) = expected_ranges[line_idx];
+            let expected = &expected_content[start..end];
+            assert_eq!(
+                &actual, expected,
+                "line {} mismatch: actual={:?}, expected={:?}",
+                line_idx, actual, expected,
+            );
+
+            let expected_state = &expected_states[line_idx];
+            assert_eq!(
+                line_state.get_block_num(),
+                expected_state.get_block_num(),
+                "line {} block_num mismatch",
+                line_idx
+            );
+            assert_eq!(
+                line_state.get_block_line_index(),
+                expected_state.get_block_line_index(),
+                "line {} block_line_index mismatch",
+                line_idx
+            );
+            assert_eq!(
+                line_state.get_block_offset(),
+                expected_state.get_block_offset(),
+                "line {} block_offset mismatch",
+                line_idx
+            );
+            assert_eq!(
+                line_state.get_line_index(),
+                expected_state.get_line_index(),
+                "line {} line_index mismatch",
+                line_idx
+            );
+
+            line_idx += 1;
+        }
+
+        assert_eq!(
+            line_idx,
+            expected_ranges.len(),
+            "iterator produced {} lines, expected {}",
+            line_idx,
+            expected_ranges.len()
+        );
+    }
+
+    #[test]
+    fn test_find_returns_matching_line_states() {
+        let content = b"alpha\nbeta needle\nneedle gamma\nomega\n".to_vec();
+        let mut gbt = create_gap_block_text_bytes(&content);
+        let start_state = make_line_state_for_abs_line_start(&gbt, &content, 1, 0);
+
+        let matches = gbt
+            .find(&start_state, b"needle")
+            .expect("find should succeed")
+            .expect("find should return matching lines");
+
+        assert_eq!(matches.len(), 2, "should find two matching lines");
+
+        let expected_second = make_line_state_for_abs_line_start(&gbt, &content, 2, 6);
+        let expected_third = make_line_state_for_abs_line_start(&gbt, &content, 3, 18);
+
+        assert_eq!(matches[0].get_line_index(), expected_second.get_line_index());
+        assert_eq!(matches[0].get_line_num(), expected_second.get_line_num());
+        assert_eq!(matches[0].get_block_num(), expected_second.get_block_num());
+        assert_eq!(
+            matches[0].get_block_line_index(),
+            expected_second.get_block_line_index()
+        );
+        assert_eq!(matches[0].get_block_offset(), expected_second.get_block_offset());
+        assert_eq!(
+            matches[0].get_line_file_start(),
+            expected_second.get_line_file_start()
+        );
+        assert_eq!(
+            matches[0].get_line_file_end(),
+            expected_second.get_line_file_end()
+        );
+
+        assert_eq!(matches[1].get_line_index(), expected_third.get_line_index());
+        assert_eq!(matches[1].get_line_num(), expected_third.get_line_num());
+        assert_eq!(matches[1].get_block_num(), expected_third.get_block_num());
+        assert_eq!(
+            matches[1].get_block_line_index(),
+            expected_third.get_block_line_index()
+        );
+        assert_eq!(matches[1].get_block_offset(), expected_third.get_block_offset());
+        assert_eq!(
+            matches[1].get_line_file_start(),
+            expected_third.get_line_file_start()
+        );
+        assert_eq!(
+            matches[1].get_line_file_end(),
+            expected_third.get_line_file_end()
         );
     }
 }

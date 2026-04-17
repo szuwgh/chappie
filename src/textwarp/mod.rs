@@ -7,10 +7,13 @@ use crate::common::error::ChapResult;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::gap_buffer::GapBytes;
 use crate::common::gap_buffer::GapBytesBlockCharIter;
+use crate::common::gap_buffer::GapBytesBlockU8Iter;
 use crate::common::gap_buffer::GapBytesCharIter;
+use crate::common::gap_buffer::GapBytesIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
 use crate::fuzzy::boyermoore::BoyerMoore;
+use crate::fuzzy::FuzzySearch;
 use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
@@ -21,6 +24,7 @@ use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::fs;
+use std::iter;
 use std::ops::Bound;
 use std::path::Path;
 use std::path::PathBuf;
@@ -415,6 +419,23 @@ impl CacheStr {
     }
 }
 
+enum LineDataU8Iter<'a> {
+    U8Iter(std::slice::Iter<'a, u8>),
+    GapU8Iter(GapBytesIter<'a>),
+    GapBlockU8Iter(GapBytesBlockU8Iter<'a>),
+}
+
+impl Iterator for LineDataU8Iter<'_> {
+    type Item = u8;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            LineDataU8Iter::U8Iter(iter) => iter.next().copied(),
+            LineDataU8Iter::GapU8Iter(iter) => iter.next(),
+            LineDataU8Iter::GapBlockU8Iter(iter) => iter.next(),
+        }
+    }
+}
+
 enum LineDataCharIter<'a> {
     CharIter(Utf8CharIndices<'a>),
     GapCharIter(GapBytesCharIter<'a>),
@@ -745,6 +766,10 @@ impl<'a> Line<'a> for LineStr<'a> {
         self.data.as_ref()
     }
 
+    fn iter_u8(&self) -> impl Iterator<Item = u8> {
+        iter::empty()
+    }
+
     // fn char_indices(&self) -> LineDataCharIter {
     //     self.data.char_indices()
     // }
@@ -802,6 +827,26 @@ impl<'a> BlockLineData<'a> {
 //一行数据 这行数据可能是在两个块中
 pub(crate) struct LineBlockStr<'a>(Option<BlockLineData<'a>>, Option<BlockLineData<'a>>);
 
+pub struct LineBlockStrU8Iter<'a> {
+    block1_iter: Option<LineDataU8Iter<'a>>,
+    block2_iter: Option<LineDataU8Iter<'a>>,
+}
+
+impl Iterator for LineBlockStrU8Iter<'_> {
+    type Item = u8;
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(iter) = &mut self.block1_iter {
+            if let Some(byte) = iter.next() {
+                return Some(byte);
+            }
+        }
+        if let Some(iter) = &mut self.block2_iter {
+            return iter.next();
+        }
+        None
+    }
+}
+
 impl Display for LineBlockStr<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(b1) = &self.0 {
@@ -851,7 +896,30 @@ impl<'a> LineBlockStr<'a> {
             .data
             .len()
     }
+
+    /// 提取行的原始字节（用于测试）
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut result = Vec::new();
+        if let Some(b1) = &self.0 {
+            let slices = b1.data.as_slice();
+            for i in 0..slices.length {
+                result.extend_from_slice(slices.data[i]);
+            }
+        }
+        if let Some(b2) = &self.1 {
+            let slices = b2.data.as_slice();
+            for i in 0..slices.length {
+                result.extend_from_slice(slices.data[i]);
+            }
+        }
+        result
+    }
 }
+
+// struct LineBlockStrCharIter<'a> {
+//     block1_iter: Option<GapBytesCharIter<'a>>,
+//     block2_iter: Option<GapBytesCharIter<'a>>,
+// }
 
 impl<'a> Line<'a> for LineBlockStr<'a> {
     fn text_len(&self) -> usize {
@@ -994,6 +1062,31 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
 
         LineData::GapBlockBytes(v1, v2)
     }
+
+    fn iter_u8(&self) -> impl Iterator<Item = u8> {
+        LineBlockStrU8Iter {
+            block1_iter: self.0.as_ref().and_then(|b| match &b.data {
+                LineData::GapBytes(v) => Some(LineDataU8Iter::GapU8Iter(v.iter())),
+                LineData::GapBlockBytes(v1, v2) => {
+                    Some(LineDataU8Iter::GapBlockU8Iter(GapBytesBlockU8Iter {
+                        left: v1.iter(),
+                        right: v2.iter(),
+                    }))
+                }
+                _ => None,
+            }),
+            block2_iter: self.1.as_ref().and_then(|b| match &b.data {
+                LineData::GapBytes(v) => Some(LineDataU8Iter::GapU8Iter(v.iter())),
+                LineData::GapBlockBytes(v1, v2) => {
+                    Some(LineDataU8Iter::GapBlockU8Iter(GapBytesBlockU8Iter {
+                        left: v1.iter(),
+                        right: v2.iter(),
+                    }))
+                }
+                _ => None,
+            }),
+        }
+    }
 }
 
 pub(crate) trait TextOper {
@@ -1061,6 +1154,8 @@ pub(crate) trait TextOper {
 
     fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize>;
 
+    fn search(&self, pattern: &[u8], line_state: &LineState) -> Option<LineState>;
+
     fn get_file_size(&self) -> usize;
 }
 
@@ -1073,15 +1168,16 @@ pub(crate) trait Line<'a>: Display {
     fn get_block_line_index(&self) -> usize;
     fn get_block_offset(&self) -> usize;
     fn get_data(&self) -> LineData<'a>;
+    fn iter_u8(&self) -> impl Iterator<Item = u8>;
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct LineState {
     pub(crate) char_with: usize,
-    pub(crate) txt_len: usize,          //文本长度
-    pub(crate) char_len: usize,         //char字符大小
-    pub(crate) page_num: usize,         //所在页数 从1开始
-    pub(crate) block_num: usize,        //块的编号
+    pub(crate) txt_len: usize,                         //文本长度
+    pub(crate) char_len: usize,                        //char字符大小
+    pub(crate) page_num: usize,                        //所在页数 从1开始
+    pub(crate) block_num: usize,                       //块的编号
     pub(crate) block_line_index: usize, //块内行号 从0开始 这个代表一行一行数据 用 '\n' 分隔的行号
     pub(crate) block_offset: usize,     //行在块的偏移
     pub(crate) line_num: usize,         //行数 从1开始  这个代表实际行号 不是索引 代表视觉上的行号
@@ -1091,6 +1187,7 @@ pub(crate) struct LineState {
     pub(crate) line_file_end: usize,    //行在文件结束的位置
     pub(crate) start_line_num: usize,   //开始的行数
     pub(crate) start_page_num: usize,   //这一行在第几页开始
+    pub(crate) highlight: Option<Vec<(usize, usize)>>, //高亮范围  有搜索的时候
 }
 
 impl LineState {
@@ -1224,6 +1321,7 @@ impl LineStateBuilder {
             line_file_end: self.line_file_end.unwrap_or(default.line_file_end),
             start_line_num: self.start_line_num.unwrap_or(default.start_line_num),
             start_page_num: self.start_page_num.unwrap_or(default.start_page_num),
+            highlight: None, // 高亮范围默认设置为 None
         }
     }
 }
@@ -1274,6 +1372,8 @@ pub(crate) trait Text {
         line_offset: usize,
         line_file_start: usize,
     ) -> impl Iterator<Item = u8>;
+
+    fn find(&mut self, state: &LineState, partten: &[u8]) -> ChapResult<Option<Vec<LineState>>>;
 }
 
 pub(crate) trait TextIndex {
@@ -1385,6 +1485,7 @@ impl LineState {
             line_file_end: line_file_end,
             start_line_num: 0,
             start_page_num: 0,
+            highlight: None,
         }
     }
 
@@ -1466,6 +1567,15 @@ impl TextOper for TextDisplay {
         match self {
             TextDisplay::Text(v) => v.find(pattern, line_file_start),
             TextDisplay::Hex(v) => v.find(pattern, line_file_start),
+            TextDisplay::Edit(v) => None,
+            TextDisplay::EditBlock(v) => None,
+        }
+    }
+
+    fn search(&self, pattern: &[u8], line_state: &LineState) -> Option<LineState> {
+        match self {
+            TextDisplay::Text(v) => None,
+            TextDisplay::Hex(v) => None,
             TextDisplay::Edit(v) => None,
             TextDisplay::EditBlock(v) => None,
         }
@@ -1635,6 +1745,7 @@ pub(crate) struct TextWarp<T: Text + TextIndex> {
     height: usize, //最大行数
     with: usize,
     text_warp_type: TextWarpType,
+    fuzzy: FuzzySearch,
 }
 
 impl<T: Text + TextIndex> TextWarp<T> {
@@ -1656,6 +1767,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
             height,
             with,
             text_warp_type: text_warp_type,
+            fuzzy: FuzzySearch::new(),
         }
     }
 
@@ -1905,7 +2017,24 @@ impl<T: Text + TextIndex> TextWarp<T> {
         &self,
         line_num: usize,
     ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
-        self.get_line_content(line_num, self.height)
+        assert!(line_num >= 1);
+
+        let page_offset = self.borrow_lines().get_page_offset(line_num);
+        assert!(line_num >= page_offset.start_line_num);
+        //跳过的行数
+        let skip_line = line_num;
+        self.get_line_content(&page_offset, skip_line, self.height)
+    }
+
+    pub(crate) fn get_one_page_from_line_state(
+        &self,
+        line_state: &LineState,
+    ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
+        // assert!(line_state.line_num >= 1);
+
+        //跳过的行数
+        let skip_line = 0; //line_state.line_num;
+        self.get_line_content(line_state, skip_line, self.height)
     }
 
     pub(crate) fn get_current_page(&self) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
@@ -1919,32 +2048,25 @@ impl<T: Text + TextIndex> TextWarp<T> {
     // 从第n行开始获取内容
     pub(crate) fn get_line_content(
         &self,
-        line_num: usize,
+        line_state: &LineState,
+        skip_line: usize,
         line_count: usize,
     ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
         self.borrow_cache_lines_mut().clear();
         self.borrow_cache_line_meta_mut().clear();
 
-        self.get_text_from_line_num(line_num, line_count, |txt, meta| {
-            self.borrow_cache_lines_mut().push(CacheStr::from_data(txt));
-            self.borrow_cache_line_meta_mut().push(meta);
-        });
+        self.get_char_text_fn(
+            line_state,
+            line_count,
+            skip_line,
+            false,
+            &mut |txt, meta| {
+                self.borrow_cache_lines_mut().push(CacheStr::from_data(txt));
+                self.borrow_cache_line_meta_mut().push(meta);
+            },
+        );
 
         Ok((self.borrow_cache_lines(), self.borrow_cache_line_meta()))
-    }
-
-    pub(crate) fn get_line_content_with_count(
-        &self,
-        line_num: usize,
-        line_count: usize,
-    ) -> (Vec<CacheStr>, Vec<LineState>) {
-        let mut lines = Vec::new();
-        let mut lines_meta = Vec::new();
-        self.get_text_from_line_num(line_num, line_count, |txt, meta| {
-            lines.push(CacheStr::from_data(txt));
-            lines_meta.push(meta);
-        });
-        (lines, lines_meta)
     }
 
     fn get_text_from_line_num<'a, F>(&'a self, line_num: usize, line_count: usize, mut f: F)
@@ -2836,5 +2958,22 @@ impl CacheStr {
     /// 从 Vec<u8> 构造 CacheStr，仅用于测试
     pub(crate) fn from_vec_for_test(data: Vec<u8>) -> Self {
         CacheStr::Vec(VecCache::from_vec(data))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_line_block_str_u8_iter_yields_block1_then_block2_bytes() {
+        let mut iter = LineBlockStrU8Iter {
+            block1_iter: Some(LineDataU8Iter::U8Iter(b"ab".iter())),
+            block2_iter: Some(LineDataU8Iter::U8Iter(b"cd".iter())),
+        };
+
+        let collected: Vec<u8> = iter.by_ref().collect();
+        assert_eq!(collected, b"abcd");
+        assert_eq!(iter.next(), None);
     }
 }

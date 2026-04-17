@@ -10,9 +10,8 @@ const MINDIMS: usize = 512;
 pub(crate) struct SmithWaterman<'a> {
     cache: &'a mut [i16],
     n: usize,
-    pattern_chars: Vec<char>,
-    text_chars: Vec<char>,
-    byte_offsets: Vec<usize>,
+    pattern_bytes: Vec<u8>,
+    text_bytes: Vec<u8>,
     pos: Vec<(usize, usize)>,
 }
 
@@ -21,9 +20,8 @@ impl<'a> SmithWaterman<'a> {
         SmithWaterman {
             cache,
             n: 0,
-            pattern_chars: Vec::new(),
-            text_chars: Vec::new(),
-            byte_offsets: Vec::new(),
+            pattern_bytes: Vec::new(),
+            text_bytes: Vec::new(),
             pos: Vec::new(),
         }
     }
@@ -37,22 +35,19 @@ pub(crate) struct Match {
 }
 
 impl<'a> SmithWaterman<'a> {
-    pub(crate) fn find(&mut self, pattern: &str, text: &str) -> Vec<Match> {
+    pub(crate) fn find(&mut self, pattern: &[u8], text: &[u8]) -> Vec<Match> {
         // Opt-3: clear 复用，不重新分配
-        self.pattern_chars.clear();
-        self.pattern_chars.extend(pattern.chars());
-        self.text_chars.clear();
-        self.text_chars.extend(text.chars());
-        let len1 = self.pattern_chars.len();
-        let len2 = self.text_chars.len();
+        self.pattern_bytes.clear();
+        self.pattern_bytes.extend_from_slice(pattern);
+        self.text_bytes.clear();
+        self.text_bytes.extend_from_slice(text);
+        let len1 = self.pattern_bytes.len();
+        let len2 = self.text_bytes.len();
 
         let m = (len1 + 1) * (len2 + 1);
         if m > MAXDIMS {
             panic!("Cannot be larger than the maximum dimension 9182");
         }
-
-        self.byte_offsets.clear();
-        self.byte_offsets.extend(text.char_indices().map(|(i, _)| i));
 
         let col = len2 + 1;
         let alloc = &mut self.cache[..m];
@@ -60,24 +55,28 @@ impl<'a> SmithWaterman<'a> {
 
         let mut max_score = 0i16;
         self.pos.clear();
-        let mut pattern_len = 0usize;
+        let pattern_len = len1;
 
-        for (i, &c1) in self.pattern_chars.iter().enumerate() {
+        for (i, &b1) in self.pattern_bytes.iter().enumerate() {
             // Opt-2: 行偏移提到外层循环，消除内层重复乘法
-            let row_i  = i * col;
+            let row_i = i * col;
             let row_i1 = row_i + col;
 
-            for (j, &c2) in self.text_chars.iter().enumerate() {
-                let score = if c1 == c2 { MATCH } else { MISMATCH };
+            for (j, &b2) in self.text_bytes.iter().enumerate() {
+                let score = if b1 == b2 { MATCH } else { MISMATCH };
                 // Opt-1+2: get_unchecked + 预算行偏移，消除 O(m×n) bounds check 与乘法
                 // SAFETY: row_i+j < (len1+1)*(len2+1) == alloc.len() 由上方 panic 保证
-                let (a, b, c) = unsafe {(
-                    *alloc.get_unchecked(row_i  + j),     // get(i,   j)
-                    *alloc.get_unchecked(row_i  + j + 1), // get(i,   j+1)
-                    *alloc.get_unchecked(row_i1 + j),     // get(i+1, j)
-                )};
+                let (a, b, c) = unsafe {
+                    (
+                        *alloc.get_unchecked(row_i + j),     // get(i,   j)
+                        *alloc.get_unchecked(row_i + j + 1), // get(i,   j+1)
+                        *alloc.get_unchecked(row_i1 + j),    // get(i+1, j)
+                    )
+                };
                 let cur_score = max(0, max(a + score, max(b + GAP, c + GAP)));
-                unsafe { *alloc.get_unchecked_mut(row_i1 + j + 1) = cur_score; }
+                unsafe {
+                    *alloc.get_unchecked_mut(row_i1 + j + 1) = cur_score;
+                }
 
                 if cur_score > max_score {
                     max_score = cur_score;
@@ -88,7 +87,6 @@ impl<'a> SmithWaterman<'a> {
                     self.pos.push((i + 1, j + 1));
                 }
             }
-            pattern_len += 1;
         }
 
         let mut matchs: Vec<Match> = Vec::new();
@@ -99,8 +97,10 @@ impl<'a> SmithWaterman<'a> {
                 while i > 0 && j > 0 {
                     // SAFETY: i <= len1, j <= len2，均在 alloc 范围内
                     let cur = unsafe { *alloc.get_unchecked(i * col + j) };
-                    if cur == 0 { break; }
-                    let diag = if self.pattern_chars[i - 1] == self.text_chars[j - 1] {
+                    if cur == 0 {
+                        break;
+                    }
+                    let diag = if self.pattern_bytes[i - 1] == self.text_bytes[j - 1] {
                         MATCH
                     } else {
                         MISMATCH
@@ -119,9 +119,13 @@ impl<'a> SmithWaterman<'a> {
                     }
                 }
 
-                let start = self.byte_offsets.get(j).copied().unwrap_or(0);
-                let end = self.byte_offsets.get(max_j).copied().unwrap_or(text.len());
-                matchs.push(Match { score: max_score, start, end });
+                let start = j;
+                let end = max_j;
+                matchs.push(Match {
+                    score: max_score,
+                    start,
+                    end,
+                });
             }
         }
         matchs.sort_by(|a, b| a.start.cmp(&b.start));
@@ -131,8 +135,8 @@ impl<'a> SmithWaterman<'a> {
 
 #[cfg(test)]
 mod tests {
-    use core::str;
     use super::*;
+    use core::str;
 
     // ── ASCII exact ──────────────────────────────────────────────────────────
 
@@ -141,7 +145,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "say hello world";
-        let matches = sw.find("hello", text);
+        let matches = sw.find(b"hello", text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "hello");
         assert_eq!(matches[0].score, MATCH * 5);
@@ -152,7 +156,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "hello world";
-        let matches = sw.find("hello", text);
+        let matches = sw.find(b"hello", text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].start, 0);
         assert_eq!(&text[matches[0].start..matches[0].end], "hello");
@@ -163,7 +167,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "say hello";
-        let matches = sw.find("hello", text);
+        let matches = sw.find("hello".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].end, text.len());
         assert_eq!(&text[matches[0].start..matches[0].end], "hello");
@@ -174,7 +178,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "hello";
-        let matches = sw.find("hello", text);
+        let matches = sw.find("hello".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].start, 0);
         assert_eq!(matches[0].end, text.len());
@@ -188,7 +192,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         // "hxllo" vs "hello": 4 MATCH + 1 MISMATCH = 4*3 + 1*(-2) = 10
-        let matches = sw.find("hello", "hxllo");
+        let matches = sw.find("hello".as_bytes(), "hxllo".as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].score, 4 * MATCH + MISMATCH); // 10
         assert_eq!(&"hxllo"[matches[0].start..matches[0].end], "hxllo");
@@ -199,7 +203,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         // "hxxlo" vs "hello": 3*3 + 2*(-2) = 5, threshold = 10 → no match
-        let matches = sw.find("hello", "hxxlo");
+        let matches = sw.find("hello".as_bytes(), "hxxlo".as_bytes());
         assert_eq!(matches.len(), 0);
     }
 
@@ -207,7 +211,7 @@ mod tests {
     fn test_no_match_completely_different() {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
-        let matches = sw.find("zzzzz", "abcdefgh");
+        let matches = sw.find("zzzzz".as_bytes(), "abcdefgh".as_bytes());
         assert_eq!(matches.len(), 0);
     }
 
@@ -218,10 +222,10 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "abc hello xyz";
-        let matches = sw.find("hello", text);
+        let matches = sw.find("hello".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].start, 4); // "abc " = 4 bytes
-        assert_eq!(matches[0].end, 9);   // "abc hello" = 9 bytes
+        assert_eq!(matches[0].end, 9); // "abc hello" = 9 bytes
         assert_eq!(&text[matches[0].start..matches[0].end], "hello");
     }
 
@@ -231,7 +235,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         // "中" = 3 bytes, "文" = 3 bytes → "中文" = 6 bytes before "hello"
         let text = "中文hello";
-        let matches = sw.find("hello", text);
+        let matches = sw.find("hello".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].start, 6);
         assert_eq!(&text[matches[0].start..matches[0].end], "hello");
@@ -242,7 +246,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "abc端口def";
-        let matches = sw.find("端口", text);
+        let matches = sw.find("端口".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].start, 3); // "abc" = 3 bytes
         assert_eq!(&text[matches[0].start..matches[0].end], "端口");
@@ -255,7 +259,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "检查端口是否启动的函数";
-        let matches = sw.find("端口", text);
+        let matches = sw.find("端口".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "端口");
     }
@@ -265,7 +269,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "こんにちは世界";
-        let matches = sw.find("にちは", text);
+        let matches = sw.find("にちは".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "にちは");
     }
@@ -275,7 +279,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "안녕하세요 세계";
-        let matches = sw.find("하세요", text);
+        let matches = sw.find("하세요".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "하세요");
     }
@@ -286,7 +290,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "السلام عليكم";
         // "لسلام" is a substring starting at char index 1
-        let matches = sw.find("لسلام", text);
+        let matches = sw.find("لسلام".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "لسلام");
     }
@@ -296,9 +300,10 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "端口";
-        let matches = sw.find("端口", text);
+        let pattern = "端口";
+        let matches = sw.find(pattern.as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].score, MATCH * 2); // 6
+        assert_eq!(matches[0].score, MATCH * pattern.len() as i16); // byte-length scoring
     }
 
     // ── numbers and special characters ──────────────────────────────────────
@@ -308,7 +313,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "abc12345def";
-        let matches = sw.find("12345", text);
+        let matches = sw.find("12345".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "12345");
     }
@@ -319,7 +324,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         // "12x45" vs "12345": 4 match + 1 mismatch = 10, threshold = 10
         let text = "abc12345def";
-        let matches = sw.find("12x45", text);
+        let matches = sw.find("12x45".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "12345");
     }
@@ -332,7 +337,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         // uppercase "HELLO" should not match lowercase "hello" pattern
         // All 5 chars mismatch: score = 5*(-2) = -10, clamped to 0
-        let matches = sw.find("hello", "HELLO WORLD");
+        let matches = sw.find("hello".as_bytes(), "HELLO WORLD".as_bytes());
         assert_eq!(matches.len(), 0);
     }
 
@@ -343,7 +348,7 @@ mod tests {
         // Pattern "hello" vs text containing "Hello": H≠h is clamped to 0 in local alignment,
         // so the alignment starts from 'e'. Score = 4*3 = 12, threshold = 10. Match is "ello".
         let text = "say Hello";
-        let matches = sw.find("hello", text);
+        let matches = sw.find("hello".as_bytes(), text.as_bytes());
         assert_eq!(matches.len(), 1);
         assert_eq!(&text[matches[0].start..matches[0].end], "ello");
     }
@@ -355,7 +360,7 @@ mod tests {
         let mut cache = vec![0i16; MAXDIMS];
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "hello world hello";
-        let matches = sw.find("hello", text);
+        let matches = sw.find("hello".as_bytes(), text.as_bytes());
         assert!(!matches.is_empty());
         for i in 1..matches.len() {
             assert!(matches[i].start >= matches[i - 1].start);
@@ -370,13 +375,13 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
 
         let text = "say hello world";
-        let m1 = sw.find("hello", text);
+        let m1 = sw.find("hello".as_bytes(), text.as_bytes());
         assert_eq!(&text[m1[0].start..m1[0].end], "hello");
 
-        let m2 = sw.find("world", text);
+        let m2 = sw.find("world".as_bytes(), text.as_bytes());
         assert_eq!(&text[m2[0].start..m2[0].end], "world");
 
-        let m3 = sw.find("say", text);
+        let m3 = sw.find("say".as_bytes(), text.as_bytes());
         assert_eq!(&text[m3[0].start..m3[0].end], "say");
     }
 
@@ -388,7 +393,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "如果你想从一个字符串中跳过前几个字，并从之后的位跳当前几个字";
         let pattern = "跳去前几行字";
-        let matches = sw.find(pattern, text);
+        let matches = sw.find(pattern.as_bytes(), text.as_bytes());
         // Verify all returned slices are valid UTF-8 (no panic on indexing)
         for m in &matches {
             let slice = &text[m.start..m.end];
@@ -410,13 +415,14 @@ mod tests {
             "RustUxample",
         ];
         for pattern in patterns {
-            let matches = sw.find(pattern, text);
+            let matches = sw.find(pattern.as_bytes(), text.as_bytes());
             for m in &matches {
                 let slice = &text[m.start..m.end];
                 assert!(
                     std::str::from_utf8(slice.as_bytes()).is_ok(),
                     "pattern={pattern} produced invalid UTF-8 slice [{}, {}]",
-                    m.start, m.end
+                    m.start,
+                    m.end
                 );
             }
         }
@@ -430,7 +436,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads.";
         let pattern = "applications"; // not present → should be empty or fuzzy
-        let matches = sw.find(pattern, text);
+        let matches = sw.find(pattern.as_bytes(), text.as_bytes());
         // Just verify no panic; slices must be valid if any
         for m in &matches {
             let _ = &text[m.start..m.end];
@@ -443,7 +449,7 @@ mod tests {
         let mut sw = SmithWaterman::new(&mut cache);
         let text = "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads. Elasticsearch is the foundation of Elastics open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more.";
         let pattern = "apelicetions";
-        let matches = sw.find(pattern, text);
+        let matches = sw.find(pattern.as_bytes(), text.as_bytes());
         for m in &matches {
             let slice = &text[m.start..m.end];
             assert!(std::str::from_utf8(slice.as_bytes()).is_ok());
@@ -460,7 +466,7 @@ mod tests {
         let text = "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads. Elasticsearch is the foundation of Elastics open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more.";
         let pattern = "applications";
 
-        let m = sw.find(pattern, text);
+        let m = sw.find(pattern.as_bytes(), text.as_bytes());
         for v in m.iter() {
             println!("{:?}", &text[v.start..v.end]);
         }
@@ -468,7 +474,7 @@ mod tests {
         let text = "Elasticsearch is a distributed search and analytics engine, scalable data store and vector database optimized for speed and relevance on production-scale workloads. Elasticsearch is the foundation of Elastics open Stack platform. Search in near real-time over massive datasets, perform vector searches, integrate with generative AI applications, and much more.";
         let pattern = "apelicetions";
 
-        let m = sw.find(pattern, text);
+        let m = sw.find(pattern.as_bytes(), text.as_bytes());
         for v in m.iter() {
             println!(
                 "{:?}",
@@ -478,7 +484,7 @@ mod tests {
 
         let text = "如果你想从一个字符串中跳过前几个字，并从之后的位跳当前几个字";
         let pattern = "跳去前几行字";
-        let m = sw.find(pattern, text);
+        let m = sw.find(pattern.as_bytes(), text.as_bytes());
         for v in m.iter() {
             println!(
                 "{:?}",
@@ -501,7 +507,7 @@ mod tests {
         ];
 
         for pattern in patterns {
-            let m = sw.find(pattern, text);
+            let m = sw.find(pattern.as_bytes(), text.as_bytes());
             for v in m.iter() {
                 println!(
                     "pattern:{},get:{:?}",
@@ -514,7 +520,7 @@ mod tests {
         let text = "hxllo，abc，htllo";
         let pattern = "hello";
 
-        let m = sw.find(pattern, text);
+        let m = sw.find(pattern.as_bytes(), text.as_bytes());
         for v in m.iter() {
             println!(
                 "{:?}",
@@ -531,7 +537,7 @@ mod tests {
         let text = "hello abc";
         let pattern = "hxlloo";
 
-        let m = sw.find(pattern, text);
+        let m = sw.find(pattern.as_bytes(), text.as_bytes());
         for v in m.iter() {
             println!(
                 "pattern:{},get:{:?}",
@@ -549,7 +555,7 @@ mod tests {
         let text = "检查端口是否启动的函数";
         let pattern = "端口";
 
-        let m = sw.find(pattern, text);
+        let m = sw.find(pattern.as_bytes(), text.as_bytes());
         for v in m.iter() {
             println!(
                 "pattern:{},get:{:?}",

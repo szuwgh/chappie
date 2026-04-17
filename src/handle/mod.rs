@@ -365,6 +365,7 @@ pub(crate) trait Handle {
             line_file_end: 0,
             start_line_num: 0,
             start_page_num: 0,
+            highlight: None,
         };
         match op.op_type {
             OpType::DeleteChar => {

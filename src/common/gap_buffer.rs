@@ -86,6 +86,13 @@ impl<'a> GapBytes<'a> {
         }
     }
 
+    // pub(crate) fn u8_iter(&self) -> GapBytesU8Iter<'_> {
+    //     GapBytesU8Iter {
+    //         left: self.left().iter(),
+    //         right: self.right().iter(),
+    //     }
+    // }
+
     pub(crate) fn to_vec(&self) -> Vec<u8> {
         let mut vec = Vec::with_capacity(self.len());
         vec.extend_from_slice(self.left());
@@ -98,6 +105,29 @@ impl<'a> GapBytes<'a> {
             left: self.left().char_indices(),
             right: self.right().char_indices(),
             left_bytes: self.left().len(),
+        }
+    }
+}
+
+pub(crate) struct GapBytesBlockU8Iter<'a> {
+    pub(crate) left: GapBytesIter<'a>,
+    pub(crate) right: GapBytesIter<'a>,
+}
+
+impl<'a> GapBytesBlockU8Iter<'a> {
+    pub(crate) fn new(left: GapBytesIter<'a>, right: GapBytesIter<'a>) -> Self {
+        Self { left, right }
+    }
+}
+
+impl Iterator for GapBytesBlockU8Iter<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(byte) = self.left.next() {
+            Some(byte)
+        } else {
+            self.right.next()
         }
     }
 }
@@ -145,6 +175,23 @@ impl DoubleEndedIterator for GapBytesBlockCharIter<'_> {
         }
     }
 }
+
+// pub(crate) struct GapBytesU8Iter<'a> {
+//     left: std::slice::Iter<'a, u8>,
+//     right: std::slice::Iter<'a, u8>,
+// }
+
+// impl<'a> Iterator for GapBytesU8Iter<'a> {
+//     type Item = u8;
+
+//     fn next(&mut self) -> Option<Self::Item> {
+//         if let Some(&byte) = self.left.next() {
+//             Some(byte)
+//         } else {
+//             self.right.next().copied()
+//         }
+//     }
+// }
 
 pub(crate) struct GapBytesCharIter<'a> {
     left: Utf8CharIndices<'a>,
@@ -453,8 +500,7 @@ mod tests {
     fn test_delete() {
         let mut gb = GapBuffer::new(10);
         gb.insert(0, "Hello".as_bytes());
-        println!("{}", gb.text(..));
-        gb.delete(6, 5);
-        println!("{}", gb.text(..));
+        gb.delete(5, 5);
+        assert_eq!(gb.text(..).to_string(), "");
     }
 }

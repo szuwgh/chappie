@@ -1,3 +1,4 @@
+use crate::chap;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
@@ -50,48 +51,6 @@ impl HandleEdit {
         chap_tui.bytes_cursor = bytes_cursor;
         chap_tui.bytes_cursor_size = last_char_bytes_size;
         Ok(())
-    }
-
-    fn refresh_cursor_metrics(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
-        let (content, meta) = td.get_current_page()?;
-        let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
-            content,
-            chap_tui.elem.tv.get_width(),
-            &meta,
-            0,
-            &None,
-            chap_tui.elem.tv.get_height(),
-            chap_tui.column_offset,
-            chap_tui.cursor_y,
-            chap_tui.cursor_x,
-        );
-        chap_tui.bytes_cursor = byte_cursor;
-        chap_tui.bytes_cursor_size = last_char_bytes_size;
-        Ok(())
-    }
-
-    fn prefix_display_width(
-        &self,
-        td: &TextDisplay,
-        row: usize,
-        cursor_x: usize,
-    ) -> ChapResult<usize> {
-        let (content, _) = td.get_current_page()?;
-        let Some(line) = content.get(row) else {
-            return Ok(0);
-        };
-        let mut width = 0usize;
-        let mut chars_seen = 0usize;
-        for part in line.text(0..).as_parts() {
-            for ch in (*part).chars() {
-                if chars_seen >= cursor_x {
-                    return Ok(width);
-                }
-                width += ch.width().unwrap_or(0);
-                chars_seen += 1;
-            }
-        }
-        Ok(width)
     }
 
     fn sync_cursor_to_abs_offset_on_current_page(
@@ -166,6 +125,14 @@ impl HandleEdit {
             chap_tui.is_last_line = false;
         }
         Ok(())
+    }
+
+    fn find_jump(
+        &self,
+        chap_tui: &mut ChapTui,
+        mut line_meta: &RingVec<LineState>,
+        td: &TextDisplay,
+    ) {
     }
 }
 
@@ -375,6 +342,9 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if chap_tui.in_command_mode() {
+            return Ok(());
+        }
         chap_tui.elem.cmd_inp.clear();
         let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
             return Ok(());
@@ -412,7 +382,11 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        chap_tui.elem.cmd_inp.clear();
+        if chap_tui.in_command_mode() {
+            chap_tui.elem.cmd_inp.pop();
+            return Ok(());
+        }
+        // chap_tui.elem.cmd_inp.clear();
         // let at_absolute_start =
         //     chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 && chap_tui.start_line_num <= 1;
         // if at_absolute_start {
@@ -461,6 +435,40 @@ impl Handle for HandleEdit {
         //     return Ok(());
         // };
         if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
+            if chap_tui.start_line_num <= 1 {
+                return Ok(());
+            }
+
+            chap_tui.start_line_num -= 1;
+            td.get_one_page(chap_tui.start_line_num)?;
+            let shifted_meta = td.get_current_line_meta()?;
+            let Some(cur_meta) = shifted_meta.get(1) else {
+                return Ok(());
+            };
+            let prev_line_char_len = shifted_meta
+                .get(0)
+                .map_or(0, |m| m.get_char_len().saturating_sub(1));
+
+            td.delete_newline(1, 0, cur_meta)?;
+            if let Some(undo) = &mut chap_tui.undo {
+                let abs_offset = cur_meta
+                    .get_block_offset()
+                    .saturating_add(cur_meta.get_line_offset())
+                    .saturating_sub(1);
+                undo.push(EditOp {
+                    op_type: OpType::DeleteNewline,
+                    cursor_y: 0,
+                    cursor_x: 0,
+                    block_id: cur_meta.get_block_num() as u32,
+                    line_index: chap_tui.start_line_num as u32,
+                    byte_offset: abs_offset as u32,
+                    data: vec![b'\n'],
+                })?;
+            }
+            td.get_one_page(chap_tui.start_line_num)?;
+            chap_tui.cursor_y = 0;
+            chap_tui.cursor_x = prev_line_char_len;
+            self.refresh_cursor_bytes_on_current_page(chap_tui, td)?;
             return Ok(());
         }
         let prev_line_char_len = if chap_tui.cursor_y == 0 {
@@ -574,6 +582,10 @@ impl Handle for HandleEdit {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
+        if chap_tui.in_command_mode() {
+            chap_tui.elem.cmd_inp.push(c);
+            return Ok(());
+        }
         chap_tui.elem.cmd_inp.clear();
         let mut buf = [0u8; 4];
         let s = c.encode_utf8(&mut buf);

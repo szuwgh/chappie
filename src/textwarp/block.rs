@@ -1,12 +1,17 @@
 use crate::textwarp::ChapResult;
 use crate::textwarp::GapBuffer;
 use crate::textwarp::GapBytes;
+use crate::textwarp::RingVec;
 use crate::ChapError;
 use crc::Crc;
 use crc::CRC_32_ISO_HDLC;
+use std::collections::HashMap;
+use std::fs::File;
 use std::io;
+use std::io::BufReader;
 use std::io::Seek;
 use std::io::SeekFrom;
+
 pub(crate) const CHAR_GAP_SIZE: usize = 64;
 pub(crate) const BLOCK_SIZE: usize = 4096;
 pub(crate) const BLOKK_NUM: usize = 8;
@@ -32,19 +37,24 @@ impl LineIndex {
 
 #[derive(Clone)]
 pub(crate) struct BlockIndex {
-    pub(crate) file_start: usize,        //块在文件开始位置
+    pub(crate) logic_file_start: usize,  //块在文件逻辑开始位置
     pub(crate) source_file_start: usize, //块在原始 backing file 中的位置
+    pub(crate) source_file_end: usize,   //原始块在文件结束位置 不能改变
     pub(crate) block_id: BlockId,        //块的稳定标识（分裂后不变）
     // start_line_index: usize,     //块内的起始行号在整个文件中
     pub(crate) line_count: usize,           //块内的行数
-    pub(crate) block_size: usize,           //块的大小
+    pub(crate) logic_block_size: usize,     //逻辑块的大小
     pub(crate) lines_index: Vec<LineIndex>, //块内的行索引
     pub(crate) check_sum: u32,              //保存的时候会更新 sum
 }
 
 impl BlockIndex {
     pub(crate) fn file_end(&self) -> usize {
-        self.file_start + self.block_size
+        self.logic_file_start + self.logic_block_size
+    }
+
+    pub(crate) fn source_file_end(&self) -> usize {
+        self.source_file_end
     }
 
     pub(crate) fn get_line_index(&self, block_offset: usize) -> Option<&LineIndex> {
@@ -59,6 +69,8 @@ impl BlockIndex {
     pub(crate) fn from_block_bytes(
         valid_data: &[u8],
         file_start: usize,
+        source_file_start: usize,
+        source_file_end: usize,
         block_id: BlockId,
         actual_len: usize,
         sum: u32,
@@ -93,12 +105,13 @@ impl BlockIndex {
         }
 
         Ok(BlockIndex {
-            file_start: file_start, //块在文件开始位置
-            source_file_start: file_start,
+            logic_file_start: file_start, //块在文件开始位置
+            source_file_start: source_file_start,
+            source_file_end: source_file_end,
             block_id: block_id,
-            line_count: line_count,   //块内的行数
-            block_size: actual_len,   //块的大小
-            lines_index: lines_index, //块内的行索引
+            line_count: line_count,       //块内的行数
+            logic_block_size: actual_len, //块的大小
+            lines_index: lines_index,     //块内的行索引
             check_sum: sum,
         })
     }
@@ -106,7 +119,9 @@ impl BlockIndex {
     pub(crate) fn from_gap_slices(
         left: &[u8],
         right: &[u8],
-        file_start: usize,
+        logic_file_start: usize,
+        source_file_start: usize,
+        source_file_end: usize,
         block_id: BlockId,
         actual_len: usize,
         sum: u32,
@@ -140,25 +155,55 @@ impl BlockIndex {
         }
 
         Ok(BlockIndex {
-            file_start,
-            source_file_start: file_start,
+            logic_file_start: logic_file_start,
+            source_file_start: source_file_start,
+            source_file_end: source_file_end,
             block_id,
             line_count,
-            block_size: actual_len,
+            logic_block_size: actual_len,
             lines_index,
             check_sum: sum,
         })
     }
 }
 
+pub(crate) enum BlockPtr<'a> {
+    Own(Block),
+    Borrowed(&'a Block),
+}
+
+impl<'a> BlockPtr<'a> {
+    pub(crate) fn from_block(block: &'a Block) -> Self {
+        BlockPtr::Borrowed(block)
+    }
+
+    pub(crate) fn from_block_owned(block: Block) -> Self {
+        BlockPtr::Own(block)
+    }
+
+    pub(crate) fn as_block(&self) -> &Block {
+        match self {
+            BlockPtr::Own(block) => block,
+            BlockPtr::Borrowed(block) => block,
+        }
+    }
+
+    pub(crate) fn as_block_mut(&mut self) -> &mut Block {
+        match self {
+            BlockPtr::Own(block) => block,
+            BlockPtr::Borrowed(_) => panic!("Cannot get mutable reference from borrowed block"),
+        }
+    }
+}
+
 #[derive(Clone)]
 //按块加载文件 每个块4KB大小
 pub(crate) struct Block {
-    pub(crate) data: GapBuffer,   //每一个块使用 GapBuffer 存储
-    pub(crate) file_start: usize, //块在文件开始位置
-    pub(crate) file_end: usize,   //块在文件结束位置
-    pub(crate) block_id: BlockId, //块的稳定标识（分裂后不变）
-    pub(crate) is_modified: bool, //块是否被修改
+    pub(crate) data: GapBuffer,          //每一个块使用 GapBuffer 存储
+    pub(crate) source_file_start: usize, //原始块在文件开始位置 不能改变
+    pub(crate) source_file_end: usize,   //原始块在文件结束位置 不能改变
+    pub(crate) block_id: BlockId,        //块的稳定标识（分裂后不变）
+    pub(crate) is_modified: bool,        //块是否被修改
 }
 
 impl Block {
@@ -177,16 +222,16 @@ impl Block {
         let start = match range.start_bound() {
             std::ops::Bound::Included(&start) => start,
             std::ops::Bound::Excluded(&start) => start + 1,
-            std::ops::Bound::Unbounded => self.file_start,
+            std::ops::Bound::Unbounded => self.source_file_start,
         };
         let end = match range.end_bound() {
             std::ops::Bound::Included(&end) => end, //包含
             std::ops::Bound::Excluded(&end) => end, //排除
-            std::ops::Bound::Unbounded => self.file_end,
+            std::ops::Bound::Unbounded => self.source_file_end,
         };
-        assert!(start <= end && start >= self.file_start && end >= self.file_start);
+        assert!(start <= end && start >= self.source_file_start && end >= self.source_file_start);
         self.data
-            .text((start - self.file_start)..(end - self.file_start))
+            .text((start - self.source_file_start)..(end - self.source_file_start))
     }
 
     pub(crate) fn as_continuous(&mut self) -> &[u8] {
@@ -228,8 +273,15 @@ impl Block {
             }
         }
         let block_index = if check_sum.is_none() {
-            let block_index =
-                BlockIndex::from_block_bytes(valid_data, file_start, block_id, actual_len, sum)?;
+            let block_index = BlockIndex::from_block_bytes(
+                valid_data,
+                file_start,
+                file_start,
+                file_start + actual_len,
+                block_id,
+                actual_len,
+                sum,
+            )?;
             Some(block_index)
         } else {
             None
@@ -237,8 +289,8 @@ impl Block {
 
         let block = Block {
             data: GapBuffer::from_bytes(valid_data, CHAR_GAP_SIZE),
-            file_start: file_start,
-            file_end: file_start + actual_len,
+            source_file_start: file_start,
+            source_file_end: file_start + actual_len,
             block_id: block_id,
             is_modified: false,
         };
@@ -273,4 +325,13 @@ impl Block {
 fn crc_checksum(data: &[u8]) -> u32 {
     let crc = Crc::<u32>::new(&CRC_32_ISO_HDLC);
     crc.checksum(data)
+}
+
+struct BlockManager {
+    reader: BufReader<File>,
+    blocks: RingVec<Block>,         // 每个块4KB大小（内存窗口）
+    cache: HashMap<BlockId, Block>, // 缓存已修改的块（key = stable block_id）
+    file_size: usize,               // 文件大小
+    block_indexs: Vec<BlockIndex>,  // 每一块的索引（Vec位置是位置索引，block_id是稳定标识）
+    next_id: BlockId,               // 下一个分配的 block_id
 }
