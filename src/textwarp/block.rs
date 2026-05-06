@@ -327,6 +327,7 @@ fn crc_checksum(data: &[u8]) -> u32 {
     crc.checksum(data)
 }
 
+//找机会重构
 struct BlockManager {
     reader: BufReader<File>,
     blocks: RingVec<Block>,         // 每个块4KB大小（内存窗口）
@@ -334,4 +335,289 @@ struct BlockManager {
     file_size: usize,               // 文件大小
     block_indexs: Vec<BlockIndex>,  // 每一块的索引（Vec位置是位置索引，block_id是稳定标识）
     next_id: BlockId,               // 下一个分配的 block_id
+}
+
+impl BlockManager {
+    fn new(file: File) -> io::Result<Self> {
+        let file_size = file.metadata()?.len() as usize;
+        Ok(BlockManager {
+            reader: BufReader::new(file),
+            blocks: RingVec::with_capacity(BLOKK_NUM),
+            cache: HashMap::new(),
+            file_size,
+            block_indexs: Vec::new(),
+            next_id: 0,
+        })
+    }
+
+    fn sort_loaded_blocks_by_logic_order(&mut self) {
+        let order: HashMap<BlockId, usize> = self
+            .block_indexs
+            .iter()
+            .enumerate()
+            .map(|(pos, bi)| (bi.block_id, pos))
+            .collect();
+        self.blocks
+            .sort_by_key(|b| order.get(&b.block_id).copied().unwrap_or(usize::MAX));
+    }
+
+    fn sync_block_source_mirror(
+        block: &mut Block,
+        source_file_start: usize,
+        source_file_end: usize,
+    ) {
+        block.source_file_start = source_file_start;
+        block.source_file_end = source_file_end;
+    }
+
+    fn cache_block_snapshot(&mut self, block: Block) {
+        if block.is_modified {
+            self.cache.insert(block.block_id, block);
+        }
+    }
+
+    /// 设计说明：
+    /// 块编辑后，`start_pos` 之后所有块的逻辑 `logic_file_start` 都可能发生连锁变化。
+    /// 这里负责把 `block_indexs` 重新串成一个连续的逻辑视图，并重算 `file_size`。
+    ///
+    /// 关键点是：这里维护的是“逻辑偏移”，不是“原文件物理偏移”。
+    /// 未加载块仍然保留各自的 `source_file_start`，以后如果真的访问到它们，再从原始 backing file
+    /// 的对应位置读取。也正因为如此，这里不能像旧实现那样为了更新 offset 把后缀块全部 materialize：
+    /// 那会让一次前部插入/删除触发整段后缀回读，既放大 IO，也破坏当前按需加载的设计。
+    ///
+    /// 换句话说，这个函数做的是：
+    /// - 更新逻辑索引里的连续区间
+    /// - 重新计算 `file_size`
+    ///
+    /// 它刻意不做的是：
+    /// - 不回读未加载块
+    /// - 不修改 `Block` 上的 `source_*` 冗余镜像
+    fn sync_block_offsets_from(&mut self, start_pos: usize) {
+        if self.block_indexs.is_empty() {
+            self.file_size = 0;
+            return;
+        }
+        let start_pos = start_pos.min(self.block_indexs.len().saturating_sub(1));
+        let mut pos = if start_pos == 0 { 0 } else { start_pos };
+        if pos > 0 {
+            let prev = &self.block_indexs[pos - 1];
+            let expected_start = prev.logic_file_start + prev.logic_block_size;
+            if self.block_indexs[pos].logic_file_start != expected_start {
+                self.block_indexs[pos].logic_file_start = expected_start;
+            }
+        }
+        while pos < self.block_indexs.len() {
+            if pos > 0 {
+                let prev_end = self.block_indexs[pos - 1].logic_file_start
+                    + self.block_indexs[pos - 1].logic_block_size;
+                self.block_indexs[pos].logic_file_start = prev_end;
+            }
+            pos += 1;
+        }
+        self.file_size = self.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
+    }
+
+    /// 根据 block_id 查找其在 block_indexs 中的位置（O(n)，n 通常很小）
+    fn block_pos(&self, block_id: BlockId) -> Option<usize> {
+        if block_id == EMPTY_BLOCK_ID {
+            return Some(0);
+        }
+        self.block_indexs
+            .iter()
+            .position(|bi| bi.block_id == block_id)
+    }
+
+    fn block_checksum(bytes: &[u8]) -> u32 {
+        let crc = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+        crc.checksum(bytes)
+    }
+
+    fn block_checksum_slices(left: &[u8], right: &[u8]) -> u32 {
+        let crc = Crc::<u32>::new(&CRC_32_ISO_HDLC);
+        let mut digest = crc.digest();
+        digest.update(left);
+        digest.update(right);
+        digest.finalize()
+    }
+
+    /// 分配新的 block_id（单调递增，分裂时使用）
+    fn alloc_id(&mut self) -> BlockId {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn split_block_once(&mut self, block_id: BlockId) -> ChapResult<Option<(BlockId, BlockId)>> {
+        let pos = self.block_pos(block_id).ok_or_else(|| {
+            ChapError::Unexpected(format!("split_block: block_id {} not found", block_id))
+        })?;
+        let logic_block_size = self.block_indexs[pos].logic_block_size;
+        let logic_file_start = self.block_indexs[pos].logic_file_start;
+
+        // ① 找切分点：完整行结尾里最接近逻辑块中点的那条；找不到时退化到中点切分
+        let half = logic_block_size / 2;
+        let split_byte = self.block_indexs[pos]
+            .lines_index
+            .iter()
+            .filter(|l| l.is_complete)
+            .min_by_key(|l| (l.block_end as isize - half as isize).abs())
+            .map(|l| l.block_end)
+            .unwrap_or(half);
+
+        if split_byte == 0 || split_byte >= logic_block_size {
+            return Ok(None); // 无法切分（整块只有一行且超大）
+        }
+
+        // ② 基于左右字节重建两个新块及其索引，保证超长行中间切分时 lines_index 也正确
+        let (left_bytes, right_bytes, source_file_start, source_file_end) = {
+            let block = self
+                .blocks
+                .iter_mut()
+                .find(|b| b.block_id == block_id)
+                .ok_or_else(|| {
+                    ChapError::Unexpected(format!(
+                        "split_block: block_id {} not in memory",
+                        block_id
+                    ))
+                })?;
+            let bytes = block.as_continuous();
+            (
+                bytes[..split_byte].to_vec(),
+                bytes[split_byte..].to_vec(),
+                block.source_file_start,
+                block.source_file_end,
+            )
+        }; // self.blocks 借用在此结束
+        let data_a = GapBuffer::from_bytes(&left_bytes, CHAR_GAP_SIZE);
+        let data_b = GapBuffer::from_bytes(&right_bytes, CHAR_GAP_SIZE);
+        let left_index = BlockIndex::from_block_bytes(
+            &left_bytes,
+            logic_file_start,
+            source_file_start,
+            source_file_end,
+            block_id,
+            left_bytes.len(),
+            Self::block_checksum(&left_bytes),
+        )?;
+
+        // ④ 分配 block B 的新 block_id（单调递增，不影响其他块的 block_id）
+        let new_block_id = self.alloc_id();
+        let right_index = BlockIndex::from_block_bytes(
+            &right_bytes,
+            logic_file_start + split_byte,
+            source_file_start,
+            source_file_end,
+            new_block_id,
+            right_bytes.len(),
+            Self::block_checksum(&right_bytes),
+        )?;
+
+        // 构造 Block B
+        let block_b = Block {
+            data: data_b,
+            source_file_start: source_file_start,
+            source_file_end: source_file_end,
+            block_id: new_block_id,
+            is_modified: true,
+        };
+        // 更新 Block A
+        {
+            let block = self
+                .blocks
+                .iter_mut()
+                .find(|b| b.block_id == block_id)
+                .unwrap();
+            block.data = data_a;
+            Self::sync_block_source_mirror(block, source_file_start, source_file_end);
+            block.is_modified = true;
+        }
+
+        // ⑤ 更新 block_indexs：替换 A，插入 B（不需要重编号后续块！）
+        self.block_indexs[pos] = left_index;
+        self.block_indexs.insert(pos + 1, right_index);
+        // ⑥ cache 以 block_id 为 key，其他块 block_id 未变，无需更新
+
+        // ⑦ push block_b；被挤出时存入 cache（key = block_id）
+        if let Some(evicted) = self.blocks.push(block_b) {
+            self.cache_block_snapshot(evicted);
+        }
+        // 分裂后的子块共享同一 source_* 区间，已不能再靠 source_file_start 推导文本顺序。
+        self.sort_loaded_blocks_by_logic_order();
+
+        Ok(Some((block_id, new_block_id)))
+    }
+
+    fn split_block(&mut self, block_id: BlockId) -> ChapResult<()> {
+        let Some(pos) = self.block_pos(block_id) else {
+            return Err(ChapError::Unexpected(format!(
+                "split_block: block_id {} not found",
+                block_id
+            )));
+        };
+        self.sync_block_offsets_from(pos);
+        let mut pending = vec![block_id];
+        while let Some(next_id) = pending.pop() {
+            let Some(next_pos) = self.block_pos(next_id) else {
+                continue;
+            };
+            if self.block_indexs[next_pos].logic_block_size <= BLOCK_SIZE {
+                continue;
+            }
+            if let Some((left_id, right_id)) = self.split_block_once(next_id)? {
+                pending.push(right_id);
+                pending.push(left_id);
+            }
+        }
+        if !self.block_indexs.is_empty() {
+            self.sync_block_offsets_from(pos);
+        }
+        self.debug_assert_storage_consistent();
+        Ok(())
+    }
+
+    #[cfg(debug_assertions)]
+    fn debug_assert_storage_consistent(&self) {
+        let total: usize = self.block_indexs.iter().map(|bi| bi.logic_block_size).sum();
+        debug_assert_eq!(
+            total, self.file_size,
+            "sum(logic_block_size) must equal file_size"
+        );
+        for (i, bi) in self.block_indexs.iter().enumerate() {
+            if i > 0 {
+                let prev = &self.block_indexs[i - 1];
+                debug_assert_eq!(
+                    bi.logic_file_start,
+                    prev.logic_file_start + prev.logic_block_size,
+                    "block {} logic_file_start must be contiguous",
+                    i
+                );
+            }
+            let complete_count = bi.lines_index.iter().filter(|l| l.is_complete).count();
+            debug_assert_eq!(
+                bi.line_count, complete_count,
+                "block {} line_count must match complete lines",
+                i
+            );
+            let mut expected_start = 0usize;
+            for (line_idx, line) in bi.lines_index.iter().enumerate() {
+                debug_assert_eq!(
+                    line.block_start, expected_start,
+                    "block {} line {} start must be contiguous",
+                    i, line_idx
+                );
+                debug_assert!(
+                    line.block_start <= line.block_end && line.block_end <= bi.logic_block_size,
+                    "block {} line {} range must be within block",
+                    i,
+                    line_idx
+                );
+                expected_start = line.block_end;
+            }
+            if let Some(block) = self.blocks.iter().find(|b| b.block_id == bi.block_id) {
+                debug_assert_eq!(block.source_file_start, bi.source_file_start);
+                debug_assert_eq!(block.source_file_end, bi.source_file_end);
+                debug_assert_eq!(block.block_size(), bi.logic_block_size);
+            }
+        }
+    }
 }

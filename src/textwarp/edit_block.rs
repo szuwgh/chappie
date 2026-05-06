@@ -1,7 +1,6 @@
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::ring_vec::RingVec;
-use crate::fuzzy::boyermoore;
 use crate::textwarp::block::Block;
 use crate::textwarp::block::BlockId;
 use crate::textwarp::block::BlockIndex;
@@ -28,9 +27,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io;
 use std::io::BufReader;
-use std::io::Read;
 use std::io::Seek;
-use std::io::SeekFrom;
 use std::io::Write;
 use std::iter;
 use std::path::Path;
@@ -2035,6 +2032,9 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    use std::io::Seek;
+    use std::io::SeekFrom;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
