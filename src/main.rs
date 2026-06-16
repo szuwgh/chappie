@@ -3,6 +3,7 @@
 #![feature(let_chains)]
 #![feature(trait_alias)]
 #![feature(str_as_str)]
+#![feature(target_feature_inline_always)]
 //mod chatapi;
 mod byteutil;
 mod chap;
@@ -11,14 +12,14 @@ mod command;
 mod common;
 mod function;
 mod fuzzy;
-mod undo;
 mod handle;
 mod lua;
 mod pg;
 mod plugin;
+mod searcher;
 mod textwarp;
 mod tui;
-// mod tui_bak;
+mod undo;
 use crate::common::error::ChapError;
 mod vb;
 use crate::cli::Cli;

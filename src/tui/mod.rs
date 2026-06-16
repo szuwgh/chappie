@@ -21,7 +21,9 @@ use crate::textwarp::TextOper;
 use crate::textwarp::TextSelect;
 use crate::textwarp::TextWarp;
 use crate::textwarp::TextWarpType;
+use crate::tui::edit::build_cursor_line;
 use crate::tui::edit::get_edit_content;
+use crate::tui::edit::EditContext;
 use crate::tui::hex::get_data_inspector_content;
 use crate::tui::hex::get_hex_content;
 use crate::undo::undo::UndoFile;
@@ -42,6 +44,7 @@ use ratatui::prelude::Rect;
 use ratatui::prelude::Size;
 use ratatui::style::Color;
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
@@ -262,8 +265,10 @@ pub(crate) struct ChapTui {
     pub(crate) elem: TuiElement,
     pub(crate) back_linenum: Vec<usize>, // 上一行号
     pub(crate) txt_sel: TextSelect,      // 文本选择
-    pub(crate) cursor_x: usize,          // 光标x坐标 视觉坐标
-    pub(crate) cursor_y: usize,          // 光标y坐标 视觉坐标
+    pub(crate) cursor_x: usize,          //文本 光标x坐标 视觉坐标
+    pub(crate) cursor_y: usize,          //文本 光标y坐标 视觉坐标
+    pub(crate) inp_cursor_x: usize,      //命令行 文本 光标x坐标 视觉坐标
+    pub(crate) inp_cursor_y: usize,      //命令行 文本 光标y坐标 视觉坐标
     pub(crate) column_offset: usize,     // 列偏移量
     pub(crate) bytes_cursor: usize,      //字节偏移量
     pub(crate) bytes_cursor_size: usize, //字节偏移量
@@ -272,11 +277,15 @@ pub(crate) struct ChapTui {
     pub(crate) endian: Endian,           // 字节序
     pub(crate) assist_tv2_data: String,  // 辅助窗口2数据
     pub(crate) undo: Option<UndoFile>,
+    pub(crate) find_list: Option<Vec<LineState>>,
+    pub(crate) find_index: usize, // 搜索的时候跳转到第几个find_list的条目
+    pub(crate) find_highlight_index: usize, //一行搜索的关键字中 高亮第几个关键字
+    pub(crate) highlight_len: usize, //关键字高亮的长度
     input_focus: InputFocus,
 }
 
 impl ChapTui {
-    fn enter_command_mode(&mut self) {
+    pub(crate) fn enter_command_mode(&mut self) {
         self.input_focus = InputFocus::Command;
     }
 
@@ -311,6 +320,8 @@ impl ChapTui {
             txt_sel: TextSelect::new(),
             cursor_x: 0,
             cursor_y: 0,
+            inp_cursor_x: 0,
+            inp_cursor_y: 0,
             column_offset: 0,
             bytes_cursor: 0,
             bytes_cursor_size: 0,
@@ -319,6 +330,10 @@ impl ChapTui {
             endian: Endian::Little, // 默认字节序为小端
             assist_tv2_data: String::new(),
             undo: undo,
+            find_list: None,
+            find_index: 0,
+            find_highlight_index: 0,
+            highlight_len: 0,
             input_focus: InputFocus::Text,
         })
     }
@@ -625,7 +640,6 @@ impl ChapTui {
                             match (code, modifiers) {
                                 (KeyCode::Esc, _) => {
                                     hand.handle_esc(self)?;
-                                    self.enter_command_mode();
                                 }
                                 (KeyCode::Up, KeyModifiers::CONTROL) => {
                                     if let Err(e) = hand.handle_shift_up(self, &line_meta, &td) {
@@ -754,6 +768,27 @@ impl ChapTui {
             let select_line = self.elem.navi.select_line;
             let cursor_x_vis = self.cursor_x;
             let cursor_y_vis = self.cursor_y;
+            let (find_highlight_offset, find_line_index) =
+                if let Some(find_line_state) = &self.find_list {
+                    let state: &LineState = &find_line_state[self.find_index];
+                    if let Some(h) = &state.highlight {
+                        (h[self.find_highlight_index], Some(state.line_index))
+                    } else {
+                        (0, None)
+                    }
+                } else {
+                    (0, None)
+                };
+            let ed_ctx = EditContext {
+                height: tv_height,
+                column_offset: offset.saturating_sub(self.elem.tv.width),
+                cursor_y: cursor_y_vis,
+                cursor_x: cursor_x_vis,
+                is_txt_model: !command_focus,
+                find_highlight_offset: find_highlight_offset,
+                find_line_index: find_line_index,
+                highlight_len: self.highlight_len,
+            };
             //let column_offset = self.column_offset;
             self.terminal.draw(|f| {
                 let (navi, visible_content, byte_cursor, last_char_bytes_size) = get_edit_content(
@@ -762,10 +797,7 @@ impl ChapTui {
                     &meta,
                     navi_cur_line,
                     &select_line,
-                    tv_height,
-                    offset.saturating_sub(self.elem.tv.width),
-                    cursor_y_vis,
-                    cursor_x_vis,
+                    &ed_ctx,
                 );
                 self.bytes_cursor = byte_cursor;
                 self.bytes_cursor_size = last_char_bytes_size;
@@ -777,12 +809,23 @@ impl ChapTui {
                 let nav_paragraph = Paragraph::new(navi);
                 f.render_widget(nav_paragraph, navi_rect);
 
-                // let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
-                //     .block(Block::default())
-                //     .style(Style::default().fg(Color::White)); // 设置输入框样式
                 let prompt = if command_focus { ">: " } else { "" };
-                let input = format!("{prompt}{}", self.elem.cmd_inp.get_inp());
-                let input_para = Paragraph::new(Text::raw(input))
+                let input_title_box = Paragraph::new(Text::raw(prompt))
+                    .block(Block::default())
+                    .style(Style::default().fg(Color::White));
+                f.render_widget(input_title_box, self.elem.cmd_title);
+
+                let input = self.elem.cmd_inp.get_inp();
+                let input_text = if command_focus {
+                    let input_parts = [input.as_bytes()];
+                    let input_char_count = [self.inp_cursor_x];
+                    let (spans, _, _) =
+                        build_cursor_line(&input_parts, input_char_count[0], &input_char_count, 0);
+                    Text::from(Line::from(spans))
+                } else {
+                    Text::raw(input)
+                };
+                let input_para = Paragraph::new(input_text)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(input_para, cmd_rect);
@@ -869,6 +912,8 @@ impl ChapTui {
             txt_sel: crate::textwarp::TextSelect::new(),
             cursor_x: 0,
             cursor_y: 0,
+            inp_cursor_x: 0,
+            inp_cursor_y: 0,
             column_offset: 0,
             bytes_cursor: 0,
             bytes_cursor_size: 0,
@@ -877,6 +922,10 @@ impl ChapTui {
             endian: crate::byteutil::Endian::Little,
             assist_tv2_data: String::new(),
             undo: None,
+            find_list: None,
+            find_index: 0,
+            find_highlight_index: 0,
+            highlight_len: 0,
             input_focus: InputFocus::Text,
         }
     }

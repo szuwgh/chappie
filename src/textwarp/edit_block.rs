@@ -1,6 +1,7 @@
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::ring_vec::RingVec;
+use crate::searcher::boyermoore::BoyerMoore;
 use crate::textwarp::block::Block;
 use crate::textwarp::block::BlockId;
 use crate::textwarp::block::BlockIndex;
@@ -10,7 +11,6 @@ use crate::textwarp::block::BLOKK_NUM;
 use crate::textwarp::block::CHAR_GAP_SIZE;
 use crate::textwarp::block::EMPTY_BLOCK_ID;
 use crate::textwarp::BlockLineData;
-use crate::textwarp::BoyerMoore;
 use crate::textwarp::ChapResult;
 use crate::textwarp::EditText;
 use crate::textwarp::Line;
@@ -23,6 +23,7 @@ use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
 use crc::Crc;
 use crc::CRC_32_ISO_HDLC;
+use log::log;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;
@@ -872,9 +873,12 @@ impl Text for GapBlockText {
             state.line_index,
         )?;
         let mut results = Vec::new();
-        let boyermoore = BoyerMoore::new(partten);
-        for (line, index) in scroll_iter {
-            if boyermoore.stream(line.iter_u8()).next().is_some() {
+        // let boy = BoyerMoore::new(partten);
+        for (line, mut index) in scroll_iter {
+            let v = line.search(partten);
+            // let v: Vec<usize> = boy.stream(line.iter_u8()).collect();
+            if v.len() > 0 {
+                index.highlight = Some(v);
                 results.push(index);
             }
         }
@@ -933,7 +937,7 @@ impl GapBlockText {
         // }
         let mut block_id = line_meta.get_block_num(); // 语义上是 block_id
         let block_offset = line_meta.get_block_offset();
-        let mut block_line_index = line_meta.get_block_line_index();
+        // let mut block_line_index = line_meta.get_block_line_index();
         let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
         let mut pos = self.block_pos(block_id).unwrap();
         block_id = self.block_indexs[pos].block_id;
@@ -945,7 +949,7 @@ impl GapBlockText {
             insert_offset -= self.block_indexs[pos].logic_block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
-            block_line_index = 0;
+            //  block_line_index = 0;
         }
         Ok((block_id, pos, insert_offset))
     }
@@ -5077,5 +5081,14 @@ mod tests {
             matches[1].get_line_file_end(),
             expected_third.get_line_file_end()
         );
+    }
+
+    #[test]
+    fn test_scroll() {
+        let mut gap: GapBlockText = GapBlockText::from_file_path("/home/unvdb/a.txt").unwrap();
+        let scroll = GapBlockScollTextIter::new(&mut gap, 0, 0, 0, 0).unwrap();
+        for (l, v) in scroll {
+            println!("{}\n", l);
+        }
     }
 }

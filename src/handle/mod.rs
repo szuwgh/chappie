@@ -202,6 +202,7 @@ pub(crate) trait Handle {
         chap_tui.elem.navi.clear();
         chap_tui.assist_tv2_data.clear();
         chap_tui.txt_sel.reset_to_start();
+        chap_tui.enter_command_mode();
         Ok(())
     }
 

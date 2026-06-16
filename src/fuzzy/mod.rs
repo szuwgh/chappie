@@ -1,11 +1,11 @@
 use std::vec;
 
 use crate::fuzzy::smithwaterman::MAXDIMS;
+use crate::searcher::boyermoore::BoyerMoore;
 use bitap::{remove_overlapping, Bitap};
-use boyermoore::BoyerMoore;
 use smithwaterman::SmithWaterman;
 mod bitap;
-pub(crate) mod boyermoore;
+
 mod levenshtein;
 mod smithwaterman;
 #[derive(Debug)]
@@ -64,7 +64,7 @@ impl FuzzySearch {
             //使用 bm算法
             return Match::Byte(
                 BoyerMoore::new(pattern)
-                    .find(text)
+                    .search(text)
                     .map(|e| ByteMatch {
                         distance: 0,
                         start: e,

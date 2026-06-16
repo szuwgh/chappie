@@ -49,7 +49,30 @@ impl<'a> BoyerMoore<'a> {
         }
     }
 
-    pub(crate) fn find(&'a self, text: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
+    pub(crate) fn find(&'a self, text: &'a [u8]) -> Option<usize> {
+        let text_bytes = text;
+        let mut i = self.pattern.len() - 1;
+        while i < text_bytes.len() {
+            let mut j = self.pattern.len() - 1;
+            while text_bytes[i] == self.pattern[j] {
+                if j == 0 {
+                    let match_pos = i;
+                    //i = i + self.pattern.len(); // Skip ahead by pattern length
+                    return Some(match_pos);
+                }
+                i -= 1;
+                j -= 1;
+            }
+            let shift = max(
+                self.bad_char_skip[text_bytes[i] as usize],
+                self.good_suffix_skip[j],
+            );
+            i += shift;
+        }
+        None
+    }
+
+    pub(crate) fn search(&'a self, text: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
         let text_bytes = text;
         let mut i = self.pattern.len() - 1;
         std::iter::from_fn(move || {
@@ -73,13 +96,6 @@ impl<'a> BoyerMoore<'a> {
             None
         })
     }
-
-    // pub(crate) fn stream2<I>(&self, mut text: I) -> impl Iterator<Item = usize> + '_
-    // where
-    //     I: Iterator<Item = u8>,
-    // {
-    //     self.stream(text).map(|pos| pos) // 或者直接把逻辑归并到 stream 中
-    // }
 
     pub(crate) fn stream<'b, I>(&'a self, mut text: I) -> impl Iterator<Item = usize> + 'b
     where
@@ -165,6 +181,97 @@ mod tests {
     use std::hint::black_box;
     use std::time::Instant;
 
+    fn naive_find(text: &[u8], pattern: &[u8]) -> Option<usize> {
+        if pattern.is_empty() {
+            return Some(0);
+        }
+        if pattern.len() > text.len() {
+            return None;
+        }
+        text.windows(pattern.len())
+            .position(|window| window == pattern)
+    }
+
+    fn assert_find_eq_naive(text: &[u8], pattern: &[u8]) {
+        let bm = BoyerMoore::new(pattern);
+        assert_eq!(
+            bm.find(text),
+            naive_find(text, pattern),
+            "text={text:?}, pattern={pattern:?}",
+        );
+    }
+
+    fn generated_bytes(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = seed | 1;
+        let mut out = Vec::with_capacity(len);
+
+        for _ in 0..len {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1);
+            out.push((x >> 32) as u8);
+        }
+
+        out
+    }
+
+    #[test]
+    fn find_returns_first_match_for_basic_positions() {
+        assert_find_eq_naive(b"abc", b"a");
+        assert_find_eq_naive(b"abc", b"abc");
+        assert_find_eq_naive(b"xxabc", b"abc");
+        assert_find_eq_naive(b"abcxx", b"abc");
+        assert_find_eq_naive(b"xxabcxx", b"abc");
+        assert_find_eq_naive(b"abcabc", b"abc");
+        assert_find_eq_naive(b"aaaaa", b"aa");
+    }
+
+    #[test]
+    fn find_returns_none_when_pattern_is_absent_or_too_long() {
+        assert_find_eq_naive(b"", b"a");
+        assert_find_eq_naive(b"abc", b"d");
+        assert_find_eq_naive(b"abc", b"abcd");
+        assert_find_eq_naive(b"aaaaa", b"b");
+        assert_find_eq_naive(b"abababab", b"abba");
+    }
+
+    #[test]
+    fn find_handles_binary_bytes() {
+        let text = [
+            0x00, 0xff, 0x10, 0x20, 0x00, 0xff, 0x10, 0x21, 0x80, 0x00, 0xff,
+        ];
+
+        assert_find_eq_naive(&text, &[0x00]);
+        assert_find_eq_naive(&text, &[0xff, 0x10]);
+        assert_find_eq_naive(&text, &[0x00, 0xff, 0x10, 0x21]);
+        assert_find_eq_naive(&text, &[0x80, 0x00, 0xff]);
+        assert_find_eq_naive(&text, &[0xff, 0xff]);
+    }
+
+    #[test]
+    fn find_matches_naive_search_for_generated_data() {
+        for text_len in 0..128 {
+            for pattern_len in 1..=32 {
+                for seed in 0..4u64 {
+                    let text = generated_bytes(text_len, seed + 0x1234);
+                    let pattern = if pattern_len <= text_len && seed % 2 == 0 {
+                        let start =
+                            (seed as usize * 7 + text_len / 3) % (text_len - pattern_len + 1);
+                        text[start..start + pattern_len].to_vec()
+                    } else {
+                        generated_bytes(pattern_len, seed + 0x5678)
+                    };
+
+                    assert_find_eq_naive(&text, &pattern);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Pattern must not be empty")]
+    fn new_rejects_empty_pattern() {
+        let _ = BoyerMoore::new(b"");
+    }
+
     #[test]
     fn test_longest_common_suffix() {
         let i = longest_common_suffix_bytes("ababc".as_bytes(), "babc".as_bytes());
@@ -174,7 +281,7 @@ mod tests {
     #[test]
     fn test_boyermoore() {
         let bm = BoyerMoore::new("abc".as_bytes());
-        let i: Vec<usize> = bm.find("abcadceagedcabcge".as_bytes()).collect();
+        let i: Vec<usize> = bm.search("abcadceagedcabcge".as_bytes()).collect();
         println!("{:?}", i);
     }
 

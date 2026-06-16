@@ -1,7 +1,9 @@
+use crate::chap;
 use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineParts;
 use crate::textwarp::LineState;
+use crate::tui::ChapTui;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -118,17 +120,80 @@ fn char_range_to_visible<'a>(
     }
 }
 
+// part 是一个连续的字节块，highlight_start和highlight_end 是高亮开始和结束的地方，然后这个函数把part
+//切成非高亮块和高亮块 highlight_start和highlight_end 有可能跨字节块
+fn cut_highlight_part<'a>(
+    parts: &[&'a [u8]],
+    start: usize,
+    end: usize,
+) -> (Vec<&'a [u8]>, Vec<&'a [u8]>, Vec<&'a [u8]>) {
+    let mut pre = Vec::new();
+    let mut mid = Vec::new();
+    let mut post = Vec::new();
+    let mut offset = 0;
+    for part in parts {
+        let part_len = part.len();
+        let next_offset = offset + part_len;
+
+        // 完全在 highlight 前
+        if next_offset <= start {
+            pre.push(*part);
+        }
+        // 完全在 highlight 后
+        else if offset >= end {
+            post.push(*part);
+        }
+        // 和 highlight 有交集
+        else {
+            let s = start.saturating_sub(offset);
+            let e = (end - offset).min(part_len);
+            // part 被切成三段逻辑区域，但我们仍然返回 slice（不能再细切 slice-of-slice）
+            if offset < start {
+                if s > 0 {
+                    pre.push(&part[..s]);
+                }
+            }
+            if e > s {
+                mid.push(&part[s..e]);
+            }
+            if offset + part_len > end {
+                if e < part_len {
+                    post.push(&part[e..]);
+                }
+            }
+        }
+        offset = next_offset;
+    }
+    (pre, mid, post)
+}
+
+pub(crate) struct EditContext {
+    pub(crate) height: usize,
+    pub(crate) column_offset: usize,
+    pub(crate) cursor_y: usize,
+    pub(crate) cursor_x: usize,
+    pub(crate) is_txt_model: bool,
+    pub(crate) find_highlight_offset: usize,
+    pub(crate) find_line_index: Option<usize>,
+    pub(crate) highlight_len: usize,
+}
+
 pub(crate) fn get_edit_content<'a>(
     txts: &'a RingVec<CacheStr>,
     with: usize,
     line_meta: &'a RingVec<LineState>,
     cur_line: usize,
     select_line: &Option<(usize, usize)>,
-    height: usize,
-    column_offset: usize,
-    cursor_y: usize,
-    cursor_x: usize,
+    ed_ctx: &EditContext,
 ) -> (Text<'a>, Text<'a>, usize, usize) {
+    let height = ed_ctx.height;
+    let column_offset = ed_ctx.column_offset;
+    let cursor_y = ed_ctx.cursor_y;
+    let cursor_x = ed_ctx.cursor_x;
+    let is_txt_model = ed_ctx.is_txt_model;
+    let mut find_highlight_offset = ed_ctx.find_highlight_offset;
+    let find_line_index = ed_ctx.find_line_index;
+    let mut highlight_len = ed_ctx.highlight_len;
     assert!(txts.len() == line_meta.len());
     let mut lines = Vec::with_capacity(line_meta.len());
     let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
@@ -139,7 +204,7 @@ pub(crate) fn get_edit_content<'a>(
         let full = txt.text(0..);
         let visible = char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
         let parts: &[&[u8]] = &visible[..];
-        if cursor_y == i {
+        if cursor_y == i && is_txt_model {
             //取上一行的最后一个字符char 大小
             let mut prev_line_last_char_size = 0;
             if cursor_x == 0 {
@@ -198,9 +263,56 @@ pub(crate) fn get_edit_content<'a>(
             // 优化B：str::from_utf8 直接借用原始字节，避免 from_utf8_lossy 堆分配。
             // 优化5：visible 固定 2 段，直接按索引构造 Span，预分配容量 2，
             // 避免 map().collect() 的迭代器包装和动态扩容开销。
-            let mut spans = Vec::with_capacity(2);
-            spans.push(Span::raw(str::from_utf8(visible[0]).unwrap_or("")));
-            spans.push(Span::raw(str::from_utf8(visible[1]).unwrap_or("")));
+
+            if let Some(line_num) = find_line_index {
+                let line_meta = line_meta.get(i).unwrap();
+                log::debug!("line_meta.get_line_index:{}", line_meta.get_line_index());
+                log::debug!("line_num():{}", line_num);
+                log::debug!("line_meta.line_offset:{}", line_meta.line_offset);
+                log::debug!("find_highlight_offset:{}", find_highlight_offset);
+                log::debug!("line_meta.get_line_end():{}", line_meta.get_line_end());
+                if line_meta.get_line_index() == line_num {
+                    if line_meta.line_offset <= find_highlight_offset
+                        && find_highlight_offset < line_meta.get_line_end()
+                    {
+                        let highlight_start = find_highlight_offset - line_meta.line_offset;
+                        let highlight_end =
+                            (highlight_start + highlight_len).min(line_meta.get_line_end()); // 假设高亮一个字符
+                        let (a, b, c) = cut_highlight_part(parts, highlight_start, highlight_end);
+                        let mut spans = Vec::with_capacity(a.len() + b.len() + c.len());
+                        for v in a {
+                            log::debug!("a:{}", str::from_utf8(v).unwrap_or("☻"));
+                            spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
+                        }
+                        for v in b {
+                            log::debug!("b:{}", str::from_utf8(v).unwrap_or("☻"));
+                            spans.push(Span::styled(
+                                str::from_utf8(v).unwrap_or("☻"),
+                                Style::default().bg(Color::Green),
+                            ));
+                        }
+                        for v in c {
+                            log::debug!("c:{}", str::from_utf8(v).unwrap_or("☻"));
+                            spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
+                        }
+                        highlight_len = highlight_len.saturating_sub(
+                            line_meta
+                                .get_line_end()
+                                .saturating_sub(find_highlight_offset),
+                        );
+                        find_highlight_offset = line_meta.get_line_end();
+                        lines.push(Line::from(spans));
+
+                        continue;
+                    }
+                }
+            }
+
+            let mut spans = Vec::with_capacity(parts.len());
+            for v in parts {
+                spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
+            }
+            //spans.push(Span::raw(str::from_utf8(visible[1]).unwrap_or("")));
             lines.push(Line::from(spans));
         }
     }
@@ -210,7 +322,7 @@ pub(crate) fn get_edit_content<'a>(
     (nav_text, text, byte_cursor, prev_char_bytes_size)
 }
 
-fn build_cursor_line<'a>(
+pub(crate) fn build_cursor_line<'a>(
     str_parts: &[&'a [u8]],
     cursor_x: usize,
     char_count: &[usize],
@@ -252,21 +364,21 @@ fn build_cursor_line<'a>(
             for j in 0..char_curosr_index {
                 let part = str_parts[j];
                 prefix_bytes += part.len();
-                spans.push(Span::raw(str::from_utf8(part).unwrap_or("")));
+                spans.push(Span::raw(str::from_utf8(part).unwrap_or("☻")));
             }
             prefix_bytes + a.get_non_control_len()
         };
         let (display, color) = if b == b"\n" {
             (" ", Color::LightBlue)
         } else {
-            (str::from_utf8(b).unwrap_or(""), Color::LightRed)
+            (str::from_utf8(b).unwrap_or("☻"), Color::LightRed)
         };
 
-        spans.push(Span::raw(str::from_utf8(a).unwrap_or("")));
+        spans.push(Span::raw(str::from_utf8(a).unwrap_or("☻")));
         spans.push(Span::styled(display, Style::default().bg(color)));
         spans.push(Span::raw(str::from_utf8(c).unwrap_or("")));
         for j in (char_curosr_index + 1)..str_parts.len() {
-            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("")));
+            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("☻")));
         }
     } else {
         byte_cursor = if char_curosr_index == 0 {
@@ -279,7 +391,7 @@ fn build_cursor_line<'a>(
                 + str_parts[char_curosr_index].get_non_control_len()
         };
         for j in 0..str_parts.len() {
-            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("")));
+            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("☻")));
         }
         let diff = cursor_x.saturating_sub(char_count.iter().sum());
         let padding = " ".repeat(diff);
@@ -398,7 +510,7 @@ mod tests {
     }
 
     fn handle() -> HandleEdit {
-        HandleEdit {}
+        HandleEdit::new()
     }
 
     fn saved_text(td: &mut TextDisplay) -> String {
@@ -408,6 +520,16 @@ mod tests {
     }
 
     fn sync_cursor_metrics(tui: &mut ChapTui, td: &TextDisplay) {
+        let ed_ctx = EditContext {
+            height: tui.elem.tv.get_height(),
+            column_offset: tui.column_offset,
+            cursor_y: tui.cursor_y,
+            cursor_x: tui.cursor_x,
+            is_txt_model: !tui.in_command_mode(),
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
         let (content, meta) = td.get_current_page().unwrap();
         let (_, _, byte_cursor, last_char_bytes_size) = get_edit_content(
             content,
@@ -415,10 +537,10 @@ mod tests {
             &meta,
             0,
             &None,
-            tui.elem.tv.get_height(),
-            tui.column_offset,
-            tui.cursor_y,
-            tui.cursor_x,
+            &ed_ctx,
+            // tui.cursor_x,
+            // !tui.in_command_mode(),
+            // None,
         );
         tui.bytes_cursor = byte_cursor;
         tui.bytes_cursor_size = last_char_bytes_size;
@@ -470,19 +592,20 @@ mod tests {
         usize,
         usize,
     ) {
+        let ed_ctx = EditContext {
+            height: tui.elem.tv.get_height(),
+            column_offset: tui.column_offset,
+            cursor_y: tui.cursor_y,
+            cursor_x: tui.cursor_x,
+            is_txt_model: true,
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
         td.get_one_page(tui.start_line_num).unwrap();
         let (content, meta) = td.get_current_page().unwrap();
-        let (nav, body, byte_cursor, last_char_bytes_size) = get_edit_content(
-            content,
-            tui.elem.tv.get_width(),
-            &meta,
-            0,
-            &None,
-            tui.elem.tv.get_height(),
-            tui.column_offset,
-            tui.cursor_y,
-            tui.cursor_x,
-        );
+        let (nav, body, byte_cursor, last_char_bytes_size) =
+            get_edit_content(content, tui.elem.tv.get_width(), &meta, 0, &None, &ed_ctx);
         (
             render_text_lines(&nav),
             render_text_lines(&body),
@@ -789,8 +912,17 @@ mod tests {
         // 单行 "hello"，光标在 (x=0, y=0)
         let txts = make_ring_txt(vec!["hello"]);
         let meta = make_ring_meta(&[1]);
-        let (_, content, byte_cursor, _) =
-            get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 0, 0);
+        let ed_ctx = EditContext {
+            height: 10,
+            column_offset: 0,
+            cursor_y: 0,
+            cursor_x: 0,
+            is_txt_model: true,
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
+        let (_, content, byte_cursor, _) = get_edit_content(&txts, 80, &meta, 0, &None, &ed_ctx);
         assert_eq!(byte_cursor, 0);
         // 文本内容应可见
         let text = content.to_string();
@@ -805,8 +937,17 @@ mod tests {
         // "hello"，光标在 (x=2, y=0)，byte_cursor 应为 2
         let txts = make_ring_txt(vec!["hello"]);
         let meta = make_ring_meta(&[1]);
-        let (_, _, byte_cursor, last_sz) =
-            get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 0, 2);
+        let ed_ctx = EditContext {
+            height: 10,
+            column_offset: 0,
+            cursor_y: 0,
+            cursor_x: 2,
+            is_txt_model: true,
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
+        let (_, _, byte_cursor, last_sz) = get_edit_content(&txts, 80, &meta, 0, &None, &ed_ctx);
         assert_eq!(byte_cursor, 2);
         assert_eq!(last_sz, 1); // 前一字符 'e' 占 1 字节
     }
@@ -816,8 +957,17 @@ mod tests {
         // "你好世界"，光标在 (x=2, y=0)，byte_cursor 应为 6（2个汉字 × 3字节）
         let txts = make_ring_txt(vec!["你好世界"]);
         let meta = make_ring_meta(&[1]);
-        let (_, _, byte_cursor, last_sz) =
-            get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 0, 2);
+        let ed_ctx = EditContext {
+            height: 10,
+            column_offset: 0,
+            cursor_y: 0,
+            cursor_x: 2,
+            is_txt_model: true,
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
+        let (_, _, byte_cursor, last_sz) = get_edit_content(&txts, 80, &meta, 0, &None, &ed_ctx);
         assert_eq!(byte_cursor, 6);
         assert_eq!(last_sz, 3); // 前一字符 "好" 占 3 字节
     }
@@ -827,7 +977,17 @@ mod tests {
         // 3 行文本，行号导航应正确
         let txts = make_ring_txt(vec!["line1", "line2", "line3"]);
         let meta = make_ring_meta(&[1, 2, 3]);
-        let (nav, _, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, 5, 0, 0, 0);
+        let ed_ctx = EditContext {
+            height: 5,
+            column_offset: 0,
+            cursor_y: 0,
+            cursor_x: 2,
+            is_txt_model: true,
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
+        let (nav, _, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, &ed_ctx);
         assert!(nav.to_string().contains("1"));
         assert!(nav.to_string().contains("2"));
         assert!(nav.to_string().contains("3"));
@@ -838,7 +998,17 @@ mod tests {
         // 光标行 cursor_y=3 超出 meta 范围（只有 2 行），应追加 padding
         let txts = make_ring_txt(vec!["a", "b"]);
         let meta = make_ring_meta(&[1, 2]);
-        let (_, content, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, 10, 0, 3, 0);
+        let ed_ctx = EditContext {
+            height: 10,
+            column_offset: 0,
+            cursor_y: 3,
+            cursor_x: 0,
+            is_txt_model: true,
+            find_highlight_offset: 0,
+            find_line_index: None,
+            highlight_len: 0,
+        };
+        let (_, content, _, _) = get_edit_content(&txts, 80, &meta, 0, &None, &ed_ctx);
         // 应有超过 2 行的渲染输出（含 padding 行）
         assert!(content.lines.len() >= 3);
     }

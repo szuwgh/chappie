@@ -251,7 +251,6 @@ impl<T: Plugin> Handle for HandleHex<T> {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        //todo!("Handle enter in hex mode");
         let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
         let cmd = Command::parse(cmd_inp);
         match cmd {

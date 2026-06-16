@@ -12,8 +12,8 @@ use crate::common::gap_buffer::GapBytesCharIter;
 use crate::common::gap_buffer::GapBytesIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
-use crate::fuzzy::boyermoore::BoyerMoore;
-use crate::fuzzy::FuzzySearch;
+use crate::searcher::boyermoore::BoyerMoore;
+use crate::searcher::memmem::{memmem, memmem_small_slices_no_alloc, memmem_two_slices_no_alloc};
 use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
@@ -914,6 +914,87 @@ impl<'a> LineBlockStr<'a> {
         }
         result
     }
+
+    pub(crate) fn search(&self, key: &[u8]) -> Vec<usize> {
+        if key.is_empty() {
+            return Vec::new();
+        }
+
+        fn find_in_parts(parts: &[&[u8]], key: &[u8]) -> Option<usize> {
+            match parts.len() {
+                0 => None,
+                1 => memmem(parts[0], key),
+                2 => memmem_two_slices_no_alloc(parts[0], parts[1], key),
+                _ => memmem_small_slices_no_alloc(parts, key),
+            }
+        }
+
+        fn suffix_parts<'b>(parts: &[&'b [u8]], mut offset: usize) -> ([&'b [u8]; 4], usize) {
+            let mut suffix: [&'b [u8]; 4] = [&[]; 4];
+            let mut suffix_len = 0;
+
+            for part in parts {
+                if offset >= part.len() {
+                    offset -= part.len();
+                    continue;
+                }
+
+                suffix[suffix_len] = &part[offset..];
+                suffix_len += 1;
+                offset = 0;
+            }
+
+            (suffix, suffix_len)
+        }
+
+        fn append_line_data_parts<'b>(
+            data: &'b LineData<'b>,
+            parts: &mut [&'b [u8]; 4],
+            parts_len: &mut usize,
+        ) {
+            let slices = data.as_slice();
+            for part in slices.as_parts() {
+                if !part.is_empty() {
+                    parts[*parts_len] = part;
+                    *parts_len += 1;
+                }
+            }
+        }
+
+        let mut parts: [&[u8]; 4] = [&[]; 4];
+        let mut parts_len = 0;
+
+        match (&self.0, &self.1) {
+            (Some(v1), Some(v2)) => {
+                append_line_data_parts(&v1.data, &mut parts, &mut parts_len);
+                append_line_data_parts(&v2.data, &mut parts, &mut parts_len);
+            }
+            (Some(v1), None) => {
+                append_line_data_parts(&v1.data, &mut parts, &mut parts_len);
+            }
+            (None, Some(v2)) => {
+                append_line_data_parts(&v2.data, &mut parts, &mut parts_len);
+            }
+            (None, None) => {}
+        }
+
+        let total_len = parts[..parts_len].iter().map(|part| part.len()).sum();
+        let mut matches = Vec::new();
+        let mut search_start = 0;
+
+        while search_start < total_len {
+            let (suffix, suffix_len) = suffix_parts(&parts[..parts_len], search_start);
+            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key) else {
+                break;
+            };
+
+            let match_pos = search_start + relative_pos;
+            matches.push(match_pos);
+            search_start = match_pos + key.len();
+        }
+
+        matches
+    }
 }
 
 // struct LineBlockStrCharIter<'a> {
@@ -1179,10 +1260,10 @@ pub(crate) trait Line<'a>: Display {
 #[derive(Debug, Default)]
 pub(crate) struct LineState {
     pub(crate) char_with: usize,
-    pub(crate) txt_len: usize,                         //文本长度
-    pub(crate) char_len: usize,                        //char字符大小
-    pub(crate) page_num: usize,                        //所在页数 从1开始
-    pub(crate) block_num: usize,                       //块的编号
+    pub(crate) txt_len: usize,                //文本长度
+    pub(crate) char_len: usize,               //char字符大小
+    pub(crate) page_num: usize,               //所在页数 从1开始
+    pub(crate) block_num: usize,              //块的编号
     pub(crate) block_line_index: usize, //块内行号 从0开始 这个代表一行一行数据 用 '\n' 分隔的行号
     pub(crate) block_offset: usize,     //行在块的偏移
     pub(crate) line_num: usize,         //行数 从1开始  这个代表实际行号 不是索引 代表视觉上的行号
@@ -1192,7 +1273,7 @@ pub(crate) struct LineState {
     pub(crate) line_file_end: usize,    //行在文件结束的位置
     pub(crate) start_line_num: usize,   //开始的行数
     pub(crate) start_page_num: usize,   //这一行在第几页开始
-    pub(crate) highlight: Option<Vec<(usize, usize)>>, //高亮范围  有搜索的时候
+    pub(crate) highlight: Option<Vec<usize>>, //高亮范围  有搜索的时候
 }
 
 impl LineState {
@@ -2999,6 +3080,16 @@ impl CacheStr {
 mod tests {
     use super::*;
 
+    fn gap_block_line<'a>(left: &'a [u8], right: &'a [u8]) -> BlockLineData<'a> {
+        BlockLineData {
+            data: LineData::GapBytes(GapBytes::new(left, right)),
+            block_file_start: 0,
+            block_id: 0,
+            block_line_index: 0,
+            block_offset: 0,
+        }
+    }
+
     #[test]
     fn test_line_block_str_u8_iter_yields_block1_then_block2_bytes() {
         let mut iter = LineBlockStrU8Iter {
@@ -3009,5 +3100,57 @@ mod tests {
         let collected: Vec<u8> = iter.by_ref().collect();
         assert_eq!(collected, b"abcd");
         assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_line_block_str_search_finds_match_in_single_slice() {
+        let line = LineBlockStr(Some(gap_block_line(b"alpha needle omega", b"")), None);
+
+        assert_eq!(line.search(b"needle"), vec![6]);
+    }
+
+    #[test]
+    fn test_line_block_str_search_finds_match_across_two_slices() {
+        let line = LineBlockStr(Some(gap_block_line(b"alpha nee", b"dle omega")), None);
+
+        assert_eq!(line.search(b"needle"), vec![6]);
+    }
+
+    #[test]
+    fn test_line_block_str_search_offsets_match_in_second_block() {
+        let line = LineBlockStr(
+            Some(gap_block_line(b"alpha ", b"")),
+            Some(gap_block_line(b"needle omega", b"")),
+        );
+
+        assert_eq!(line.search(b"needle"), vec![6]);
+    }
+
+    #[test]
+    fn test_line_block_str_search_finds_match_across_block_boundary() {
+        let line = LineBlockStr(
+            Some(gap_block_line(b"alpha nee", b"")),
+            Some(gap_block_line(b"dle omega", b"")),
+        );
+
+        assert_eq!(line.search(b"needle"), vec![6]);
+    }
+
+    #[test]
+    fn test_line_block_str_search_finds_non_overlapping_matches_across_four_slices() {
+        let line = LineBlockStr(
+            Some(gap_block_line(b"xxne", b"edle yy ")),
+            Some(gap_block_line(b"needle zz ne", b"edle")),
+        );
+
+        assert_eq!(line.search(b"needle"), vec![2, 12, 22]);
+    }
+
+    #[test]
+    fn test_line_block_str_search_returns_empty_for_empty_or_missing_key() {
+        let line = LineBlockStr(Some(gap_block_line(b"alpha", b" beta")), None);
+
+        assert_eq!(line.search(b""), Vec::<usize>::new());
+        assert_eq!(line.search(b"needle"), Vec::<usize>::new());
     }
 }

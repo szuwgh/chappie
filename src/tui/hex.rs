@@ -44,23 +44,23 @@ const CHAR_REPR_TABLE: [u8; 256] = {
 /// PADDING_TABLE[i] = "   ".repeat(i + 1)
 /// 用法：PADDING_TABLE[16.saturating_sub(line_byte_count)]
 const PADDING_TABLE: [&str; 17] = [
-    "   ",                                                               //  3 spaces (×1)
-    "      ",                                                            //  6 spaces (×2)
-    "         ",                                                         //  9 spaces (×3)
-    "            ",                                                      // 12 spaces (×4)
-    "               ",                                                   // 15 spaces (×5)
-    "                  ",                                                // 18 spaces (×6)
-    "                     ",                                             // 21 spaces (×7)
-    "                        ",                                          // 24 spaces (×8)
-    "                           ",                                       // 27 spaces (×9)
-    "                              ",                                    // 30 spaces (×10)
-    "                                 ",                                 // 33 spaces (×11)
-    "                                    ",                              // 36 spaces (×12)
-    "                                       ",                           // 39 spaces (×13)
-    "                                          ",                        // 42 spaces (×14)
-    "                                             ",                     // 45 spaces (×15)
-    "                                                ",                  // 48 spaces (×16)
-    "                                                   ",               // 51 spaces (×17)
+    "   ",                                                 //  3 spaces (×1)
+    "      ",                                              //  6 spaces (×2)
+    "         ",                                           //  9 spaces (×3)
+    "            ",                                        // 12 spaces (×4)
+    "               ",                                     // 15 spaces (×5)
+    "                  ",                                  // 18 spaces (×6)
+    "                     ",                               // 21 spaces (×7)
+    "                        ",                            // 24 spaces (×8)
+    "                           ",                         // 27 spaces (×9)
+    "                              ",                      // 30 spaces (×10)
+    "                                 ",                   // 33 spaces (×11)
+    "                                    ",                // 36 spaces (×12)
+    "                                       ",             // 39 spaces (×13)
+    "                                          ",          // 42 spaces (×14)
+    "                                             ",       // 45 spaces (×15)
+    "                                                ",    // 48 spaces (×16)
+    "                                                   ", // 51 spaces (×17)
 ];
 
 // ========== 优化 1+2：编译期 Style 查找表 ==========
@@ -350,15 +350,8 @@ pub(crate) fn get_hex_content<'a>(
             .map(|meta| meta.get_line_file_start())
             .unwrap_or(0);
 
-        let all_spans = process_line_bytes(
-            slice1,
-            slice2,
-            line_start,
-            hex_sel,
-            cursor_y,
-            i,
-            cursor_x,
-        );
+        let all_spans =
+            process_line_bytes(slice1, slice2, line_start, hex_sel, cursor_y, i, cursor_x);
         lines.push(Line::from(all_spans));
     }
 
@@ -400,8 +393,15 @@ fn process_line_bytes<'a>(
         let mut byte_index = 0usize;
         for byte_slice in [slice1, slice2] {
             for byte in byte_slice {
-                spans.push(Span::styled(byte_to_hex(*byte), STYLE_TABLE[*byte as usize]));
-                spans.push(Span::raw(if (byte_index + 1) & 7 == 0 { "  " } else { " " }));
+                spans.push(Span::styled(
+                    byte_to_hex(*byte),
+                    STYLE_TABLE[*byte as usize],
+                ));
+                spans.push(Span::raw(if (byte_index + 1) & 7 == 0 {
+                    "  "
+                } else {
+                    " "
+                }));
                 byte_index += 1;
             }
         }
@@ -423,9 +423,17 @@ fn process_line_bytes<'a>(
                 };
                 spans.push(Span::styled(
                     byte_to_hex(*byte),
-                    if highlight { STYLE_HL_TABLE[*byte as usize] } else { STYLE_TABLE[*byte as usize] },
+                    if highlight {
+                        STYLE_HL_TABLE[*byte as usize]
+                    } else {
+                        STYLE_TABLE[*byte as usize]
+                    },
                 ));
-                spans.push(Span::raw(if (byte_index + 1) & 7 == 0 { "  " } else { " " }));
+                spans.push(Span::raw(if (byte_index + 1) & 7 == 0 {
+                    "  "
+                } else {
+                    " "
+                }));
                 byte_index += 1;
             }
         }

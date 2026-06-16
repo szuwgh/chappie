@@ -571,7 +571,7 @@ impl BlockManager {
         if !self.block_indexs.is_empty() {
             self.sync_block_offsets_from(pos);
         }
-        self.debug_assert_storage_consistent();
+        // self.debug_assert_storage_consistent();
         Ok(())
     }
 

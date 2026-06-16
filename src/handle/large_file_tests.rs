@@ -28,12 +28,7 @@ fn setup(content: &str) -> (ChapTui, TextDisplay, NamedTempFile) {
     tmp.write_all(content.as_bytes()).unwrap();
     tmp.flush().unwrap();
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
-    let mut td = TextDisplay::EditBlock(EditTextWarp::new(
-        gap,
-        TV_H,
-        TV_W,
-        TextWarpType::SoftWrap,
-    ));
+    let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
     td.get_one_page(1).unwrap();
     let tui = ChapTui::for_test(TV_H, TV_W);
     (tui, td, tmp)
@@ -404,7 +399,10 @@ fn paste_4kb_plus_one_cursor_y_bounded() {
         tui.cursor_y,
         TV_H
     );
-    println!("paste 4097 bytes → cursor_x={}, cursor_y={}", tui.cursor_x, tui.cursor_y);
+    println!(
+        "paste 4097 bytes → cursor_x={}, cursor_y={}",
+        tui.cursor_x, tui.cursor_y
+    );
 }
 
 /// 粘贴 16385 字节（> 16KB），cursor_y <= TV_H，cursor_x <= TV_W
@@ -428,7 +426,10 @@ fn paste_16kb_plus_one_bounds() {
         tui.cursor_x,
         TV_W
     );
-    println!("paste 16385 bytes → cursor_x={}, cursor_y={}", tui.cursor_x, tui.cursor_y);
+    println!(
+        "paste 16385 bytes → cursor_x={}, cursor_y={}",
+        tui.cursor_x, tui.cursor_y
+    );
 }
 
 /// 粘贴 TV_W+1 字符恰好触发一次折行，cursor_x 应为 1，cursor_y 应为 1
@@ -440,8 +441,16 @@ fn paste_tv_width_plus_one_in_large_file_wraps() {
     let meta = td.get_current_line_meta().unwrap();
     let paste = "y".repeat(TV_W + 1);
     h().handle_paste(&mut tui, meta, &td, &paste).unwrap();
-    assert_eq!(tui.cursor_y, 1, "TV_W+1 粘贴后 cursor_y 应为 1，实际: {}", tui.cursor_y);
-    assert_eq!(tui.cursor_x, 1, "TV_W+1 粘贴后 cursor_x 应为 1，实际: {}", tui.cursor_x);
+    assert_eq!(
+        tui.cursor_y, 1,
+        "TV_W+1 粘贴后 cursor_y 应为 1，实际: {}",
+        tui.cursor_y
+    );
+    assert_eq!(
+        tui.cursor_x, 1,
+        "TV_W+1 粘贴后 cursor_x 应为 1，实际: {}",
+        tui.cursor_x
+    );
 }
 
 /// 粘贴 1000 行（"abc\n" × 1000），cursor_y <= TV_H
@@ -551,7 +560,8 @@ fn paste_after_scroll_no_panic() {
     tui.cursor_x = 0;
     tui.bytes_cursor = 0;
     let meta2 = td.get_current_line_meta().unwrap();
-    h().handle_paste(&mut tui, meta2, &td, "hello world\n").unwrap();
+    h().handle_paste(&mut tui, meta2, &td, "hello world\n")
+        .unwrap();
 }
 
 /// 向下滚动后回车，不应 panic，cursor_y <= TV_H
@@ -580,12 +590,7 @@ fn paste_then_save_content_correct() {
     tmp.flush().unwrap();
 
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
-    let mut td = TextDisplay::EditBlock(EditTextWarp::new(
-        gap,
-        TV_H,
-        TV_W,
-        TextWarpType::SoftWrap,
-    ));
+    let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
     td.get_one_page(1).unwrap();
     let mut tui = ChapTui::for_test(TV_H, TV_W);
 
@@ -614,12 +619,7 @@ fn char_insert_1000_save_file_grows() {
     tmp.flush().unwrap();
 
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
-    let mut td = TextDisplay::EditBlock(EditTextWarp::new(
-        gap,
-        TV_H,
-        TV_W,
-        TextWarpType::SoftWrap,
-    ));
+    let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
     td.get_one_page(1).unwrap();
     let mut tui = ChapTui::for_test(TV_H, TV_W);
 
@@ -638,7 +638,10 @@ fn char_insert_1000_save_file_grows() {
         new_size,
         original_size
     );
-    println!("original={} bytes, after 1000 inserts={} bytes", original_size, new_size);
+    println!(
+        "original={} bytes, after 1000 inserts={} bytes",
+        original_size, new_size
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -672,7 +675,8 @@ fn stress_mixed_ops_large_file_no_panic() {
     // 粘贴内容
     tui.bytes_cursor = 0;
     let meta3 = td.get_current_line_meta().unwrap();
-    h().handle_paste(&mut tui, meta3, &td, "inserted_text\n").unwrap();
+    h().handle_paste(&mut tui, meta3, &td, "inserted_text\n")
+        .unwrap();
 
     // 回车
     tui.bytes_cursor = 0;
