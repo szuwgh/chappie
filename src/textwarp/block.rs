@@ -245,7 +245,6 @@ impl Block {
         block_id: BlockId,
         check_sum: Option<u32>,
     ) -> ChapResult<(Self, Option<BlockIndex>)> {
-        // buf.clear();
         reader.seek(SeekFrom::Start(file_start as u64))?;
         let n = reader.read(buf)?;
         if n == 0 {

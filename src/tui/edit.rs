@@ -266,11 +266,11 @@ pub(crate) fn get_edit_content<'a>(
 
             if let Some(line_num) = find_line_index {
                 let line_meta = line_meta.get(i).unwrap();
-                log::debug!("line_meta.get_line_index:{}", line_meta.get_line_index());
-                log::debug!("line_num():{}", line_num);
-                log::debug!("line_meta.line_offset:{}", line_meta.line_offset);
-                log::debug!("find_highlight_offset:{}", find_highlight_offset);
-                log::debug!("line_meta.get_line_end():{}", line_meta.get_line_end());
+                // log::debug!("line_meta.get_line_index:{}", line_meta.get_line_index());
+                // log::debug!("line_num():{}", line_num);
+                // log::debug!("line_meta.line_offset:{}", line_meta.line_offset);
+                // log::debug!("find_highlight_offset:{}", find_highlight_offset);
+                // log::debug!("line_meta.get_line_end():{}", line_meta.get_line_end());
                 if line_meta.get_line_index() == line_num {
                     if line_meta.line_offset <= find_highlight_offset
                         && find_highlight_offset < line_meta.get_line_end()

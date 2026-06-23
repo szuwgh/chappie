@@ -254,6 +254,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
         let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
         let cmd = Command::parse(cmd_inp);
         match cmd {
+            Command::Empty => {}
             Command::Back => {
                 if let Some(line_num) = chap_tui.back_linenum.pop() {
                     chap_tui.cursor_y = 0;

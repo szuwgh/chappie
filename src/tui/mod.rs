@@ -3,6 +3,7 @@ pub(crate) mod hex;
 pub(crate) mod text;
 use crate::byteutil::Endian;
 use crate::cli::UIType;
+use crate::command::Command;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
@@ -281,6 +282,7 @@ pub(crate) struct ChapTui {
     pub(crate) find_index: usize, // 搜索的时候跳转到第几个find_list的条目
     pub(crate) find_highlight_index: usize, //一行搜索的关键字中 高亮第几个关键字
     pub(crate) highlight_len: usize, //关键字高亮的长度
+    pub(crate) cur_cmd: Command,
     input_focus: InputFocus,
 }
 
@@ -291,6 +293,9 @@ impl ChapTui {
 
     fn enter_text_mode(&mut self) {
         self.input_focus = InputFocus::Text;
+        self.find_list = None;
+        self.find_index = 0;
+        self.highlight_len = 0;
     }
 
     pub(crate) fn in_command_mode(&self) -> bool {
@@ -334,6 +339,7 @@ impl ChapTui {
             find_index: 0,
             find_highlight_index: 0,
             highlight_len: 0,
+            cur_cmd: Command::Empty,
             input_focus: InputFocus::Text,
         })
     }
@@ -926,6 +932,7 @@ impl ChapTui {
             find_index: 0,
             find_highlight_index: 0,
             highlight_len: 0,
+            cur_cmd: Command::Empty,
             input_focus: InputFocus::Text,
         }
     }

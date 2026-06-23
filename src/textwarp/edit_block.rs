@@ -1,7 +1,6 @@
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::ring_vec::RingVec;
-use crate::searcher::boyermoore::BoyerMoore;
 use crate::textwarp::block::Block;
 use crate::textwarp::block::BlockId;
 use crate::textwarp::block::BlockIndex;
@@ -23,7 +22,6 @@ use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
 use crc::Crc;
 use crc::CRC_32_ISO_HDLC;
-use log::log;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io;

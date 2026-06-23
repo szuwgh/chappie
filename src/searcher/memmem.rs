@@ -240,13 +240,10 @@ fn modified_horspool(haystack: &[u8], needle: &[u8]) -> Option<usize> {
                 break;
             }
         }
-
         hs -= tmp;
-
         if tmp < m1 {
             continue;
         }
-
         // 末尾 2 字节 hash 命中。长 needle 先比较 8 字节过滤片段，减少完整比较。
         if m1 < 15
             || memcmp(
@@ -257,7 +254,6 @@ fn modified_horspool(haystack: &[u8], needle: &[u8]) -> Option<usize> {
             if memcmp(&haystack[hs..hs + m1], &needle[..m1]) == 0 {
                 return Some(hs);
             }
-
             // 如果过滤片段没有发现 mismatch，下次换一个靠后的 8 字节片段过滤。
             offset = (if offset >= 8 { offset } else { m1 }).wrapping_sub(8);
         }

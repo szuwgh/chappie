@@ -1,6 +1,7 @@
 use crate::byteutil::Endian;
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
+    Empty,
     Back,
     SetEndian(Endian), // big or little
     Jump(usize),       // address to jump to

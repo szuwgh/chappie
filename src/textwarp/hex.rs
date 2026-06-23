@@ -1,6 +1,3 @@
-use ratatui::symbols::block;
-use ratatui::symbols::line;
-
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::textwarp::block::Block;

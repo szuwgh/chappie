@@ -265,6 +265,75 @@ impl HandleCmdInpEdit {
         chap_tui.inp_cursor_x += 1;
         Ok(())
     }
+
+    fn handle_command(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &LineState,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
+        let cmd = Command::parse(cmd_inp);
+        match &cmd {
+            Command::Find(v) => match v {
+                FindValue::Ascii(s) => {
+                    let pattern = s.as_bytes();
+                    self.find_jump(chap_tui, pattern, line_meta, td)?;
+                }
+                _ => {}
+            },
+            _ => {
+                chap_tui.elem.cmd_inp.clear();
+                chap_tui.elem.cmd_inp.push_str("Unknown command");
+            }
+        }
+        chap_tui.cur_cmd = cmd;
+        Ok(())
+    }
+
+    fn find_jump(
+        &self,
+        chap_tui: &mut ChapTui,
+        pattern: &[u8],
+        line_meta: &LineState,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        let result = td.search(pattern, line_meta)?;
+        if let Some(r) = &result {
+            if r.len() > 0 {
+                chap_tui.find_index = 0;
+                chap_tui.find_highlight_index = 0;
+                chap_tui.highlight_len = pattern.len();
+                td.get_one_page_from_state(&r[chap_tui.find_index])?;
+            }
+        }
+        chap_tui.find_list = result;
+        Ok(())
+    }
+
+    fn handle_down(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
+        match chap_tui.cur_cmd {
+            Command::Find(_) => {
+                if let Some(find_line_state) = &chap_tui.find_list {
+                    let state: &LineState = &find_line_state[chap_tui.find_index];
+                    if let Some(h) = &state.highlight {
+                        if chap_tui.find_highlight_index < h.len() - 1 {
+                            chap_tui.find_highlight_index += 1;
+                            return Ok(());
+                        }
+                        if chap_tui.find_index < find_line_state.len() - 1 {
+                            chap_tui.find_index += 1;
+                            chap_tui.find_highlight_index = 0;
+                            td.get_one_page_from_state(&find_line_state[chap_tui.find_index])?;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 pub(crate) struct HandleEdit {
@@ -353,50 +422,6 @@ impl HandleEdit {
         chap_tui.is_last_line = false;
         Ok(())
     }
-
-    fn handle_command(
-        &self,
-        chap_tui: &mut ChapTui,
-        line_meta: &LineState,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
-        let cmd = Command::parse(cmd_inp);
-        match cmd {
-            Command::Find(v) => match v {
-                FindValue::Ascii(s) => {
-                    let pattern = s.as_bytes();
-                    self.find_jump(chap_tui, pattern, line_meta, td)?;
-                }
-                _ => {}
-            },
-            _ => {
-                chap_tui.elem.cmd_inp.clear();
-                chap_tui.elem.cmd_inp.push_str("Unknown command");
-            }
-        }
-        Ok(())
-    }
-
-    fn find_jump(
-        &self,
-        chap_tui: &mut ChapTui,
-        pattern: &[u8],
-        line_meta: &LineState,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        let result = td.search(pattern, line_meta)?;
-        if let Some(r) = &result {
-            if r.len() > 0 {
-                chap_tui.find_index = 0;
-                chap_tui.find_highlight_index = 0;
-                chap_tui.highlight_len = pattern.len();
-                td.get_one_page_from_state(&r[0])?;
-            }
-        }
-        chap_tui.find_list = result;
-        Ok(())
-    }
 }
 
 impl Handle for HandleEdit {
@@ -468,6 +493,10 @@ impl Handle for HandleEdit {
         mut line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if chap_tui.in_command_mode() {
+            self.cmdinp_edit.handle_down(chap_tui, td)?;
+            return Ok(());
+        }
         match chap_tui.warp_type {
             TextWarpType::NoWrap => {
                 if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
@@ -606,7 +635,7 @@ impl Handle for HandleEdit {
     ) -> ChapResult<()> {
         if chap_tui.in_command_mode() {
             if let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) {
-                self.handle_command(chap_tui, cur_meta, td)?;
+                self.cmdinp_edit.handle_command(chap_tui, cur_meta, td)?;
             };
 
             return Ok(());
@@ -1003,7 +1032,7 @@ mod tests {
             cursor_x: tui.cursor_x,
             is_txt_model: true,
             find_highlight_offset: 0,
-            find_line_num: None,
+            find_line_index: None,
             highlight_len: 0,
         };
         let (_, _, byte_cursor, last_char_bytes_size) =
