@@ -1,6 +1,6 @@
 pub(crate) mod aho_corasick;
 pub(crate) mod boyermoore;
-mod memchr;
+pub(crate) mod memchr;
 mod memcmp;
 pub(crate) mod memmem;
 mod searcher;

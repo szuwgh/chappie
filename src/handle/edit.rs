@@ -956,14 +956,14 @@ mod tests {
     use crate::textwarp::EditTextWarp;
     use crate::textwarp::TextDisplay;
     use crate::textwarp::TextWarpType;
-    use crate::tui::edit::get_edit_content;
-    use crate::tui::edit::EditContext;
+    use crate::tui::edit::EditBuildContent;
+    use crate::tui::BuildContent;
     use crate::tui::ChapTui;
+    use crate::tui::EditContext;
     use crate::undo::undo::UndoFile;
     use std::io::Write;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
-
     // ── 测试辅助 ──────────────────────────────────────────────────────────────
 
     const TV_H: usize = 20;
@@ -1035,10 +1035,16 @@ mod tests {
             find_line_index: None,
             highlight_len: 0,
         };
-        let (_, _, byte_cursor, last_char_bytes_size) =
-            get_edit_content(content, tui.elem.tv.get_width(), &meta, 0, &None, &ed_ctx);
-        tui.bytes_cursor = byte_cursor;
-        tui.bytes_cursor_size = last_char_bytes_size;
+        let content = EditBuildContent::build_content(
+            content,
+            tui.elem.tv.get_width(),
+            &meta,
+            0,
+            &None,
+            &ed_ctx,
+        );
+        tui.bytes_cursor = content.byte_cursor;
+        tui.bytes_cursor_size = content.last_char_bytes_size;
     }
 
     fn sync_view_state(tui: &mut ChapTui, td: &TextDisplay) {

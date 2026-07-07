@@ -1779,7 +1779,7 @@ impl TextOper for TextDisplay {
 
     fn scroll_pre_one_line(&self, meta: &LineState) -> ChapResult<()> {
         match self {
-            TextDisplay::Text(v) => v.scroll_pre_one_line(meta),
+            TextDisplay::Text(v) => v.scroll_pre_one_line2(meta),
             TextDisplay::Hex(v) => v.scroll_pre_one_line(meta),
             TextDisplay::Edit(v) => v.scroll_pre_one_line2(meta),
             TextDisplay::EditBlock(v) => v.scroll_pre_one_line2(meta),
@@ -2047,7 +2047,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
             log::debug!("没有下一行了");
             return (None, LineState::default());
         }
-        let mut next_line_state = self.borrow_lines_mut().get_next_line_state(&meta).unwrap(); //self.borrow_lines_mut().get_line(&state).unwrap(); //&self.borrow_lines()[line_index];
+        let mut next_line_state = self.borrow_lines_mut().get_next_line_state(&meta).unwrap();
 
         //这行已经读完 开始下一行
         // if line_end == meta.get_txt_len() {
@@ -2069,19 +2069,10 @@ impl<T: Text + TextIndex> TextWarp<T> {
         next_line_state.start_page_num = meta.get_line_num() / self.height;
         let mut s = LineData::empty();
         let mut m = LineState::default();
-        //  let start_page_num = meta.get_line_num() / self.height;
-        self.get_char_text_fn(
-            &next_line_state,
-            line_count,
-            // meta.get_line_num(),
-            // start_page_num,
-            0,
-            false,
-            &mut |x, m1| {
-                s = x;
-                m = m1;
-            },
-        );
+        self.get_char_text_fn(&next_line_state, line_count, 0, false, &mut |x, m1| {
+            s = x;
+            m = m1;
+        });
         (Some(CacheStr::from_data(s)), m)
     }
 
@@ -2258,7 +2249,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
     fn set_line_char_txt<'a, F, I: TextIndex, L: Line<'a> + 'a>(
         line_str: L,                   // 行内容
         line_index: usize,             // 行索引
-        line_start: usize,             // 行起始位置
+        line_offset: usize,            // 行起始位置
         with: usize,                   // 每行宽度
         height: usize,                 // 每页行数
         text_index: &mut I,            // 文本索引
@@ -2276,10 +2267,10 @@ impl<T: Text + TextIndex> TextWarp<T> {
     {
         //空行
 
-        let line_txt = if is_rev && line_start > 0 {
-            line_str.text(..line_start)
+        let line_txt = if is_rev && line_offset > 0 {
+            line_str.text(..line_offset)
         } else {
-            line_str.text(line_start..)
+            line_str.text(line_offset..)
         };
         if line_txt.text_len() == 0 {
             if is_rev {
@@ -2347,7 +2338,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 Self::no_warp(
                     line_str,
                     line_index,
-                    line_start,
+                    line_offset,
                     with,
                     height,
                     text_index,
@@ -2364,7 +2355,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
                 Self::sort_warp(
                     line_str,
                     line_index,
-                    line_start,
+                    line_offset,
                     with,
                     height,
                     text_index,
@@ -2797,7 +2788,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
     fn sort_warp<'a, F, I: TextIndex, L: Line<'a> + 'a>(
         line_str: L,
         line_index: usize,
-        line_start: usize,
+        line_offset: usize,
         with: usize,
         height: usize,
         text_index: &mut I,
@@ -2815,7 +2806,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
             Self::sort_warp_desc(
                 line_str,
                 line_index,
-                line_start,
+                line_offset,
                 with,
                 height,
                 text_index,
@@ -2831,7 +2822,7 @@ impl<T: Text + TextIndex> TextWarp<T> {
             Self::sort_warp_asc(
                 line_str,
                 line_index,
-                line_start,
+                line_offset,
                 with,
                 height,
                 text_index,

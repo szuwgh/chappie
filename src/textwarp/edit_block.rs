@@ -196,8 +196,6 @@ impl GapBlockText {
     ) -> ChapResult<(BlockPtr<'_>, Option<BlockIndex>)> {
         // 优先从 cache 取（修改过的块存在 cache 中，key = stable block_id）
         if let Some(o) = self.cache.get(&block_id) {
-            // o.file_start = file_start;
-            // o.file_end = file_start + o.block_size();
             return Ok((BlockPtr::Borrowed(o), None));
         }
         let mut buf = [0u8; BLOCK_SIZE];
@@ -683,7 +681,7 @@ impl Text for GapBlockText {
         let pos = self.block_pos(block_id)?;
         let block_index = &self.block_indexs[pos];
 
-        let line = self.get_line(&state).unwrap();
+        let line = self.get_line(&state)?;
         let mut next_block_id = block_id;
         if state.get_line_end() >= line.text_len() {
             if state.get_block_line_end() >= block_index.logic_block_size - 1 {

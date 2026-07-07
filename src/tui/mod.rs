@@ -6,6 +6,7 @@ use crate::cli::UIType;
 use crate::command::Command;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
+use crate::handle::text::HandleText;
 use crate::handle::Handle;
 use crate::handle::HandleEdit;
 use crate::handle::HandleHex;
@@ -15,6 +16,7 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
+use crate::textwarp::CacheStr;
 use crate::textwarp::EditTextWarp;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
@@ -22,11 +24,10 @@ use crate::textwarp::TextOper;
 use crate::textwarp::TextSelect;
 use crate::textwarp::TextWarp;
 use crate::textwarp::TextWarpType;
-use crate::tui::edit::build_cursor_line;
-use crate::tui::edit::get_edit_content;
-use crate::tui::edit::EditContext;
+use crate::tui::edit::EditBuildContent;
 use crate::tui::hex::get_data_inspector_content;
 use crate::tui::hex::get_hex_content;
+use crate::tui::text::TextBuildContent;
 use crate::undo::undo::UndoFile;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::KeyEvent;
@@ -46,13 +47,43 @@ use ratatui::prelude::Size;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
+use ratatui::text::Span;
 use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io;
-use std::io::stdout;
 use std::path::Path;
+use utf8_iter::Utf8CharsEx;
+
+pub(crate) struct Content<'a> {
+    pub(crate) navi: Text<'a>,
+    pub(crate) visible_content: Text<'a>,
+    pub(crate) byte_cursor: usize,
+    pub(crate) last_char_bytes_size: usize,
+}
+
+pub(crate) struct EditContext {
+    pub(crate) height: usize,
+    pub(crate) column_offset: usize,
+    pub(crate) cursor_y: usize,
+    pub(crate) cursor_x: usize,
+    pub(crate) is_txt_model: bool,
+    pub(crate) find_highlight_offset: usize,
+    pub(crate) find_line_index: Option<usize>,
+    pub(crate) highlight_len: usize,
+}
+
+pub(crate) trait BuildContent {
+    fn build_content<'a>(
+        txts: &'a RingVec<CacheStr>,
+        with: usize,
+        line_meta: &'a RingVec<LineState>,
+        cur_line: usize,
+        select_line: &Option<(usize, usize)>,
+        ed_ctx: &EditContext,
+    ) -> Content<'a>;
+}
 
 pub(crate) enum ChapMod {
     Edit,      //普通编辑器模式
@@ -374,7 +405,7 @@ impl ChapTui {
             ChapMod::EditBlock => 100,
             ChapMod::Edit => 100,
             ChapMod::Hex => ((hex_with as f32 / tui_width as f32) * 100.0) as u16,
-            ChapMod::Text => 0,
+            ChapMod::Text => 100,
             ChapMod::Vector => 0,
         };
         let rect = Rect::new(0, start_row, tui_width, tui_height);
@@ -527,7 +558,7 @@ impl ChapTui {
         let hand = match self.chap_mod {
             ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
             ChapMod::EditBlock => HandleImpl::Edit(HandleEdit::new()),
-            ChapMod::Text => todo!(),
+            ChapMod::Text => HandleImpl::Text(HandleText::new()),
             ChapMod::Hex => HandleImpl::Hex(HandleHex::new(LuaPlugin::new(plugin))),
             _ => {
                 todo!()
@@ -549,7 +580,7 @@ impl ChapTui {
                     twy,
                 )),
                 ChapMod::Text => {
-                    return Ok(());
+                    // return Ok(());
                     TextDisplay::Text(TextWarp::new(
                         MmapText::from_file_path(&p)?,
                         self.elem.tv.get_height(),
@@ -581,15 +612,24 @@ impl ChapTui {
                     break 'tui;
                 }
                 let line_meta = match self.chap_mod {
-                    ChapMod::Edit => {
-                        self.render_edit(self.cursor_x, self.cursor_y, self.column_offset, &td)?
-                    }
-                    ChapMod::EditBlock => {
-                        self.render_edit(self.cursor_x, self.cursor_y, self.column_offset, &td)?
-                    }
-                    ChapMod::Text => {
-                        todo!()
-                    }
+                    ChapMod::Edit => self.render_edit::<EditBuildContent>(
+                        self.cursor_x,
+                        self.cursor_y,
+                        self.column_offset,
+                        &td,
+                    )?,
+                    ChapMod::EditBlock => self.render_edit::<EditBuildContent>(
+                        self.cursor_x,
+                        self.cursor_y,
+                        self.column_offset,
+                        &td,
+                    )?,
+                    ChapMod::Text => self.render_edit::<TextBuildContent>(
+                        self.cursor_x,
+                        self.cursor_y,
+                        self.column_offset,
+                        &td,
+                    )?,
                     ChapMod::Hex => {
                         self.render_hex(self.cursor_x, self.cursor_y, self.txt_sel.clone(), &td)?
                     }
@@ -605,44 +645,6 @@ impl ChapTui {
                         event::Event::Key(KeyEvent {
                             code, modifiers, ..
                         }) => {
-                            // let edit_focus_enabled = matches!(self.chap_mod, ChapMod::Edit);
-                            // match (code, modifiers) {
-                            //     (KeyCode::Esc, _) if edit_focus_enabled => {
-                            //         if !self.in_command_mode() {
-                            //             hand.handle_esc(self)?;
-                            //             self.enter_command_mode();
-                            //         }
-                            //         break 'key;
-                            //     }
-                            //     // (KeyCode::Esc, _) => {
-                            //     //     hand.handle_esc(self)?;
-                            //     //     break 'key;
-                            //     // }
-                            //     (KeyCode::Char('x'), KeyModifiers::CONTROL)
-                            //         if edit_focus_enabled && self.in_command_mode() =>
-                            //     {
-                            //         self.enter_text_mode();
-                            //         break 'key;
-                            //     }
-                            //     _ => {}
-                            // }
-
-                            // if edit_focus_enabled && self.in_command_mode() {
-                            //     match (code, modifiers) {
-                            //         (KeyCode::Backspace, _) => {
-                            //             self.elem.cmd_inp.pop();
-                            //         }
-                            //         (KeyCode::Char(c), m)
-                            //             if !m.contains(KeyModifiers::CONTROL)
-                            //                 && !m.contains(KeyModifiers::ALT) =>
-                            //         {
-                            //             self.elem.cmd_inp.push(c);
-                            //         }
-                            //         _ => {}
-                            //     }
-                            //     break 'key;
-                            // }
-
                             match (code, modifiers) {
                                 (KeyCode::Esc, _) => {
                                     hand.handle_esc(self)?;
@@ -753,7 +755,7 @@ impl ChapTui {
         }
     }
 
-    pub(crate) fn render_edit<'a>(
+    pub(crate) fn render_edit<'a, T: BuildContent>(
         &mut self,
         cursor_x: usize,
         cursor_y: usize,
@@ -797,22 +799,23 @@ impl ChapTui {
             };
             //let column_offset = self.column_offset;
             self.terminal.draw(|f| {
-                let (navi, visible_content, byte_cursor, last_char_bytes_size) = get_edit_content(
-                    content,
-                    tv_width,
-                    &meta,
-                    navi_cur_line,
-                    &select_line,
-                    &ed_ctx,
-                );
-                self.bytes_cursor = byte_cursor;
-                self.bytes_cursor_size = last_char_bytes_size;
-                let text_para = Paragraph::new(visible_content)
+                let  content  = //(navi, visible_content, byte_cursor, last_char_bytes_size)
+                    T::build_content(
+                        content,
+                        tv_width,
+                        &meta,
+                        navi_cur_line,
+                        &select_line,
+                        &ed_ctx,
+                    );
+                self.bytes_cursor = content.byte_cursor;
+                self.bytes_cursor_size = content.last_char_bytes_size;
+                let text_para = Paragraph::new(content.visible_content)
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(text_para, tv_rect);
 
-                let nav_paragraph = Paragraph::new(navi);
+                let nav_paragraph = Paragraph::new(content.navi);
                 f.render_widget(nav_paragraph, navi_rect);
 
                 let prompt = if command_focus { ">: " } else { "" };
@@ -849,6 +852,280 @@ impl ChapTui {
         };
         return Ok(line_meta);
     }
+}
+
+trait GetNonControlLen {
+    fn get_non_control_len(&self) -> usize;
+}
+
+impl GetNonControlLen for &[u8] {
+    fn get_non_control_len(&self) -> usize {
+        self.len()
+    }
+}
+
+// 获取字符串中前 n 个非控制字符的位置，返回前三部分字符串及最后一个非控制字符的字节大小
+fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usize) {
+    let mut count = 0;
+    let mut start_idx = None;
+    let mut end_idx = None;
+    let mut last_start_idx = None;
+    let slen = s.get_non_control_len();
+    // 去掉多余的 .enumerate()：idx 从未被使用，直接取 char_indices() 的 (byte_index, ch)
+    for (byte_index, ch) in s.char_indices() {
+        // if ch.is_control() {
+        //     continue;
+        // }
+        if n > 0 && count == n - 1 {
+            //8
+            last_start_idx = Some(byte_index);
+        }
+        if count == n {
+            // 第 n 个非控制字符
+            start_idx = Some(byte_index);
+        }
+        if count == n + 1 {
+            // 第 n+1 个非控制字符
+            end_idx = Some(byte_index);
+            break;
+        }
+        count += 1;
+    }
+    // 如果 never set, 默认到末尾
+    let last_start = last_start_idx.unwrap_or_else(|| 0);
+    let start = start_idx.unwrap_or_else(|| slen);
+    let end = end_idx.unwrap_or_else(|| slen);
+
+    (&s[..start], &s[start..end], &s[end..], start - last_start)
+}
+
+/// 单次字符遍历，直接返回字符范围 [char_start, char_end) 对应的可见字节切片（至多 2 段）。
+///
+/// # 优化说明
+/// 原先两步：char_range_to_byte_range（扫描一遍求字节边界）+
+///           slice_parts_range（再扫描一遍切取子切片）。
+/// 本函数融合两步：在遍历中同时记录 char_start 所在位置，
+/// 到达 char_end 时即刻提取切片返回，字节只扫描一遍，节省约 50% 扫描量。
+///
+/// 可见区域跨越 3+ 段时取前两段（与原 slice_parts_range 行为一致）。
+pub(crate) fn char_range_to_visible<'a>(
+    parts: &[&'a [u8]],
+    char_start: usize,
+    char_end: usize,
+) -> [&'a [u8]; 2] {
+    let mut char_count = 0usize;
+    // char_start 所在的 part 索引及其在该 part 内的字节偏移
+    let mut start_pi = 0usize;
+    let mut start_byte = 0usize;
+    let mut found_start = false;
+
+    for (pi, part) in parts.iter().enumerate() {
+        for (byte_idx, _) in part.char_indices() {
+            // 记录 char_start 位置（仅记录一次）
+            if !found_start && char_count == char_start {
+                start_pi = pi;
+                start_byte = byte_idx;
+                found_start = true;
+            }
+            // 到达 char_end：立即提取可见切片并返回
+            if char_count == char_end {
+                if !found_start {
+                    return [b"", b""];
+                }
+                return if start_pi == pi {
+                    // 起止在同一 part：单段切片
+                    [&part[start_byte..byte_idx], b""]
+                } else if start_pi + 1 == pi {
+                    // 跨相邻两个 part
+                    [&parts[start_pi][start_byte..], &part[..byte_idx]]
+                } else {
+                    // 跨 3+ 个 part：取前两段（与原 slice_parts_range 行为一致）
+                    [&parts[start_pi][start_byte..], parts[start_pi + 1]]
+                };
+            }
+            char_count += 1;
+        }
+    }
+    // char_end 超出文本末尾
+    if !found_start || parts.is_empty() {
+        return [b"", b""];
+    }
+    let last_pi = parts.len() - 1;
+    if start_pi == last_pi {
+        [&parts[start_pi][start_byte..], b""]
+    } else {
+        [&parts[start_pi][start_byte..], parts[start_pi + 1]]
+    }
+}
+
+// part 是一个连续的字节块，highlight_start和highlight_end 是高亮开始和结束的地方，然后这个函数把part
+//切成非高亮块和高亮块 highlight_start和highlight_end 有可能跨字节块
+fn cut_highlight_part<'a>(
+    parts: &[&'a [u8]],
+    start: usize,
+    end: usize,
+) -> (Vec<&'a [u8]>, Vec<&'a [u8]>, Vec<&'a [u8]>) {
+    let mut pre = Vec::new();
+    let mut mid = Vec::new();
+    let mut post = Vec::new();
+    let mut offset = 0;
+    for part in parts {
+        let part_len = part.len();
+        let next_offset = offset + part_len;
+
+        // 完全在 highlight 前
+        if next_offset <= start {
+            pre.push(*part);
+        }
+        // 完全在 highlight 后
+        else if offset >= end {
+            post.push(*part);
+        }
+        // 和 highlight 有交集
+        else {
+            let s = start.saturating_sub(offset);
+            let e = (end - offset).min(part_len);
+            // part 被切成三段逻辑区域，但我们仍然返回 slice（不能再细切 slice-of-slice）
+            if offset < start {
+                if s > 0 {
+                    pre.push(&part[..s]);
+                }
+            }
+            if e > s {
+                mid.push(&part[s..e]);
+            }
+            if offset + part_len > end {
+                if e < part_len {
+                    post.push(&part[e..]);
+                }
+            }
+        }
+        offset = next_offset;
+    }
+    (pre, mid, post)
+}
+
+pub(crate) fn build_cursor_line<'a>(
+    str_parts: &[&'a [u8]],
+    cursor_x: usize,
+    char_count: &[usize],
+    char_in_index: usize, //判断光标在那个 part中
+) -> (Vec<Span<'a>>, usize, usize) {
+    //let (str1, str2) = txt.text(offset..);
+    // 优化2：预分配容量：最多 str_parts.len() 个普通段 + 3 个光标相关 span（前段/光标/后段）
+    let mut spans = Vec::with_capacity(str_parts.len() + 3);
+    let mut last_char_bytes_size: usize = 0;
+    let byte_cursor;
+    let (a, b, c) = if char_in_index == 0 {
+        let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(str_parts[0], cursor_x);
+        last_char_bytes_size = last_csz;
+        (a, b, c)
+    } else {
+        // 优化2：前几段字符数之和会被用两次，提前计算缓存，避免重复 .iter().sum()
+        let prev_char_sum: usize = char_count[..char_in_index].iter().sum();
+        let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(
+            str_parts[char_in_index],
+            cursor_x.saturating_sub(prev_char_sum),
+        );
+        //如果上一个字符大小是0则光标可能在第一个字符那里
+        if last_csz == 0 {
+            let (_, _, _, sz) =
+                n_chars_skip_control_mem_opt(str_parts[char_in_index - 1], prev_char_sum);
+            last_char_bytes_size = sz;
+        } else {
+            last_char_bytes_size = last_csz;
+        }
+        (a, b, c)
+    };
+    if b.len() > 0 {
+        byte_cursor = if char_in_index == 0 {
+            a.get_non_control_len()
+        } else {
+            // 优化3：原来先推入 spans（遍历一次），再 fold 累加字节（遍历第二次），
+            // 合并为单次循环：推入 span 的同时累加字节数
+            let mut prefix_bytes = 0usize;
+            for j in 0..char_in_index {
+                let part = str_parts[j];
+                prefix_bytes += part.len();
+                spans.push(Span::raw(str::from_utf8(part).unwrap_or("☻")));
+            }
+            prefix_bytes + a.get_non_control_len()
+        };
+        let (display, color) = if b == b"\n" {
+            (" ", Color::LightBlue)
+        } else {
+            (str::from_utf8(b).unwrap_or("☻"), Color::LightRed)
+        };
+
+        spans.push(Span::raw(str::from_utf8(a).unwrap_or("☻")));
+        spans.push(Span::styled(display, Style::default().bg(color)));
+        spans.push(Span::raw(str::from_utf8(c).unwrap_or("")));
+        for j in (char_in_index + 1)..str_parts.len() {
+            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("☻")));
+        }
+    } else {
+        byte_cursor = if char_in_index == 0 {
+            str_parts[0].get_non_control_len()
+        } else {
+            // 空切片 len()==0 不影响 fold 结果，filter 多余，直接删除
+            str_parts[..char_in_index]
+                .iter()
+                .fold(0, |acc, s| acc + s.len())
+                + str_parts[char_in_index].get_non_control_len()
+        };
+        for j in 0..str_parts.len() {
+            spans.push(Span::raw(str::from_utf8(str_parts[j]).unwrap_or("☻")));
+        }
+        let diff = cursor_x.saturating_sub(char_count.iter().sum());
+        let padding = " ".repeat(diff);
+        spans.push(Span::raw(padding));
+        // 在填充后显示高亮的光标
+        spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+    }
+    (spans, byte_cursor, last_char_bytes_size)
+}
+
+/// 为超出文本范围的光标添加空行和光标显示
+fn append_padding_lines(
+    lines: &mut Vec<Line>,
+    cursor_y: usize,
+    cursor_x: usize,
+    line_meta_len: usize,
+) {
+    if cursor_y >= line_meta_len {
+        let diff = cursor_y.saturating_sub(line_meta_len);
+        for _ in 0..diff {
+            lines.push(Line::raw(""));
+        }
+        let mut spans = Vec::new();
+        let padding = " ".repeat(cursor_x);
+        spans.push(Span::raw(padding));
+        // 在填充后显示高亮的光标
+        spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+        lines.push(Line::from(spans));
+    }
+}
+
+/// 构建行号导航文本
+pub fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_> {
+    let nav_lines: Vec<Line> = (0..height)
+        .map(|i| {
+            line_meta.get(i).map_or_else(
+                || Line::raw(""),
+                |meta| {
+                    if meta.get_line_offset() > 0 {
+                        Line::raw("")
+                    } else {
+                        Line::from(Span::styled(
+                            format!("{:>4} ", meta.get_line_num()),
+                            Style::default().fg(Color::White),
+                        ))
+                    }
+                },
+            )
+        })
+        .collect();
+    Text::from(nav_lines)
 }
 
 #[cfg(test)]
