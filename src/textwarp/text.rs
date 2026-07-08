@@ -3,6 +3,7 @@ use crate::searcher::memchr::memchr;
 use crate::textwarp::ChapResult;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
+use crate::textwarp::LineStateBuilder;
 use crate::textwarp::LineStr;
 use crate::textwarp::Path;
 use crate::textwarp::Text;
@@ -26,7 +27,6 @@ impl MmapText {
 
 pub struct MmapTextIter<'a> {
     mmap: &'a Mmap,
-    line_index: usize,
     line_file_start: usize,
     file_size: usize,
     /// 首行已知的 line_file_end（None 表示不知道，需要扫描）
@@ -69,18 +69,39 @@ impl<'a> Iterator for MmapTextIter<'a> {
 impl<'a> MmapTextIter<'a> {
     fn new(
         mmap: &'a Mmap,
-        line_index: usize,
         line_file_start: usize,
         file_size: usize,
         first_line_file_end: Option<usize>,
     ) -> MmapTextIter<'a> {
         MmapTextIter {
             mmap,
-            line_index,
             line_file_start,
             file_size,
             first_line_file_end,
         }
+    }
+}
+
+pub(crate) struct MmapScrollTextIter<'a> {
+    iter: MmapTextIter<'a>,
+    line_index: usize,
+}
+
+impl<'a> Iterator for MmapScrollTextIter<'a> {
+    type Item = (LineStr<'a>, LineState);
+    fn next(&mut self) -> Option<Self::Item> {
+        let it = self.iter.next()?;
+        let line_num = self.line_index + 1;
+
+        let line_state = LineStateBuilder::new()
+            .line_file_start(it.line_file_start)
+            .line_file_end(it.line_file_end)
+            .line_index(self.line_index)
+            .line_num(line_num)
+            .start_line_num(line_num)
+            .build();
+        self.line_index += 1;
+        Some((it, line_state))
     }
 }
 
@@ -207,7 +228,6 @@ impl Text for MmapText {
         let known_end = (line_state.line_file_end > 0).then_some(line_state.line_file_end);
         MmapTextIter::new(
             &self.mmap,
-            line_state.line_index,
             line_state.line_file_start,
             self.mmap.len(),
             known_end,
@@ -228,7 +248,20 @@ impl Text for MmapText {
     }
 
     fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
-        Ok(None)
+        let i = MmapScrollTextIter {
+            iter: MmapTextIter::new(&self.mmap, state.line_file_start, self.mmap.len(), None),
+            line_index: state.line_index,
+        };
+        let mut results = Vec::new();
+        for (line, mut index) in i {
+            let v = line.search(partten);
+            if v.len() > 0 {
+                index.highlight = Some(v);
+                results.push(index);
+            }
+        }
+
+        Ok((!results.is_empty()).then_some(results))
     }
 }
 

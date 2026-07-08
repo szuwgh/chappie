@@ -83,6 +83,8 @@ pub(crate) trait BuildContent {
         select_line: &Option<(usize, usize)>,
         ed_ctx: &EditContext,
     ) -> Content<'a>;
+
+    fn command_focus() -> bool;
 }
 
 pub(crate) enum ChapMod {
@@ -818,14 +820,18 @@ impl ChapTui {
                 let nav_paragraph = Paragraph::new(content.navi);
                 f.render_widget(nav_paragraph, navi_rect);
 
-                let prompt = if command_focus { ">: " } else { "" };
+                let prompt = if command_focus || T::command_focus() {
+                    ">: "
+                } else {
+                    ""
+                };
                 let input_title_box = Paragraph::new(Text::raw(prompt))
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(input_title_box, self.elem.cmd_title);
 
                 let input = self.elem.cmd_inp.get_inp();
-                let input_text = if command_focus {
+                let input_text = if command_focus || T::command_focus() {
                     let input_parts = [input.as_bytes()];
                     let input_char_count = [self.inp_cursor_x];
                     let (spans, _, _) =
@@ -838,15 +844,6 @@ impl ChapTui {
                     .block(Block::default())
                     .style(Style::default().fg(Color::White));
                 f.render_widget(input_para, cmd_rect);
-
-                // if command_focus {
-                //     f.set_cursor(cmd_rect.x + cmd_input_len, cmd_rect.y);
-                // } else {
-                //     let cursor_x =
-                //         tv_rect.x + cursor_x_vis.saturating_sub(column_offset).min(tv_width) as u16;
-                //     let cursor_y = tv_rect.y + cursor_y_vis.min(tv_height.saturating_sub(1)) as u16;
-                //     f.set_cursor(cursor_x, cursor_y);
-                // }
             })?;
             meta
         };

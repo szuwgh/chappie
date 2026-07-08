@@ -58,4 +58,8 @@ impl BuildContent for TextBuildContent {
             last_char_bytes_size: 0,
         };
     }
+
+    fn command_focus() -> bool {
+        true
+    }
 }

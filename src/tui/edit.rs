@@ -177,6 +177,10 @@ impl BuildContent for EditBuildContent {
             last_char_bytes_size: prev_char_bytes_size,
         };
     }
+
+    fn command_focus() -> bool {
+        false
+    }
 }
 
 // pub(crate) fn EditBuildContent::build_content<'a>(

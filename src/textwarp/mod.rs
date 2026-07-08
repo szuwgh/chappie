@@ -617,6 +617,15 @@ impl<'a> LineData<'a> {
         LineData::GapBytes(GapBytes::empty())
     }
 
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            LineData::Own(v) => v,
+            LineData::Bytes(v) => v,
+            LineData::GapBytes(v) => todo!(),
+            LineData::GapBlockBytes(v1, v2) => todo!(),
+        }
+    }
+
     fn as_str_parts(&self) -> LineParts<Cow<str>> {
         match self {
             LineData::Own(v) => LineParts::from_1(String::from_utf8_lossy(v)),
@@ -631,7 +640,7 @@ impl<'a> LineData<'a> {
         }
     }
 
-    fn as_slice(&self) -> LineParts<&[u8]> {
+    fn as_parts(&self) -> LineParts<&[u8]> {
         match self {
             LineData::Own(v) => LineParts::from_1(v.as_slice()),
             LineData::Bytes(v) => LineParts::from_1(v),
@@ -775,6 +784,35 @@ impl<'a> Line<'a> for LineStr<'a> {
     // }
 }
 
+#[inline]
+fn find_in_parts(parts: &[&[u8]], key: &[u8]) -> Option<usize> {
+    match parts.len() {
+        0 => None,
+        1 => memmem(parts[0], key),
+        2 => memmem_two_slices_no_alloc(parts[0], parts[1], key),
+        _ => memmem_small_slices_no_alloc(parts, key),
+    }
+}
+
+#[inline]
+fn suffix_parts<'b>(parts: &[&'b [u8]], mut offset: usize) -> ([&'b [u8]; 4], usize) {
+    let mut suffix: [&'b [u8]; 4] = [&[]; 4];
+    let mut suffix_len = 0;
+
+    for part in parts {
+        if offset >= part.len() {
+            offset -= part.len();
+            continue;
+        }
+
+        suffix[suffix_len] = &part[offset..];
+        suffix_len += 1;
+        offset = 0;
+    }
+
+    (suffix, suffix_len)
+}
+
 impl<'a> LineStr<'a> {
     fn empty() -> LineStr<'a> {
         LineStr {
@@ -794,6 +832,27 @@ impl<'a> LineStr<'a> {
             line_file_start: 0,
             line_file_end: 0,
         }
+    }
+
+    pub(crate) fn search(&self, key: &[u8]) -> Vec<usize> {
+        if key.is_empty() {
+            return Vec::new();
+        }
+        let total_len = self.data.len();
+        let mut matches = Vec::new();
+        let mut search_start = 0;
+        while search_start < total_len {
+            let (suffix, suffix_len) = suffix_parts(&[self.data.as_slice()], search_start);
+            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key) else {
+                break;
+            };
+
+            let match_pos = search_start + relative_pos;
+            matches.push(match_pos);
+            search_start = match_pos + key.len();
+        }
+
+        matches
     }
 }
 
@@ -901,13 +960,13 @@ impl<'a> LineBlockStr<'a> {
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut result = Vec::new();
         if let Some(b1) = &self.0 {
-            let slices = b1.data.as_slice();
+            let slices = b1.data.as_parts();
             for i in 0..slices.length {
                 result.extend_from_slice(slices.data[i]);
             }
         }
         if let Some(b2) = &self.1 {
-            let slices = b2.data.as_slice();
+            let slices = b2.data.as_parts();
             for i in 0..slices.length {
                 result.extend_from_slice(slices.data[i]);
             }
@@ -920,39 +979,12 @@ impl<'a> LineBlockStr<'a> {
             return Vec::new();
         }
 
-        fn find_in_parts(parts: &[&[u8]], key: &[u8]) -> Option<usize> {
-            match parts.len() {
-                0 => None,
-                1 => memmem(parts[0], key),
-                2 => memmem_two_slices_no_alloc(parts[0], parts[1], key),
-                _ => memmem_small_slices_no_alloc(parts, key),
-            }
-        }
-
-        fn suffix_parts<'b>(parts: &[&'b [u8]], mut offset: usize) -> ([&'b [u8]; 4], usize) {
-            let mut suffix: [&'b [u8]; 4] = [&[]; 4];
-            let mut suffix_len = 0;
-
-            for part in parts {
-                if offset >= part.len() {
-                    offset -= part.len();
-                    continue;
-                }
-
-                suffix[suffix_len] = &part[offset..];
-                suffix_len += 1;
-                offset = 0;
-            }
-
-            (suffix, suffix_len)
-        }
-
         fn append_line_data_parts<'b>(
             data: &'b LineData<'b>,
             parts: &mut [&'b [u8]; 4],
             parts_len: &mut usize,
         ) {
-            let slices = data.as_slice();
+            let slices = data.as_parts();
             for part in slices.as_parts() {
                 if !part.is_empty() {
                     parts[*parts_len] = part;
@@ -1660,7 +1692,7 @@ impl TextOper for TextDisplay {
 
     fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
         match self {
-            TextDisplay::Text(v) => Ok(None),
+            TextDisplay::Text(v) => v.search(pattern, line_state),
             TextDisplay::Hex(v) => Ok(None),
             TextDisplay::Edit(v) => Ok(None),
             TextDisplay::EditBlock(v) => v.search(pattern, line_state),
@@ -1818,7 +1850,7 @@ impl TextOper for TextDisplay {
         line_state: &LineState,
     ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
         match self {
-            TextDisplay::Text(v) => todo!(),
+            TextDisplay::Text(v) => v.get_one_page_from_line_state(line_state),
             TextDisplay::Hex(v) => todo!(),
             TextDisplay::Edit(v) => todo!(),
             TextDisplay::EditBlock(v) => v.get_one_page_from_line_state(line_state),

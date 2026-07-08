@@ -4,6 +4,7 @@ use crate::command::FindValue;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
+use crate::handle::HandleBase;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
@@ -165,7 +166,9 @@ fn previous_cursor_size_at_line_start(
         .unwrap_or(0)
 }
 
-pub(crate) struct HandleTxtEdit;
+pub(crate) struct HandleTxtEdit {
+    txt_base: HandleBase,
+}
 
 impl HandleTxtEdit {
     fn handle_char<'a>(
@@ -250,7 +253,7 @@ impl HandleTxtEdit {
 pub(crate) struct HandleCmdInpEdit;
 
 impl HandleCmdInpEdit {
-    fn handle_char<'a>(
+    pub(crate) fn handle_char<'a>(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &'a RingVec<LineState>,
@@ -266,28 +269,27 @@ impl HandleCmdInpEdit {
         Ok(())
     }
 
-    fn handle_command(
-        &self,
-        chap_tui: &mut ChapTui,
-        line_meta: &LineState,
-        td: &TextDisplay,
-    ) -> ChapResult<()> {
-        let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
-        let cmd = Command::parse(cmd_inp);
-        match &cmd {
-            Command::Find(v) => match v {
-                FindValue::Ascii(s) => {
-                    let pattern = s.as_bytes();
-                    self.find_jump(chap_tui, pattern, line_meta, td)?;
+    pub(crate) fn handle_down(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
+        match chap_tui.cur_cmd {
+            Command::Find(_) => {
+                if let Some(find_line_state) = &chap_tui.find_list {
+                    let state: &LineState = &find_line_state[chap_tui.find_index];
+                    if let Some(h) = &state.highlight {
+                        if chap_tui.find_highlight_index < h.len() - 1 {
+                            chap_tui.find_highlight_index += 1;
+                            return Ok(());
+                        }
+                        if chap_tui.find_index < find_line_state.len() - 1 {
+                            chap_tui.find_index += 1;
+                            chap_tui.find_highlight_index = 0;
+                            td.get_one_page_from_state(&find_line_state[chap_tui.find_index])?;
+                            return Ok(());
+                        }
+                    }
                 }
-                _ => {}
-            },
-            _ => {
-                chap_tui.elem.cmd_inp.clear();
-                chap_tui.elem.cmd_inp.push_str("Unknown command");
             }
+            _ => {}
         }
-        chap_tui.cur_cmd = cmd;
         Ok(())
     }
 
@@ -311,27 +313,28 @@ impl HandleCmdInpEdit {
         Ok(())
     }
 
-    fn handle_down(&self, chap_tui: &mut ChapTui, td: &TextDisplay) -> ChapResult<()> {
-        match chap_tui.cur_cmd {
-            Command::Find(_) => {
-                if let Some(find_line_state) = &chap_tui.find_list {
-                    let state: &LineState = &find_line_state[chap_tui.find_index];
-                    if let Some(h) = &state.highlight {
-                        if chap_tui.find_highlight_index < h.len() - 1 {
-                            chap_tui.find_highlight_index += 1;
-                            return Ok(());
-                        }
-                        if chap_tui.find_index < find_line_state.len() - 1 {
-                            chap_tui.find_index += 1;
-                            chap_tui.find_highlight_index = 0;
-                            td.get_one_page_from_state(&find_line_state[chap_tui.find_index])?;
-                            return Ok(());
-                        }
-                    }
+    pub(crate) fn handle_cmd_command(
+        &self,
+        chap_tui: &mut ChapTui,
+        line_meta: &LineState,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        let cmd_inp = chap_tui.elem.cmd_inp.get_inp();
+        let cmd = Command::parse(cmd_inp);
+        match &cmd {
+            Command::Find(v) => match v {
+                FindValue::Ascii(s) => {
+                    let pattern = s.as_bytes();
+                    self.find_jump(chap_tui, pattern, line_meta, td)?;
                 }
+                _ => {}
+            },
+            _ => {
+                chap_tui.elem.cmd_inp.clear();
+                chap_tui.elem.cmd_inp.push_str("Unknown command");
             }
-            _ => {}
         }
+        chap_tui.cur_cmd = cmd;
         Ok(())
     }
 }
@@ -344,7 +347,9 @@ pub(crate) struct HandleEdit {
 impl HandleEdit {
     pub(crate) fn new() -> Self {
         HandleEdit {
-            txt_edit: HandleTxtEdit {},
+            txt_edit: HandleTxtEdit {
+                txt_base: HandleBase {},
+            },
             cmdinp_edit: HandleCmdInpEdit {},
         }
     }
@@ -444,103 +449,107 @@ impl Handle for HandleEdit {
     fn handle_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<LineState>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        match chap_tui.warp_type {
-            TextWarpType::NoWrap => {
-                if chap_tui.cursor_y == 0 {
-                    //滚动上一行
-                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
-                    td.get_current_line_meta()?;
-                }
-                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
-                if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
-                    if chap_tui.cursor_x >= meta.get_char_len() {
-                        chap_tui.cursor_x = meta.get_char_len();
-                    }
-                    if chap_tui.column_offset >= meta.get_char_len() {
-                        chap_tui.column_offset = meta.get_char_len();
-                    }
-                }
-                chap_tui.is_last_line = false;
-            }
-            TextWarpType::SoftWrap => {
-                if chap_tui.cursor_y == 0 {
-                    //滚动上一行
-                    if let Some(first_meta) = line_meta.get(0) {
-                        if first_meta.get_line_num() > 1 {
-                            td.scroll_pre_one_line(first_meta)?;
-                            line_meta = td.get_current_line_meta()?;
-                        }
-                    }
-                }
-                chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
-                if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
-                    if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
-                        chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
-                    }
-                }
-                chap_tui.is_last_line = false;
-            }
-        }
+        self.txt_edit.txt_base.handle_up(chap_tui, line_meta, td)?;
+        // match chap_tui.warp_type {
+        //     TextWarpType::NoWrap => {
+        //         if chap_tui.cursor_y == 0 {
+        //             //滚动上一行
+        //             td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+        //             td.get_current_line_meta()?;
+        //         }
+        //         chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+        //         if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
+        //             if chap_tui.cursor_x >= meta.get_char_len() {
+        //                 chap_tui.cursor_x = meta.get_char_len();
+        //             }
+        //             if chap_tui.column_offset >= meta.get_char_len() {
+        //                 chap_tui.column_offset = meta.get_char_len();
+        //             }
+        //         }
+        //         chap_tui.is_last_line = false;
+        //     }
+        //     TextWarpType::SoftWrap => {
+        //         if chap_tui.cursor_y == 0 {
+        //             //滚动上一行
+        //             if let Some(first_meta) = line_meta.get(0) {
+        //                 if first_meta.get_line_num() > 1 {
+        //                     td.scroll_pre_one_line(first_meta)?;
+        //                     line_meta = td.get_current_line_meta()?;
+        //                 }
+        //             }
+        //         }
+        //         chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+        //         if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
+        //             if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
+        //                 chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
+        //             }
+        //         }
+        //         chap_tui.is_last_line = false;
+        //     }
+        // }
         Ok(())
     }
 
     fn handle_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
-        mut line_meta: &'a RingVec<LineState>,
+        line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
         if chap_tui.in_command_mode() {
             self.cmdinp_edit.handle_down(chap_tui, td)?;
             return Ok(());
         }
-        match chap_tui.warp_type {
-            TextWarpType::NoWrap => {
-                if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
-                    chap_tui.cursor_y += 1;
-                } else {
-                    //滚动下一行
-                    td.scroll_next_one_line(line_meta.last().unwrap())?;
-                    line_meta = td.get_current_line_meta()?;
-                }
-                if chap_tui.cursor_x
-                    >= line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_char_len()
-                        .saturating_sub(1)
-                {
-                    chap_tui.cursor_x = line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_char_len()
-                        .saturating_sub(1);
-                }
-                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
-                if chap_tui.column_offset >= meta.get_char_len() {
-                    chap_tui.column_offset = meta.get_char_len();
-                }
-                chap_tui.is_last_line = false;
-            }
-            TextWarpType::SoftWrap => {
-                if chap_tui.cursor_y < chap_tui.elem.tv.get_height().saturating_sub(1) {
-                    chap_tui.cursor_y += 1;
-                } else {
-                    //滚动下一行
-                    td.scroll_next_one_line(line_meta.last().unwrap())?;
-                    line_meta = td.get_current_line_meta()?;
-                }
-                if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
-                    if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
-                        chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
-                    }
-                }
-                chap_tui.is_last_line = false;
-            }
-        }
+        self.txt_edit
+            .txt_base
+            .handle_down(chap_tui, line_meta, td)?;
+        // match chap_tui.warp_type {
+        //     TextWarpType::NoWrap => {
+        //         if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
+        //             chap_tui.cursor_y += 1;
+        //         } else {
+        //             //滚动下一行
+        //             td.scroll_next_one_line(line_meta.last().unwrap())?;
+        //             line_meta = td.get_current_line_meta()?;
+        //         }
+        //         if chap_tui.cursor_x
+        //             >= line_meta
+        //                 .get(chap_tui.cursor_y)
+        //                 .unwrap()
+        //                 .get_char_len()
+        //                 .saturating_sub(1)
+        //         {
+        //             chap_tui.cursor_x = line_meta
+        //                 .get(chap_tui.cursor_y)
+        //                 .unwrap()
+        //                 .get_char_len()
+        //                 .saturating_sub(1);
+        //         }
+        //         let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+        //         if chap_tui.column_offset >= meta.get_char_len() {
+        //             chap_tui.column_offset = meta.get_char_len();
+        //         }
+        //         chap_tui.is_last_line = false;
+        //     }
+        //     TextWarpType::SoftWrap => {
+        //         if chap_tui.cursor_y < chap_tui.elem.tv.get_height().saturating_sub(1) {
+        //             chap_tui.cursor_y += 1;
+        //         } else {
+        //             //滚动下一行
+        //             td.scroll_next_one_line(line_meta.last().unwrap())?;
+        //             line_meta = td.get_current_line_meta()?;
+        //         }
+        //         if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
+        //             if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
+        //                 chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
+        //             }
+        //         }
+        //         chap_tui.is_last_line = false;
+        //     }
+        // }
         Ok(())
     }
 
@@ -550,32 +559,35 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        match chap_tui.warp_type {
-            TextWarpType::NoWrap => {
-                chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
-                chap_tui.column_offset = chap_tui.column_offset.saturating_sub(1);
-            }
-            TextWarpType::SoftWrap => {
-                if chap_tui.cursor_x == 0 {
-                    // 越界时视为行首（line_offset=0），直接 noop
-                    let line_offset = line_meta
-                        .get(chap_tui.cursor_y)
-                        .map_or(0, |m| m.get_line_offset());
-                    // 这个判断说明当前行已经读完了
-                    if line_offset == 0 {
-                        //无需操作
-                    } else if chap_tui.cursor_y > 0 {
-                        chap_tui.cursor_x = line_meta
-                            .get(chap_tui.cursor_y - 1)
-                            .map_or(0, |m| m.get_char_len().saturating_sub(1));
-                        chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
-                    }
-                } else {
-                    chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
-                }
-                chap_tui.is_last_line = false;
-            }
-        }
+        self.txt_edit
+            .txt_base
+            .handle_left(chap_tui, line_meta, td)?;
+        // match chap_tui.warp_type {
+        //     TextWarpType::NoWrap => {
+        //         chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+        //         chap_tui.column_offset = chap_tui.column_offset.saturating_sub(1);
+        //     }
+        //     TextWarpType::SoftWrap => {
+        //         if chap_tui.cursor_x == 0 {
+        //             // 越界时视为行首（line_offset=0），直接 noop
+        //             let line_offset = line_meta
+        //                 .get(chap_tui.cursor_y)
+        //                 .map_or(0, |m| m.get_line_offset());
+        //             // 这个判断说明当前行已经读完了
+        //             if line_offset == 0 {
+        //                 //无需操作
+        //             } else if chap_tui.cursor_y > 0 {
+        //                 chap_tui.cursor_x = line_meta
+        //                     .get(chap_tui.cursor_y - 1)
+        //                     .map_or(0, |m| m.get_char_len().saturating_sub(1));
+        //                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+        //             }
+        //         } else {
+        //             chap_tui.cursor_x = chap_tui.cursor_x.saturating_sub(1);
+        //         }
+        //         chap_tui.is_last_line = false;
+        //     }
+        // }
         Ok(())
     }
 
@@ -585,45 +597,48 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
-        match chap_tui.warp_type {
-            TextWarpType::NoWrap => {
-                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
-                if chap_tui.cursor_x < meta.get_char_len()
-                    && chap_tui.cursor_x < chap_tui.elem.tv.get_width()
-                {
-                    chap_tui.cursor_x += 1;
-                }
-                if chap_tui.column_offset <= meta.get_char_len() {
-                    chap_tui.column_offset += 1;
-                }
-            }
-            TextWarpType::SoftWrap => {
-                let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
-                    chap_tui.is_last_line = false;
-                    return Ok(());
-                };
-                if chap_tui.cursor_x <= cur_meta.get_char_len().saturating_sub(1) {
-                    chap_tui.cursor_x += 1;
+        self.txt_edit
+            .txt_base
+            .handle_right(chap_tui, line_meta, td)?;
+        // match chap_tui.warp_type {
+        //     TextWarpType::NoWrap => {
+        //         let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+        //         if chap_tui.cursor_x < meta.get_char_len()
+        //             && chap_tui.cursor_x < chap_tui.elem.tv.get_width()
+        //         {
+        //             chap_tui.cursor_x += 1;
+        //         }
+        //         if chap_tui.column_offset <= meta.get_char_len() {
+        //             chap_tui.column_offset += 1;
+        //         }
+        //     }
+        //     TextWarpType::SoftWrap => {
+        //         let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) else {
+        //             chap_tui.is_last_line = false;
+        //             return Ok(());
+        //         };
+        //         if chap_tui.cursor_x <= cur_meta.get_char_len().saturating_sub(1) {
+        //             chap_tui.cursor_x += 1;
 
-                    if chap_tui.cursor_x >= cur_meta.get_char_len()
-                        && chap_tui.cursor_y < chap_tui.elem.tv.get_height()
-                    {
-                        //判断当前行是否读完（检查下一视觉段是否属于同一逻辑行）
-                        let has_next_seg = line_meta
-                            .get(chap_tui.cursor_y + 1)
-                            .map_or(false, |next| next.get_line_offset() > 0);
-                        if has_next_seg {
-                            chap_tui.cursor_x = 0;
-                            chap_tui.cursor_y += 1;
-                        } else {
-                            // 行末，无后续换行段，回退增量
-                            chap_tui.cursor_x -= 1;
-                        }
-                    }
-                }
-                chap_tui.is_last_line = false;
-            }
-        }
+        //             if chap_tui.cursor_x >= cur_meta.get_char_len()
+        //                 && chap_tui.cursor_y < chap_tui.elem.tv.get_height()
+        //             {
+        //                 //判断当前行是否读完（检查下一视觉段是否属于同一逻辑行）
+        //                 let has_next_seg = line_meta
+        //                     .get(chap_tui.cursor_y + 1)
+        //                     .map_or(false, |next| next.get_line_offset() > 0);
+        //                 if has_next_seg {
+        //                     chap_tui.cursor_x = 0;
+        //                     chap_tui.cursor_y += 1;
+        //                 } else {
+        //                     // 行末，无后续换行段，回退增量
+        //                     chap_tui.cursor_x -= 1;
+        //                 }
+        //             }
+        //         }
+        //         chap_tui.is_last_line = false;
+        //     }
+        // }
         Ok(())
     }
 
@@ -635,7 +650,8 @@ impl Handle for HandleEdit {
     ) -> ChapResult<()> {
         if chap_tui.in_command_mode() {
             if let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) {
-                self.cmdinp_edit.handle_command(chap_tui, cur_meta, td)?;
+                self.cmdinp_edit
+                    .handle_cmd_command(chap_tui, cur_meta, td)?;
             };
 
             return Ok(());

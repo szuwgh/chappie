@@ -3,6 +3,8 @@ pub(crate) mod hex;
 #[cfg(test)]
 mod large_file_tests;
 pub(crate) mod text;
+use crate::command::Command;
+use crate::command::FindValue;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::execute;
@@ -27,7 +29,7 @@ pub(crate) use hex::HandleHex;
 pub(crate) struct HandleBase;
 
 impl HandleBase {
-    fn handle_up<'a>(
+    pub(crate) fn handle_up<'a>(
         &self,
         chap_tui: &mut ChapTui,
         mut line_meta: &'a RingVec<LineState>,
@@ -73,7 +75,7 @@ impl HandleBase {
         Ok(())
     }
 
-    fn handle_down<'a>(
+    pub(crate) fn handle_down<'a>(
         &self,
         chap_tui: &mut ChapTui,
         mut line_meta: &'a RingVec<LineState>,
@@ -130,7 +132,7 @@ impl HandleBase {
         Ok(())
     }
 
-    fn handle_left<'a>(
+    pub(crate) fn handle_left<'a>(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &'a RingVec<LineState>,
@@ -165,7 +167,7 @@ impl HandleBase {
         Ok(())
     }
 
-    fn handle_right<'a>(
+    pub(crate) fn handle_right<'a>(
         &self,
         chap_tui: &mut ChapTui,
         line_meta: &'a RingVec<LineState>,
