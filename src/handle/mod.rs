@@ -57,7 +57,7 @@ impl HandleBase {
                 if chap_tui.cursor_y == 0 {
                     //滚动上一行
                     if let Some(first_meta) = line_meta.get(0) {
-                        if first_meta.get_line_num() > 1 {
+                        if first_meta.has_pre_line() {
                             td.scroll_pre_one_line(first_meta)?;
                             line_meta = td.get_current_line_meta()?;
                         }
@@ -427,7 +427,7 @@ pub(crate) trait Handle {
         };
 
         let target_line = op.line_index as usize;
-        chap_tui.start_line_num = target_line;
+        // chap_tui.start_line_num = target_line;
         // ④ 按 op_type 执行逆操作（record 里存的就是逆操作类型）
         //
         //   原操作          存储的逆操作      执行动作
@@ -444,19 +444,20 @@ pub(crate) trait Handle {
             char_with: 0,
             txt_len: 0,
             char_len: 0,
-            page_num: 0,
+            // page_num: 0,
             block_num: EMPTY_BLOCK_ID,
             block_line_index: 0,
             block_offset: 0,
-            line_num: target_line,
+            // line_num: target_line,
             line_index: op.line_index as usize,
             line_offset: 0,
             line_file_start: 0,
             line_file_end: 0,
-            start_line_num: 0,
-            start_page_num: 0,
+            // start_line_num: 0,
+            //start_page_num: 0,
             highlight: None,
         };
+
         match op.op_type {
             OpType::DeleteChar => {
                 td.backspace(
@@ -487,9 +488,9 @@ pub(crate) trait Handle {
         chap_tui.cursor_y = op.cursor_y as usize;
         chap_tui.cursor_x = op.cursor_x as usize;
         chap_tui.is_last_line = false;
-
+        chap_tui.start_line_state = meta;
         // ⑥ 刷新页面
-        td.get_one_page(chap_tui.start_line_num)?;
+        td.get_one_page_from_state(&chap_tui.start_line_state)?;
         Ok(())
     }
 

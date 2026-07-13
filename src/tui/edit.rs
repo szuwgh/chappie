@@ -248,7 +248,7 @@ mod tests {
 
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
         let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, 20, 80, TextWarpType::SoftWrap));
-        td.get_one_page(1).unwrap();
+        // td.get_one_page(1).unwrap();
 
         let undo_dir = TempDir::new().unwrap();
         let undo_path = undo_dir.path().join("undo.chpu");
@@ -350,7 +350,7 @@ mod tests {
             find_line_index: None,
             highlight_len: 0,
         };
-        td.get_one_page(tui.start_line_num).unwrap();
+        // td.get_one_page(tui.start_line_num).unwrap();
         let (content, meta) = td.get_current_page().unwrap();
         let content = EditBuildContent::build_content(
             content,
@@ -390,10 +390,10 @@ mod tests {
         cursor_y: usize,
         cursor_x: usize,
     ) {
-        tui.start_line_num = start_line_num;
+        // tui.start_line_num = start_line_num;
         tui.cursor_y = cursor_y;
         tui.cursor_x = cursor_x;
-        td.get_one_page(tui.start_line_num).unwrap();
+        //  td.get_one_page(tui.start_line_num).unwrap();
         sync_cursor_metrics(tui, td);
     }
 
@@ -781,11 +781,11 @@ mod tests {
         assert_eq!(initial_text, original);
 
         for step in 0..500usize {
-            td.get_one_page(1).unwrap();
+            // td.get_one_page(1).unwrap();
             let meta = td.get_current_line_meta().unwrap();
             match step % 4 {
                 0 => {
-                    tui.start_line_num = 1;
+                    // tui.start_line_num = 1;
                     tui.cursor_y = 0;
                     tui.cursor_x = 0;
                     tui.bytes_cursor = 0;
@@ -794,7 +794,7 @@ mod tests {
                     h.handle_char(&mut tui, meta, &td, ch).unwrap();
                 }
                 1 => {
-                    tui.start_line_num = 1;
+                    // tui.start_line_num = 1;
                     tui.cursor_y = 0;
                     tui.cursor_x = 0;
                     tui.bytes_cursor = 0;
@@ -809,19 +809,19 @@ mod tests {
                     h.handle_paste(&mut tui, meta, &td, &paste).unwrap();
                 }
                 2 => {
-                    tui.start_line_num = 1;
+                    //tui.start_line_num = 1;
                     tui.cursor_y = 0;
                     tui.cursor_x = 1;
-                    td.get_one_page(tui.start_line_num).unwrap();
+                    //td.get_one_page(tui.start_line_num).unwrap();
                     sync_cursor_metrics(&mut tui, &td);
                     let meta = td.get_current_line_meta().unwrap();
                     h.handle_enter(&mut tui, meta, &td).unwrap();
                 }
                 3 => {
-                    tui.start_line_num = 1;
+                    // tui.start_line_num = 1;
                     tui.cursor_y = 0;
                     tui.cursor_x = 1;
-                    td.get_one_page(tui.start_line_num).unwrap();
+                    // td.get_one_page(tui.start_line_num).unwrap();
                     sync_cursor_metrics(&mut tui, &td);
                     let meta = td.get_current_line_meta().unwrap();
                     h.handle_backspace(&mut tui, meta, &td).unwrap();

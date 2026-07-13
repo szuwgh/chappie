@@ -688,7 +688,7 @@ impl Text for HexText {
             .line_index(line_index)
             .line_offset(line_end)
             .line_file_start(line_file_start)
-            .start_line_num(state.get_line_num())
+            //.start_line_num(state.get_line_num())
             // .start_page_num(state.get_line_num() / self.height)
             .build();
         Some(p)

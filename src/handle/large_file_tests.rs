@@ -29,7 +29,7 @@ fn setup(content: &str) -> (ChapTui, TextDisplay, NamedTempFile) {
     tmp.flush().unwrap();
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
     let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-    td.get_one_page(1).unwrap();
+    //td.get_one_page(1).unwrap();
     let tui = ChapTui::for_test(TV_H, TV_W);
     (tui, td, tmp)
 }
@@ -542,7 +542,7 @@ fn char_after_scroll_start_line_num_mismatch_no_panic() {
     for _ in 0..100 {
         h().handle_down(&mut tui, meta, &td).unwrap();
     }
-    println!("scroll 100 lines, start_line_num={}", tui.start_line_num);
+    // println!("scroll 100 lines, start_line_num={}", tui.start_line_num);
     tui.cursor_x = 5;
     tui.bytes_cursor = 5;
     let meta2 = td.get_current_line_meta().unwrap();
@@ -591,7 +591,7 @@ fn paste_then_save_content_correct() {
 
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
     let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-    td.get_one_page(1).unwrap();
+    //  td.get_one_page(1).unwrap();
     let mut tui = ChapTui::for_test(TV_H, TV_W);
 
     tui.cursor_x = 5;
@@ -620,7 +620,7 @@ fn char_insert_1000_save_file_grows() {
 
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
     let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-    td.get_one_page(1).unwrap();
+    // td.get_one_page(1).unwrap();
     let mut tui = ChapTui::for_test(TV_H, TV_W);
 
     tui.cursor_x = 0;

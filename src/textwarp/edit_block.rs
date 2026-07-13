@@ -703,7 +703,7 @@ impl Text for GapBlockText {
             .block_num(next_block_id)
             .block_line_index(block_line_index)
             .block_offset(block_offset)
-            .start_line_num(state.get_line_num())
+            //.start_line_num(state.get_line_num())
             .build();
         Some(p)
     }
@@ -724,7 +724,7 @@ impl Text for GapBlockText {
         if state.get_line_offset() > 0 {
             //在行中间
             let p = LineState::builder()
-                .start_line_num(state.get_line_num())
+                //.start_line_num(state.get_line_num())
                 .line_index(state.get_line_index())
                 .line_offset(state.get_line_offset())
                 .block_num(block_id)
@@ -741,7 +741,7 @@ impl Text for GapBlockText {
                 if pos == 0 {
                     //已经是第一个块了
                     let p = LineState::builder()
-                        .start_line_num(state.get_line_num())
+                        //.start_line_num(state.get_line_num())
                         .line_index(state.get_line_index().saturating_sub(1))
                         .line_offset(0)
                         .block_num(block_id)
@@ -759,7 +759,7 @@ impl Text for GapBlockText {
                 if last_last_line_info.is_complete {
                     //上上一行是完整行
                     let p = LineState::builder()
-                        .start_line_num(state.get_line_num())
+                        //.start_line_num(state.get_line_num())
                         .line_index(state.get_line_index().saturating_sub(1))
                         .line_offset(0)
                         .block_num(block_id)
@@ -770,7 +770,7 @@ impl Text for GapBlockText {
                 } else if last_line_info.is_complete {
                     //不完整行 从上一个块的最后一行开始
                     let p = LineState::builder()
-                        .start_line_num(state.get_line_num())
+                        //.start_line_num(state.get_line_num())
                         .line_index(state.get_line_index().saturating_sub(1))
                         .line_offset(0)
                         .block_num(last_block_id)
@@ -783,7 +783,7 @@ impl Text for GapBlockText {
                 }
             } else {
                 let p = LineState::builder()
-                    .start_line_num(state.get_line_num())
+                    // .start_line_num(state.get_line_num())
                     .line_index(state.get_line_index().saturating_sub(1))
                     .line_offset(0)
                     .block_num(block_id)
@@ -801,7 +801,7 @@ impl Text for GapBlockText {
             let last_block = self.blocks.iter().find(|b| b.block_id == last_block_id)?;
             let last_line_info = last_block.last_line_span()?;
             let p = LineState::builder()
-                .start_line_num(state.get_line_num())
+                //.start_line_num(state.get_line_num())
                 .line_index(state.get_line_index().saturating_sub(1))
                 .line_offset(0)
                 .block_num(last_block_id)
@@ -4676,7 +4676,7 @@ mod tests {
             matches[0].get_line_index(),
             expected_second.get_line_index()
         );
-        assert_eq!(matches[0].get_line_num(), expected_second.get_line_num());
+        //  assert_eq!(matches[0].get_line_num(), expected_second.get_line_num());
         assert_eq!(matches[0].get_block_num(), expected_second.get_block_num());
         assert_eq!(
             matches[0].get_block_line_index(),
@@ -4696,7 +4696,7 @@ mod tests {
         );
 
         assert_eq!(matches[1].get_line_index(), expected_third.get_line_index());
-        assert_eq!(matches[1].get_line_num(), expected_third.get_line_num());
+        // assert_eq!(matches[1].get_line_num(), expected_third.get_line_num());
         assert_eq!(matches[1].get_block_num(), expected_third.get_block_num());
         assert_eq!(
             matches[1].get_block_line_index(),

@@ -6,7 +6,6 @@ use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
 use crate::plugin::Plugin;
-use crate::textwarp::hex::HEX_WITH;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
@@ -34,19 +33,19 @@ impl<T: Plugin> HandleHex<T> {
         addr: usize,
         td: &TextDisplay,
     ) -> ChapResult<()> {
-        if line_meta.is_empty() {
-            return Ok(());
-        }
-        let addr = addr.min(td.get_file_size() - 1);
-        chap_tui
-            .back_linenum
-            .push(line_meta.get(0).unwrap().get_line_num());
-        let with = HEX_WITH;
-        let line_num = (addr / with) + 1;
-        chap_tui.cursor_x = addr % with;
-        chap_tui.cursor_y = 0;
-        chap_tui.txt_sel.set_pos(addr);
-        td.get_one_page(line_num)?;
+        // if line_meta.is_empty() {
+        //     return Ok(());
+        // }
+        // let addr = addr.min(td.get_file_size() - 1);
+        // chap_tui
+        //     .back_linenum
+        //     .push(line_meta.get(0).unwrap().get_line_num());
+        // let with = HEX_WITH;
+        // let line_num = (addr / with) + 1;
+        // chap_tui.cursor_x = addr % with;
+        // chap_tui.cursor_y = 0;
+        // chap_tui.txt_sel.set_pos(addr);
+        // td.get_one_page(line_num)?;
         Ok(())
     }
 
@@ -256,11 +255,11 @@ impl<T: Plugin> Handle for HandleHex<T> {
         match cmd {
             Command::Empty => {}
             Command::Back => {
-                if let Some(line_num) = chap_tui.back_linenum.pop() {
-                    chap_tui.cursor_y = 0;
-                    chap_tui.cursor_x = 0;
-                    td.get_one_page(line_num)?;
-                }
+                // if let Some(line_num) = chap_tui.back_linenum.pop() {
+                //     chap_tui.cursor_y = 0;
+                //     chap_tui.cursor_x = 0;
+                //     td.get_one_page(line_num)?;
+                // }
             }
             Command::GTop => {
                 self.jump_to_address(chap_tui, line_meta, 0, td)?;
@@ -351,7 +350,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
                     &x,
                     true,
                 )?;
-                td.get_one_page(chap_tui.start_line_num)?;
+                td.get_one_page_from_state(&chap_tui.start_line_state)?;
             }
             Command::Insert(count) => {
                 let cursor_x = chap_tui.cursor_x;
@@ -363,7 +362,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
                     &vec![0u8; count],
                     false,
                 )?;
-                td.get_one_page(chap_tui.start_line_num)?;
+                td.get_one_page_from_state(&chap_tui.start_line_state)?;
             }
             Command::Unknown(cmd) => {}
         }

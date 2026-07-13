@@ -306,10 +306,11 @@ pub(crate) struct ChapTui {
     pub(crate) column_offset: usize,     // 列偏移量
     pub(crate) bytes_cursor: usize,      //字节偏移量
     pub(crate) bytes_cursor_size: usize, //字节偏移量
-    pub(crate) start_line_num: usize,    // 起始行号
-    pub(crate) is_last_line: bool,       // 是否是最后一行
-    pub(crate) endian: Endian,           // 字节序
-    pub(crate) assist_tv2_data: String,  // 辅助窗口2数据
+    //pub(crate) start_line_num: usize,    // 起始行号
+    pub(crate) start_line_state: LineState, //起始的状态
+    pub(crate) is_last_line: bool,          // 是否是最后一行
+    pub(crate) endian: Endian,              // 字节序
+    pub(crate) assist_tv2_data: String,     // 辅助窗口2数据
     pub(crate) undo: Option<UndoFile>,
     pub(crate) find_list: Option<Vec<LineState>>,
     pub(crate) find_index: usize, // 搜索的时候跳转到第几个find_list的条目
@@ -363,7 +364,7 @@ impl ChapTui {
             column_offset: 0,
             bytes_cursor: 0,
             bytes_cursor_size: 0,
-            start_line_num: 0,
+            start_line_state: LineState::default(),
             is_last_line: false,
             endian: Endian::Little, // 默认字节序为小端
             assist_tv2_data: String::new(),
@@ -607,7 +608,7 @@ impl ChapTui {
                 }
             };
 
-            td.get_one_page(1)?;
+            td.get_one_page_from_state(&self.start_line_state)?;
             'tui: loop {
                 let size = self.terminal.size()?;
                 if size != self.size {
@@ -640,7 +641,8 @@ impl ChapTui {
                     }
                 };
                 if let Some(start_line_meta) = line_meta.get(0) {
-                    self.start_line_num = start_line_meta.get_line_num();
+                    // self.start_line_num = start_line_meta.get_line_num();
+                    self.start_line_state = start_line_meta.clone();
                 }
                 'key: loop {
                     match event::read()? {
@@ -1114,7 +1116,7 @@ pub fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_>
                         Line::raw("")
                     } else {
                         Line::from(Span::styled(
-                            format!("{:>4} ", meta.get_line_num()),
+                            format!("{:>4} ", meta.get_line_index()),
                             Style::default().fg(Color::White),
                         ))
                     }
@@ -1197,7 +1199,7 @@ impl ChapTui {
             column_offset: 0,
             bytes_cursor: 0,
             bytes_cursor_size: 0,
-            start_line_num: 1,
+            start_line_state: LineState::default(),
             is_last_line: false,
             endian: crate::byteutil::Endian::Little,
             assist_tv2_data: String::new(),

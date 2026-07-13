@@ -200,7 +200,7 @@ impl HandleTxtEdit {
                     cursor_y: chap_tui.cursor_y as u32,
                     cursor_x: chap_tui.cursor_x as u32,
                     block_id: prev_meta.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
+                    line_index: chap_tui.start_line_state.line_index as u32,
                     byte_offset: abs_offset as u32,
                     data: s.as_bytes().to_vec(),
                 })?;
@@ -221,7 +221,7 @@ impl HandleTxtEdit {
                     cursor_y: chap_tui.cursor_y as u32,
                     cursor_x: chap_tui.cursor_x as u32,
                     block_id: cur_meta.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
+                    line_index: chap_tui.start_line_state.line_index as u32,
                     byte_offset: abs_offset as u32,
                     data: s.as_bytes().to_vec(),
                 })?;
@@ -245,7 +245,7 @@ impl HandleTxtEdit {
                 chap_tui.bytes_cursor = 0;
             }
         }
-        td.get_one_page(chap_tui.start_line_num)?;
+        td.get_one_page_from_state(&chap_tui.start_line_state)?;
         Ok(())
     }
 }
@@ -392,7 +392,8 @@ impl HandleEdit {
             chap_tui.is_last_line = false;
             return Ok(());
         };
-        chap_tui.start_line_num = first.get_line_num();
+        //chap_tui.start_line_num = first.get_line_num();
+        chap_tui.start_line_state = first.clone();
 
         let Some(row) = find_visual_line_for_abs_offset(meta, target_abs_offset) else {
             chap_tui.cursor_x = 0;
@@ -672,7 +673,7 @@ impl Handle for HandleEdit {
                 cursor_y: chap_tui.cursor_y as u32,
                 cursor_x: chap_tui.cursor_x as u32,
                 block_id: cur_meta.get_block_num() as u32,
-                line_index: chap_tui.start_line_num as u32,
+                line_index: chap_tui.start_line_state.line_index as u32,
                 byte_offset: abs_offset as u32,
                 data: vec![b'\n'],
             })?;
@@ -681,7 +682,8 @@ impl Handle for HandleEdit {
             chap_tui.cursor_y += 1;
         }
         chap_tui.cursor_x = 0;
-        td.get_one_page(chap_tui.start_line_num)?;
+        //td.get_one_page(chap_tui.start_line_num)?;
+        td.get_one_page_from_state(&chap_tui.start_line_state)?;
         // self.refresh_cursor_metrics(chap_tui, td)?;
 
         Ok(())
@@ -746,12 +748,15 @@ impl Handle for HandleEdit {
         //     return Ok(());
         // };
         if chap_tui.cursor_y == 0 && chap_tui.cursor_x == 0 {
-            if chap_tui.start_line_num <= 1 {
+            if chap_tui.start_line_state.line_index == 0
+                && chap_tui.start_line_state.line_offset == 0
+            {
                 return Ok(());
             }
 
-            chap_tui.start_line_num -= 1;
-            td.get_one_page(chap_tui.start_line_num)?;
+            // chap_tui.start_line_num -= 1;
+            // td.get_one_page(chap_tui.start_line_num)?;
+            td.scroll_pre_one_line(&chap_tui.start_line_state);
             let shifted_meta = td.get_current_line_meta()?;
             let Some(cur_meta) = shifted_meta.get(1) else {
                 return Ok(());
@@ -771,12 +776,12 @@ impl Handle for HandleEdit {
                     cursor_y: 0,
                     cursor_x: 0,
                     block_id: cur_meta.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
+                    line_index: chap_tui.start_line_state.line_index as u32,
                     byte_offset: abs_offset as u32,
                     data: vec![b'\n'],
                 })?;
             }
-            td.get_one_page(chap_tui.start_line_num)?;
+            td.get_one_page_from_state(&chap_tui.start_line_state)?;
             chap_tui.cursor_y = 0;
             chap_tui.cursor_x = prev_line_char_len;
             self.refresh_cursor_bytes_on_current_page(chap_tui, td)?;
@@ -804,7 +809,7 @@ impl Handle for HandleEdit {
                     cursor_y: chap_tui.cursor_y as u32,
                     cursor_x: chap_tui.cursor_x as u32,
                     block_id: cur_meta.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
+                    line_index: chap_tui.start_line_state.line_index as u32,
                     byte_offset: abs_offset as u32,
                     data: vec![b'\n'],
                 })?;
@@ -826,14 +831,14 @@ impl Handle for HandleEdit {
                     cursor_y: chap_tui.cursor_y as u32,
                     cursor_x: chap_tui.cursor_x as u32,
                     block_id: cur_meta.get_block_num() as u32,
-                    line_index: chap_tui.start_line_num as u32,
+                    line_index: chap_tui.start_line_state.line_index as u32,
                     byte_offset: abs_offset as u32,
                     data: delete_bytes,
                 })?;
             }
         }
 
-        td.get_one_page(chap_tui.start_line_num)?;
+        td.get_one_page_from_state(&chap_tui.start_line_state)?;
         if chap_tui.cursor_x == 0 {
             let cursor_y = chap_tui.cursor_y.saturating_sub(1);
             if prev_line_char_len > 0 {
@@ -946,12 +951,12 @@ impl Handle for HandleEdit {
                 cursor_y: chap_tui.cursor_y as u32,
                 cursor_x: chap_tui.cursor_x as u32,
                 block_id: line_state.get_block_num() as u32,
-                line_index: chap_tui.start_line_num as u32,
+                line_index: chap_tui.start_line_state.line_index as u32,
                 byte_offset: target_abs_offset as u32,
                 data: pasted_bytes.to_vec(),
             })?;
         }
-        td.get_one_page(chap_tui.start_line_num)?;
+        td.get_one_page_from_state(&chap_tui.start_line_state)?;
         self.sync_cursor_to_abs_offset_on_current_page(chap_tui, td, target_abs_offset)?;
         if !pasted_string.ends_with('\n') && chap_tui.cursor_x == chap_tui.elem.tv.get_width() {
             if chap_tui.cursor_y < chap_tui.elem.tv.get_height() {
@@ -998,7 +1003,7 @@ mod tests {
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
         let mut td =
             TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-        td.get_one_page(1).unwrap();
+        // td.get_one_page(1).unwrap();
 
         let tui = ChapTui::for_test(TV_H, TV_W);
         (tui, td, tmp)
@@ -1066,7 +1071,7 @@ mod tests {
     fn sync_view_state(tui: &mut ChapTui, td: &TextDisplay) {
         let meta = td.get_current_line_meta().unwrap();
         if let Some(first) = meta.get(0) {
-            tui.start_line_num = first.get_line_num();
+            // tui.start_line_num = first.get_line_num();
         }
         sync_cursor_metrics(tui, td);
     }
@@ -2228,13 +2233,13 @@ mod tests {
 
         for _ in 0..(TV_H + 2) {
             let meta = td.get_current_line_meta().unwrap();
-            tui.start_line_num = meta.get(0).map_or(1, |m| m.get_line_num());
+            // tui.start_line_num = meta.get(0).map_or(1, |m| m.get_line_num());
             h.handle_down(&mut tui, meta, &td).unwrap();
             sync_view_state(&mut tui, &td);
         }
 
         let meta = td.get_current_line_meta().unwrap();
-        tui.start_line_num = meta.get(0).map_or(1, |m| m.get_line_num());
+        // tui.start_line_num = meta.get(0).map_or(1, |m| m.get_line_num());
         sync_view_state(&mut tui, &td);
         h.handle_char(&mut tui, meta, &td, 'Z').unwrap();
         let after_insert = saved_text(&mut td);
@@ -2296,8 +2301,8 @@ mod tests {
         let (mut tui, mut td, _f) = setup(&content);
         let h = handle();
 
-        td.get_one_page(2).unwrap();
-        tui.start_line_num = 2;
+        //  td.get_one_page(2).unwrap();
+        // tui.start_line_num = 2;
         tui.cursor_y = 0;
         tui.cursor_x = 0;
         sync_view_state(&mut tui, &td);
@@ -2312,7 +2317,7 @@ mod tests {
             expected,
             "滚动后在页顶行首 Backspace 应合并隐藏的上一逻辑行"
         );
-        assert_eq!(tui.start_line_num, 1, "合并隐藏上一行后应回显上一逻辑行");
+        //  assert_eq!(tui.start_line_num, 1, "合并隐藏上一行后应回显上一逻辑行");
         assert_eq!(tui.cursor_y, 0, "合并后光标应留在当前页首行");
         assert_eq!(tui.cursor_x, 6, "合并后光标应落在上一逻辑行末尾");
     }
@@ -2440,7 +2445,7 @@ mod tests {
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
         let mut td =
             TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-        td.get_one_page(1).unwrap();
+        // td.get_one_page(1).unwrap();
 
         // 使用 TempDir 内的不存在路径，UndoFile::open 会新建并写入文件头
         let undo_dir = TempDir::new().unwrap();
@@ -2728,11 +2733,11 @@ mod tests {
         let h = handle();
 
         for step in 0..500usize {
-            td.get_one_page(1).unwrap();
+            // td.get_one_page(1).unwrap();
             let meta = td.get_current_line_meta().unwrap();
             match step % 2 {
                 0 => {
-                    tui.start_line_num = 1;
+                    //  tui.start_line_num = 1;
                     tui.cursor_y = 0;
                     tui.cursor_x = 0;
                     tui.bytes_cursor = 0;
@@ -2741,7 +2746,7 @@ mod tests {
                     h.handle_char(&mut tui, meta, &td, ch).unwrap();
                 }
                 1 => {
-                    tui.start_line_num = 1;
+                    //   tui.start_line_num = 1;
                     tui.cursor_y = 0;
                     tui.cursor_x = 0;
                     tui.bytes_cursor = 0;

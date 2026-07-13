@@ -155,7 +155,7 @@ impl Text for MmapText {
             LineState::builder()
                 .line_index(state.line_index + 1)
                 .line_file_start(state.line_file_end + 1)
-                .start_line_num(state.get_line_num())
+                //.start_line_num(state.get_line_num())
                 .build()
         } else {
             // SoftWrap 中间子行 → 从 consumed 处继续当前逻辑行
@@ -164,7 +164,7 @@ impl Text for MmapText {
                 .line_offset(consumed)
                 .line_file_start(state.line_file_start)
                 .line_file_end(state.line_file_end) // 同一逻辑行，line_file_end 已知
-                .start_line_num(state.get_line_num())
+                //.start_line_num(state.get_line_num())
                 .build()
         };
         Some(p)
@@ -184,7 +184,7 @@ impl Text for MmapText {
                     .line_file_start(state.line_file_start)
                     .line_file_end(state.line_file_end)
                     .line_offset(state.line_offset) // 保留 offset，让 sort_warp_desc 从此处反向切
-                    .start_line_num(state.get_line_num())
+                    //.start_line_num(state.get_line_num())
                     .build(),
             )
         } else {
@@ -205,7 +205,7 @@ impl Text for MmapText {
                     .line_index(state.line_index.saturating_sub(1))
                     .line_file_start(prev_start)
                     .line_file_end(prev_end)
-                    .start_line_num(state.get_line_num())
+                    //.start_line_num(state.get_line_num())
                     .build(),
             )
         }
