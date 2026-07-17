@@ -1858,7 +1858,7 @@ impl TextOper for TextDisplay {
     ) -> ChapResult<(&RingVec<CacheStr>, &RingVec<LineState>)> {
         match self {
             TextDisplay::Text(v) => v.get_one_page_from_line_state(line_state),
-            TextDisplay::Hex(v) => todo!(),
+            TextDisplay::Hex(v) => v.get_one_page_from_line_state(line_state),
             TextDisplay::Edit(v) => todo!(),
             TextDisplay::EditBlock(v) => v.get_one_page_from_line_state(line_state),
         }

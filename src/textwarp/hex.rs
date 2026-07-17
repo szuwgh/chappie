@@ -695,14 +695,37 @@ impl Text for HexText {
     }
 
     fn has_pre_line(&self, meta: &LineState) -> bool {
-        if meta.get_line_index() == 0 && meta.get_line_end() == 0 {
-            return false;
-        }
-        true
+        meta.get_line_file_start() > 0 || meta.get_line_offset() > 0
     }
 
     fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
-        None
+        if state.get_line_file_start() == 0 && state.get_line_offset() == 0 {
+            return None;
+        }
+
+        let prev_start = state.get_line_file_start().saturating_sub(HEX_WITH);
+        let prev_end = (prev_start + HEX_WITH).min(self.file_size);
+        let txt_len = prev_end.saturating_sub(prev_start);
+
+        let (block_num, block_offset) = self
+            .blocks
+            .iter()
+            .find(|b| prev_start >= b.source_file_start && prev_start < b.source_file_end)
+            .map(|b| (b.block_id, prev_start - b.source_file_start))
+            .unwrap_or((prev_start / HEX_CHUNK_SIZE, prev_start % HEX_CHUNK_SIZE));
+
+        Some(
+            LineState::builder()
+                .line_index(prev_start / HEX_WITH)
+                .line_offset(0)
+                .line_file_start(prev_start)
+                .line_file_end(prev_end)
+                .txt_len(txt_len)
+                .char_len(txt_len)
+                .block_num(block_num)
+                .block_offset(block_offset)
+                .build(),
+        )
     }
 
     fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {

@@ -18,6 +18,7 @@ pub(crate) struct Chappie {
     chap_log_dir: PathBuf,
     chap_plugin_dir: PathBuf,
 }
+
 //
 impl Chappie {
     pub(crate) fn init(&self) -> ChapResult<()> {
