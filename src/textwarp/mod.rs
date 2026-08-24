@@ -1485,7 +1485,7 @@ pub(crate) trait Text {
     fn get_next_line_state(&self, state: &LineState) -> Option<LineState>;
 
     //获取上一行的状态
-    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState>;
+    fn get_pre_line_state(&mut self, state: &LineState, width: usize) -> Option<LineState>;
 
     //获取行的文本长度
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize;
@@ -2042,7 +2042,10 @@ impl<T: Text + TextIndex> TextWarp<T> {
             return (None, LineState::default());
         }
 
-        let pre_line_state = self.borrow_lines_mut().get_pre_line_state(meta).unwrap();
+        let pre_line_state = self
+            .borrow_lines_mut()
+            .get_pre_line_state(meta, self.with)
+            .unwrap();
         // let mut line_index = meta.get_line_index();
         // let mut line_offset = meta.get_line_offset();
         // let mut line_file_start = meta.get_line_file_start();

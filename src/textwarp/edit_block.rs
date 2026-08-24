@@ -432,9 +432,9 @@ impl GapBlockText {
                     // 不是第一个也不是最后一个块
                     return Ok(Block3 {
                         blocks: [
+                            self.blocks.get(i - 1).map(BlockPtr::from_block),
                             self.blocks.get(i).map(BlockPtr::from_block),
                             self.blocks.get(i + 1).map(BlockPtr::from_block),
-                            self.blocks.get(i + 2).map(BlockPtr::from_block),
                         ],
                         block_indexs: &self.block_indexs,
                     });
@@ -753,7 +753,7 @@ impl Text for GapBlockText {
         Some(p)
     }
 
-    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState> {
+    fn get_pre_line_state(&mut self, state: &LineState, _width: usize) -> Option<LineState> {
         let block_id = state.get_block_num(); // block_num 字段存储 block_id
         let block_line_index = state.get_block_line_index();
         let block_offset = state.get_block_offset();
@@ -762,20 +762,21 @@ impl Text for GapBlockText {
         let pos = self.block_pos(block_id)?;
 
         // 判断是否在文件最开头
-        if pos == 0 && block_line_index == 0 && block_offset == 0 {
+        if pos == 0 && block_line_index == 0 && block_offset == 0 && state.get_line_offset() == 0 {
             return None;
         }
 
         if state.get_line_offset() > 0 {
-            //在行中间
             let p = LineState::builder()
-                //.start_line_num(state.get_line_num())
                 .line_index(state.get_line_index())
                 .line_offset(state.get_line_offset())
                 .block_num(block_id)
                 .block_line_index(block_line_index)
                 .block_offset(block_offset)
+                .line_file_start(state.get_line_file_start())
+                .line_file_end(state.get_line_file_end())
                 .build();
+
             return Some(p);
         }
         if block_line_index > 0 {
@@ -844,6 +845,7 @@ impl Text for GapBlockText {
             }
             let last_block_index = &self.block_indexs[pos - 1];
             let last_block_id = last_block_index.block_id;
+            self.ensure_block_loaded(last_block_id).ok()?;
             let last_block = self.blocks.iter().find(|b| b.block_id == last_block_id)?;
             let last_line_info = last_block.last_line_span()?;
             let p = LineState::builder()
@@ -870,6 +872,7 @@ impl Text for GapBlockText {
         if self.block_pos(meta.get_block_num()) == Some(0)
             && meta.get_block_line_index() == 0
             && meta.get_block_offset() == 0
+            && meta.get_line_offset() == 0
         {
             return false;
         }
@@ -1207,6 +1210,111 @@ impl GapBlockText {
         self.cache.remove(&block_id);
     }
 
+    fn merge_blocks_around(&mut self, pos: usize) -> ChapResult<()> {
+        if self.block_indexs.len() < 2 {
+            return Ok(());
+        }
+
+        let mut pos = pos.min(self.block_indexs.len().saturating_sub(2));
+        loop {
+            if self.merge_block_once(pos)? {
+                pos = pos.saturating_sub(1);
+                continue;
+            }
+            if pos + 2 > self.block_indexs.len().saturating_sub(1) {
+                break;
+            }
+            pos += 1;
+            if !self.merge_block_once(pos)? {
+                break;
+            }
+            pos = pos.saturating_sub(1);
+        }
+
+        self.sync_block_offsets_from(pos);
+        self.debug_assert_storage_consistent();
+        Ok(())
+    }
+
+    fn merge_block_once(&mut self, left_pos: usize) -> ChapResult<bool> {
+        let right_pos = left_pos + 1;
+        if right_pos >= self.block_indexs.len() {
+            return Ok(false);
+        }
+
+        let left = self.block_indexs[left_pos].clone();
+        let right = self.block_indexs[right_pos].clone();
+        let merged_len = left.logic_block_size + right.logic_block_size;
+        if merged_len > BLOCK_SIZE {
+            return Ok(false);
+        }
+
+        let mut merged = Vec::with_capacity(merged_len);
+        self.ensure_block_loaded_impl(left.block_id)?;
+        {
+            let block = self
+                .blocks
+                .iter_mut()
+                .find(|b| b.block_id == left.block_id)
+                .ok_or_else(|| {
+                    ChapError::Unexpected(format!(
+                        "merge_block_once: left block_id {} not in memory",
+                        left.block_id
+                    ))
+                })?;
+            merged.extend_from_slice(block.as_continuous());
+        }
+
+        self.ensure_block_loaded_impl(right.block_id)?;
+        {
+            let block = self
+                .blocks
+                .iter_mut()
+                .find(|b| b.block_id == right.block_id)
+                .ok_or_else(|| {
+                    ChapError::Unexpected(format!(
+                        "merge_block_once: right block_id {} not in memory",
+                        right.block_id
+                    ))
+                })?;
+            merged.extend_from_slice(block.as_continuous());
+        }
+
+        self.ensure_block_loaded_impl(left.block_id)?;
+        {
+            let block = self
+                .blocks
+                .iter_mut()
+                .find(|b| b.block_id == left.block_id)
+                .ok_or_else(|| {
+                    ChapError::Unexpected(format!(
+                        "merge_block_once: merged block_id {} not in memory",
+                        left.block_id
+                    ))
+                })?;
+            block.data = GapBuffer::from_bytes(&merged, CHAR_GAP_SIZE);
+            Self::sync_block_source_mirror(
+                block,
+                left.source_file_start.min(right.source_file_start),
+                left.source_file_end.max(right.source_file_end),
+            );
+            block.is_modified = true;
+        }
+
+        self.block_indexs[left_pos] = BlockIndex::from_block_bytes(
+            left.logic_file_start,
+            left.source_file_start.min(right.source_file_start),
+            left.source_file_end.max(right.source_file_end),
+            left.block_id,
+            merged_len,
+            Self::block_checksum(&merged),
+        )?;
+        self.block_indexs.remove(right_pos);
+        self.remove_block_by_id(right.block_id);
+        self.sort_loaded_blocks_by_logic_order();
+        Ok(true)
+    }
+
     fn split_block(&mut self, block_id: BlockId) -> ChapResult<()> {
         let Some(pos) = self.block_pos(block_id) else {
             return Err(ChapError::Unexpected(format!(
@@ -1235,6 +1343,33 @@ impl GapBlockText {
         Ok(())
     }
 
+    fn split_offset_at_char_boundary(bytes: &[u8], preferred: usize) -> ChapResult<Option<usize>> {
+        if preferred == 0 || preferred >= bytes.len() {
+            return Ok(None);
+        }
+
+        let text = std::str::from_utf8(bytes).map_err(|e| {
+            ChapError::Unexpected(format!("split_block: block is not valid UTF-8: {e}"))
+        })?;
+
+        let mut split_byte = preferred;
+        while split_byte > 0 && !text.is_char_boundary(split_byte) {
+            split_byte -= 1;
+        }
+        if split_byte == 0 {
+            split_byte = preferred + 1;
+            while split_byte < bytes.len() && !text.is_char_boundary(split_byte) {
+                split_byte += 1;
+            }
+        }
+
+        if split_byte == 0 || split_byte >= bytes.len() {
+            Ok(None)
+        } else {
+            Ok(Some(split_byte))
+        }
+    }
+
     fn split_block_once(&mut self, block_id: BlockId) -> ChapResult<Option<(BlockId, BlockId)>> {
         let pos = self.block_pos(block_id).ok_or_else(|| {
             ChapError::Unexpected(format!("split_block: block_id {} not found", block_id))
@@ -1242,20 +1377,19 @@ impl GapBlockText {
         let logic_block_size = self.block_indexs[pos].logic_block_size;
         let logic_file_start = self.block_indexs[pos].logic_file_start;
 
-        let half = logic_block_size / 2;
-        let split_byte = self
+        let preferred_split = self
             .blocks
             .iter()
             .find(|b| b.block_id == block_id)
             .ok_or_else(|| ChapError::Unexpected(format!("split: {} not in memory", block_id)))?
             .split_offset_near_half();
 
-        if split_byte == 0 || split_byte >= logic_block_size {
+        if preferred_split == 0 || preferred_split >= logic_block_size {
             return Ok(None); // 无法切分（整块只有一行且超大）
         }
 
         // 基于左右字节重建两个新块及其块级索引。
-        let (left_bytes, right_bytes, source_file_start, source_file_end) = {
+        let (split_byte, left_bytes, right_bytes, source_file_start, source_file_end) = {
             let block = self
                 .blocks
                 .iter_mut()
@@ -1267,7 +1401,12 @@ impl GapBlockText {
                     ))
                 })?;
             let bytes = block.as_continuous();
+            let Some(split_byte) = Self::split_offset_at_char_boundary(bytes, preferred_split)?
+            else {
+                return Ok(None);
+            };
             (
+                split_byte,
                 bytes[..split_byte].to_vec(),
                 bytes[split_byte..].to_vec(),
                 block.source_file_start,
@@ -1421,6 +1560,7 @@ impl EditText for GapBlockText {
         deleted_parts.reverse();
         let deleted_bytes = deleted_parts.into_iter().flatten().collect();
         self.sync_block_offsets_from(min_touched_pos);
+        self.merge_blocks_around(min_touched_pos.saturating_sub(1))?;
         self.debug_assert_storage_consistent();
         return Ok(deleted_bytes);
         //   }
@@ -2060,6 +2200,10 @@ impl<'a> Iterator for GapBlockTextIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::textwarp::EditTextWarp;
+    use crate::textwarp::TextDisplay;
+    use crate::textwarp::TextOper;
+    use crate::textwarp::TextWarpType;
     use std::io::Read;
     use std::io::Seek;
     use std::io::SeekFrom;
@@ -2158,6 +2302,98 @@ mod tests {
             "{label}: {}",
             first_diff_window(&saved, expected)
         );
+    }
+
+    fn cache_str_bytes(cache: &crate::textwarp::CacheStr) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for part in cache.as_slice().as_parts() {
+            bytes.extend_from_slice(part);
+        }
+        bytes
+    }
+
+    fn assert_current_page_matches_saved(td: &TextDisplay, saved: &[u8], label: &str) {
+        let (lines, meta) = td.get_current_page().expect("current page");
+        assert_eq!(
+            lines.len(),
+            meta.len(),
+            "{label}: line/meta length mismatch"
+        );
+        for i in 0..meta.len() {
+            let line_meta = meta.get(i).expect("line meta");
+            let actual = cache_str_bytes(lines.get(i).expect("line content"));
+            let start = line_meta
+                .get_line_file_start()
+                .saturating_add(line_meta.get_line_offset());
+            let end = start.saturating_add(line_meta.get_txt_len());
+            assert!(
+                end <= saved.len(),
+                "{label}: page line {i} range {start}..{end} exceeds saved len {}",
+                saved.len()
+            );
+            assert_eq!(
+                actual,
+                saved[start..end],
+                "{label}: page line {i} content mismatch at range {start}..{end}"
+            );
+        }
+    }
+
+    fn assert_current_page_has_unique_visual_lines(td: &TextDisplay, label: &str) {
+        let meta = td.get_current_line_meta().expect("line meta");
+        let mut seen = std::collections::HashSet::new();
+        for i in 0..meta.len() {
+            let line_meta = meta.get(i).expect("line meta");
+            let start = line_meta
+                .get_line_file_start()
+                .saturating_add(line_meta.get_line_offset());
+            let key = (
+                start,
+                start.saturating_add(line_meta.get_txt_len()),
+                line_meta.get_txt_len(),
+            );
+            assert!(
+                seen.insert(key),
+                "{label}: duplicated visual line at page row {i}: {line_meta:?}\npage={:?}",
+                meta.iter().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    fn assert_current_page_visual_lines_ordered(td: &TextDisplay, label: &str) {
+        let meta = td.get_current_line_meta().expect("line meta");
+        let mut prev = None;
+        for i in 0..meta.len() {
+            let line_meta = meta.get(i).expect("line meta");
+            let start = line_meta
+                .get_line_file_start()
+                .saturating_add(line_meta.get_line_offset());
+            let key = (start, start.saturating_add(line_meta.get_txt_len()));
+            if let Some(prev_key) = prev {
+                assert!(
+                    prev_key < key,
+                    "{label}: visual lines out of order at page row {i}: prev={prev_key:?}, current={key:?}, page={:?}",
+                    meta.iter().collect::<Vec<_>>()
+                );
+            }
+            prev = Some(key);
+        }
+    }
+
+    fn assert_current_page_valid(td: &TextDisplay, saved: &[u8], label: &str) {
+        assert_current_page_matches_saved(td, saved, label);
+        assert_current_page_has_unique_visual_lines(td, label);
+        assert_current_page_visual_lines_ordered(td, label);
+    }
+
+    fn test_fixture_a_txt_bytes() -> Vec<u8> {
+        std::fs::read("/home/unvdb/a.txt").unwrap_or_else(|_| {
+            let mut content = generate_large_content(BLOCK_SIZE * 6 + 777, 96).into_bytes();
+            content.extend_from_slice(
+                b"RUN mkdir -p /tmp/install_setup && make -j$(nproc) && make install\n",
+            );
+            content
+        })
     }
 
     fn save_reload_and_assert(
@@ -2425,6 +2661,25 @@ mod tests {
         let delete_start = delete_end - deleted.len();
         expected.drain(delete_start..delete_end);
         (delete_start, deleted)
+    }
+
+    fn replace_ascii_at_abs(
+        gbt: &mut GapBlockText,
+        expected: &mut Vec<u8>,
+        start: usize,
+        old_len: usize,
+        replacement: &[u8],
+    ) {
+        assert!(
+            expected[start..start + old_len].is_ascii(),
+            "replace helper only deletes ascii byte ranges"
+        );
+        backspace_at_abs(gbt, expected, start + old_len, old_len);
+        insert_bytes_at_abs(gbt, expected, start, replacement);
+    }
+
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
     }
 
     // ---------- 随机 / 载荷生成 ----------
@@ -3268,20 +3523,24 @@ mod tests {
                     if !can_merge_prev && !can_delete_char {
                         continue;
                     }
-                    let cursor = if can_merge_prev && (rng.gen_range(4) == 0 || !can_delete_char) {
-                        0
-                    } else {
-                        let selectable = &char_boundaries[1..char_boundaries.len().min(17)];
-                        selectable[rng.gen_range(selectable.len())]
-                    };
+                    let (cursor, delete_len) =
+                        if can_merge_prev && (rng.gen_range(4) == 0 || !can_delete_char) {
+                            (0, 1)
+                        } else {
+                            let selectable = &char_boundaries[1..char_boundaries.len().min(17)];
+                            let idx = rng.gen_range(selectable.len());
+                            let cursor = selectable[idx];
+                            (cursor, cursor - char_boundaries[idx])
+                        };
                     let state = make_line_state_for_abs_line_start(
                         &gbt,
                         &expected,
                         line_idx + 1,
                         line_start,
                     );
-                    op_desc = format!("backspace line_idx={line_idx} cursor={cursor}");
-                    let deleted = gbt.backspace(line_idx, cursor, 1, &state).unwrap();
+                    op_desc =
+                        format!("backspace line_idx={line_idx} cursor={cursor} len={delete_len}");
+                    let deleted = gbt.backspace(line_idx, cursor, delete_len, &state).unwrap();
                     let abs = line_start + cursor;
                     let delete_start = abs - deleted.len();
                     expected.drain(delete_start..abs);
@@ -3362,6 +3621,22 @@ mod tests {
             .unwrap();
 
         assert_block_storage_consistent(&gbt);
+    }
+
+    #[test]
+    fn test_backspace_merges_adjacent_small_blocks() {
+        let mut expected = "a".repeat(BLOCK_SIZE + 1000).into_bytes();
+        let mut gbt = create_gap_block_text_bytes(&expected);
+        let before_blocks = gbt.block_indexs.len();
+
+        backspace_at_abs(&mut gbt, &mut expected, 3500, 3500);
+
+        assert!(
+            gbt.block_indexs.len() < before_blocks,
+            "delete should merge adjacent small blocks"
+        );
+        assert_eq!(gbt.block_indexs.len(), 1);
+        assert_text_and_metadata(&mut gbt, &expected, "after merge-causing delete");
     }
 
     #[test]
@@ -3714,6 +3989,34 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_split_block_keeps_utf8_char_boundary() {
+        let mut expected = Vec::new();
+        expected.extend(std::iter::repeat(b'a').take(2047));
+        expected.extend_from_slice("中".as_bytes());
+        expected.extend(std::iter::repeat(b'b').take(BLOCK_SIZE - expected.len()));
+        assert_eq!(expected.len(), BLOCK_SIZE);
+
+        let mut gbt = create_gap_block_text_bytes(&expected);
+        let eof = expected.len();
+        insert_bytes_at_abs(&mut gbt, &mut expected, eof, b"XY");
+
+        for block_id in gbt
+            .block_indexs
+            .iter()
+            .map(|bi| bi.block_id)
+            .collect::<Vec<_>>()
+        {
+            let block_bytes = get_block_text(&mut gbt, block_id);
+            assert!(
+                std::str::from_utf8(&block_bytes).is_ok(),
+                "split block {block_id} must stay valid UTF-8"
+            );
+        }
+        assert_text_and_metadata(&mut gbt, &expected, "after UTF-8 boundary split");
+    }
+
     #[test]
     fn test_split_block_lines_match_content() {
         let content = generate_padded_content(BLOCK_SIZE * 2 + 100);
@@ -4806,6 +5109,357 @@ mod tests {
             matches[1].get_line_file_end(),
             expected_third.get_line_file_end()
         );
+    }
+
+    #[test]
+    fn test_first_line_softwrap_continuation_has_previous_visual_line() {
+        let content = format!("{}\nnext\n", "a".repeat(180)).into_bytes();
+        let mut gbt = create_gap_block_text_bytes(&content);
+        let block_id = gbt.block_indexs.first().expect("block index").block_id;
+        let state = LineState::builder()
+            .block_num(block_id)
+            .block_line_index(0)
+            .block_offset(0)
+            .line_index(0)
+            .line_offset(80)
+            .line_file_start(0)
+            .line_file_end(181)
+            .build();
+
+        assert!(
+            gbt.has_pre_line(&state),
+            "first logical line soft-wrap continuation must be scrollable upward"
+        );
+
+        let prev = gbt
+            .get_pre_line_state(&state, 80)
+            .expect("previous visual line state");
+        assert_eq!(prev.get_line_index(), 0);
+        assert_eq!(prev.get_line_offset(), 80);
+    }
+
+    #[test]
+    fn test_edit_search_scroll_chaos_keeps_page_text_consistent() {
+        let mut expected = test_fixture_a_txt_bytes();
+        let mut gbt = create_gap_block_text_bytes(&expected);
+
+        insert_bytes_at_abs(&mut gbt, &mut expected, 0, b"# chaos-prefix make\n");
+        let mid = expected.len() / 2;
+        insert_bytes_at_abs(&mut gbt, &mut expected, mid, b" CHAOS_MID_make ");
+        if expected.len() > 128 {
+            backspace_at_abs(&mut gbt, &mut expected, 128, 7);
+        }
+        let tail = mutation_safe_end(&expected);
+        insert_char_at_abs(&mut gbt, &mut expected, tail, 'Z');
+        let eof = expected.len();
+        insert_bytes_at_abs(&mut gbt, &mut expected, eof, b"\n# chaos-tail make\n");
+
+        assert_saved_matches(&mut gbt, &expected, "after chaos edits");
+
+        let start_state = make_line_state_for_abs_line_start(&gbt, &expected, 1, 0);
+        let matches = gbt
+            .search(b"make", &start_state)
+            .expect("search should succeed")
+            .expect("search should find make");
+        let target = matches
+            .last()
+            .cloned()
+            .expect("expected at least one search hit");
+        let saved = save_all_text(&mut gbt);
+        assert_eq!(
+            saved, expected,
+            "saved text must match expected after search"
+        );
+
+        let td = TextDisplay::EditBlock(EditTextWarp::new(gbt, 20, 80, TextWarpType::SoftWrap));
+        td.get_one_page_from_state(&target)
+            .expect("load page from search target");
+        assert_current_page_valid(&td, &saved, "search target page");
+
+        for step in 0..200 {
+            let first = {
+                let meta = td.get_current_line_meta().expect("line meta");
+                let Some(first) = meta.get(0) else {
+                    break;
+                };
+                first.clone()
+            };
+            td.scroll_pre_one_line(&first)
+                .expect("scroll previous line after search");
+            assert_current_page_valid(&td, &saved, &format!("scroll up step {step}"));
+        }
+
+        for step in 0..80 {
+            let last = {
+                let meta = td.get_current_line_meta().expect("line meta");
+                let Some(last) = meta.last() else {
+                    break;
+                };
+                last.clone()
+            };
+            td.scroll_next_one_line(&last)
+                .expect("scroll next line after search");
+            assert_current_page_valid(&td, &saved, &format!("scroll down step {step}"));
+        }
+    }
+
+    #[test]
+    fn test_random_edit_search_scroll_keeps_reference_model_consistent() {
+        for seed in [0x1020_3040_5060_7080, 0x5eed_cafe_f00d_1234] {
+            let mut expected = test_fixture_a_txt_bytes();
+            let mut gbt = create_gap_block_text_bytes(&expected);
+            let mut rng = TestRng::new(seed);
+
+            for step in 0..180usize {
+                let lines = collect_line_ranges(&expected);
+                let line_idx = rng.gen_range(lines.len());
+                let (line_start, line_end) = lines[line_idx];
+                let char_boundaries = line_body_char_boundaries(&expected, line_start, line_end);
+                let body_len = line_body_len(&expected, line_start, line_end);
+                let op = rng.gen_range(5);
+                let label = format!("seed={seed:#x} step={step} op={op}");
+
+                match op {
+                    0 => {
+                        let cursor = char_boundaries[rng.gen_range(char_boundaries.len())];
+                        let ch = match rng.gen_range(6) {
+                            0 => 'E',
+                            1 => 'N',
+                            2 => 'V',
+                            3 => '你',
+                            4 => '界',
+                            _ => 'x',
+                        };
+                        insert_char_at_abs(&mut gbt, &mut expected, line_start + cursor, ch);
+                    }
+                    1 => {
+                        let cursor = char_boundaries[rng.gen_range(char_boundaries.len())];
+                        let payload = deterministic_payload(step, rng.gen_range(6));
+                        insert_bytes_at_abs(
+                            &mut gbt,
+                            &mut expected,
+                            line_start + cursor,
+                            payload.as_bytes(),
+                        );
+                    }
+                    2 => {
+                        let cursor = char_boundaries[rng.gen_range(char_boundaries.len())];
+                        insert_bytes_at_abs(
+                            &mut gbt,
+                            &mut expected,
+                            line_start + cursor,
+                            b" ENV make ",
+                        );
+                    }
+                    3 => {
+                        let cursor = char_boundaries[rng.gen_range(char_boundaries.len())];
+                        insert_bytes_at_abs(&mut gbt, &mut expected, line_start + cursor, b"\n");
+                    }
+                    _ => {
+                        let can_merge_prev = line_idx > 0;
+                        let ascii_delete_cursors: Vec<usize> = char_boundaries
+                            .windows(2)
+                            .filter_map(|w| (w[1] - w[0] == 1).then_some(w[1]))
+                            .collect();
+                        let can_delete_char = !ascii_delete_cursors.is_empty();
+                        if !can_merge_prev && !can_delete_char {
+                            continue;
+                        }
+                        let cursor =
+                            if can_merge_prev && (rng.gen_range(5) == 0 || !can_delete_char) {
+                                0
+                            } else {
+                                ascii_delete_cursors[rng.gen_range(ascii_delete_cursors.len())]
+                            };
+                        backspace_at_abs(&mut gbt, &mut expected, line_start + cursor, 1);
+                    }
+                }
+
+                assert_text_and_metadata(&mut gbt, &expected, &label);
+            }
+
+            insert_bytes_at_abs(
+                &mut gbt,
+                &mut expected,
+                0,
+                b"# search-scroll-anchor ENV make\n",
+            );
+            let mid = expected.len() / 2;
+            insert_bytes_at_abs(
+                &mut gbt,
+                &mut expected,
+                mid,
+                b"\n# middle ENV make anchor\n",
+            );
+            let eof = expected.len();
+            insert_bytes_at_abs(&mut gbt, &mut expected, eof, b"\n# tail ENV make anchor\n");
+
+            let start_state = make_line_state_for_abs_line_start(&gbt, &expected, 1, 0);
+            let matches = gbt
+                .search(b"ENV", &start_state)
+                .expect("search should succeed")
+                .expect("search should find ENV");
+            let target = matches
+                .last()
+                .cloned()
+                .expect("expected at least one ENV hit");
+            let saved = save_all_text(&mut gbt);
+            assert_eq!(
+                saved, expected,
+                "seed={seed:#x}: saved text must match expected before scroll"
+            );
+
+            let td = TextDisplay::EditBlock(EditTextWarp::new(gbt, 24, 80, TextWarpType::SoftWrap));
+            td.get_one_page_from_state(&target)
+                .expect("load page from last search hit");
+            assert_current_page_valid(&td, &saved, &format!("seed={seed:#x} search target page"));
+
+            for step in 0..240usize {
+                let first = {
+                    let meta = td.get_current_line_meta().expect("line meta");
+                    let Some(first) = meta.get(0) else {
+                        break;
+                    };
+                    if !first.has_pre_line() {
+                        break;
+                    }
+                    first.clone()
+                };
+                td.scroll_pre_one_line(&first)
+                    .expect("scroll previous line after random edits");
+                assert_current_page_valid(&td, &saved, &format!("seed={seed:#x} scroll up {step}"));
+            }
+
+            for step in 0..160usize {
+                let last = {
+                    let meta = td.get_current_line_meta().expect("line meta");
+                    let Some(last) = meta.last() else {
+                        break;
+                    };
+                    last.clone()
+                };
+                td.scroll_next_one_line(&last)
+                    .expect("scroll next line after random edits");
+                assert_current_page_valid(
+                    &td,
+                    &saved,
+                    &format!("seed={seed:#x} scroll down {step}"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_crud_search_then_scroll_keeps_visible_text_exact() {
+        let mut expected = test_fixture_a_txt_bytes();
+        let mut gbt = create_gap_block_text_bytes(&expected);
+
+        // Create: insert at BOF, middle, and EOF. The middle line is long enough to soft-wrap.
+        insert_bytes_at_abs(&mut gbt, &mut expected, 0, b"# CRUD-BEGIN ENV make\n");
+        assert_text_and_metadata(&mut gbt, &expected, "after insert at beginning");
+
+        let mid = expected.len() / 2;
+        insert_bytes_at_abs(
+            &mut gbt,
+            &mut expected,
+            mid,
+            b"\nCRUD-MIDDLE ENV make xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n",
+        );
+        assert_text_and_metadata(&mut gbt, &expected, "after insert in middle");
+
+        let eof = expected.len();
+        insert_bytes_at_abs(&mut gbt, &mut expected, eof, b"\n# CRUD-END ENV make\n");
+        assert_text_and_metadata(&mut gbt, &expected, "after insert at end");
+
+        // Update: replace the first ENV token with SET using delete + insert.
+        let env_pos = find_bytes(&expected, b"ENV").expect("ENV token should exist");
+        replace_ascii_at_abs(&mut gbt, &mut expected, env_pos, b"ENV".len(), b"SET");
+        assert_text_and_metadata(&mut gbt, &expected, "after replace ENV with SET");
+
+        // Delete: remove an ASCII token and then merge one newline across lines.
+        let make_pos = find_bytes(&expected, b"make").expect("make token should exist");
+        backspace_at_abs(
+            &mut gbt,
+            &mut expected,
+            make_pos + b"make".len(),
+            b"make".len(),
+        );
+        assert_text_and_metadata(&mut gbt, &expected, "after delete make token");
+
+        let newline_pos = find_bytes(&expected, b"\nCRUD-MIDDLE")
+            .expect("middle inserted line should have a leading newline");
+        backspace_at_abs(&mut gbt, &mut expected, newline_pos + 1, 1);
+        assert_text_and_metadata(&mut gbt, &expected, "after newline merge delete");
+
+        // Read/Search: every returned state must point to a line containing the queried bytes.
+        let start_state = make_line_state_for_abs_line_start(&gbt, &expected, 1, 0);
+        let matches = gbt
+            .search(b"ENV", &start_state)
+            .expect("search should succeed")
+            .expect("search should return ENV matches");
+        assert!(
+            matches.len() >= 2,
+            "expected multiple ENV matches after CRUD operations, got {}",
+            matches.len()
+        );
+        for (i, line_state) in matches.iter().enumerate() {
+            let start = line_state.get_line_file_start();
+            let end = line_state.get_line_file_end();
+            assert!(
+                end <= expected.len(),
+                "search match {i} line range {start}..{end} exceeds len {}",
+                expected.len()
+            );
+            assert!(
+                find_bytes(&expected[start..end], b"ENV").is_some(),
+                "search match {i} does not point to an ENV line: {:?}",
+                String::from_utf8_lossy(&expected[start..end])
+            );
+        }
+
+        let target = matches
+            .last()
+            .cloned()
+            .expect("last ENV search target should exist");
+        let saved = save_all_text(&mut gbt);
+        assert_eq!(
+            saved, expected,
+            "saved text must match reference before scroll"
+        );
+
+        let td = TextDisplay::EditBlock(EditTextWarp::new(gbt, 24, 80, TextWarpType::SoftWrap));
+        td.get_one_page_from_state(&target)
+            .expect("load page from CRUD search target");
+        assert_current_page_valid(&td, &saved, "CRUD search target page");
+
+        for step in 0..260usize {
+            let first = {
+                let meta = td.get_current_line_meta().expect("line meta");
+                let Some(first) = meta.get(0) else {
+                    break;
+                };
+                if !first.has_pre_line() {
+                    break;
+                }
+                first.clone()
+            };
+            td.scroll_pre_one_line(&first)
+                .expect("scroll previous after CRUD search");
+            assert_current_page_valid(&td, &saved, &format!("CRUD scroll up {step}"));
+        }
+
+        for step in 0..180usize {
+            let last = {
+                let meta = td.get_current_line_meta().expect("line meta");
+                let Some(last) = meta.last() else {
+                    break;
+                };
+                last.clone()
+            };
+            td.scroll_next_one_line(&last)
+                .expect("scroll next after CRUD search");
+            assert_current_page_valid(&td, &saved, &format!("CRUD scroll down {step}"));
+        }
     }
 
     #[test]
