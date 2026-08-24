@@ -200,6 +200,8 @@ impl Block {
     }
 
     pub(crate) fn backspace_last(&mut self, count: usize) {
+        let end = self.block_size();
+        self.data.backspace(end, count.min(end));
         self.is_modified = true;
     }
 

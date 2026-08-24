@@ -5,12 +5,11 @@ mod large_file_tests;
 pub(crate) mod text;
 use crate::command::Command;
 use crate::command::FindValue;
-use crate::common::error::ChapResult;
+use crate::common::error::{ChapError, ChapResult};
 use crate::common::ring_vec::RingVec;
 use crate::execute;
 use crate::handle::text::HandleText;
 use crate::lua::LuaPlugin;
-use crate::textwarp::block::EMPTY_BLOCK_ID;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
@@ -28,6 +27,64 @@ pub(crate) use hex::HandleHex;
 
 pub(crate) struct HandleBase;
 
+fn line_visual_start(state: &LineState) -> usize {
+    state.get_line_file_start() + state.get_line_offset()
+}
+
+fn line_state_at_byte_offset(
+    td: &TextDisplay,
+    byte_offset: usize,
+    prefer_next_at_boundary: bool,
+) -> ChapResult<(LineState, usize)> {
+    if let TextDisplay::EditBlock(v) = td {
+        if let Some((block_id, block_offset)) =
+            v.resolve_block_for_file_offset_with_boundary(byte_offset, prefer_next_at_boundary)
+        {
+            let block_line_index = v
+                .find_block_line_for_offset(block_id, block_offset)
+                .unwrap_or(0);
+            let state = LineState::builder()
+                .block_num(block_id)
+                .block_line_index(block_line_index)
+                .block_offset(block_offset)
+                .line_offset(0)
+                .line_file_start(byte_offset)
+                .line_file_end(byte_offset)
+                .build();
+            return Ok((state, 0));
+        }
+    }
+
+    let mut boundary_match = None;
+    {
+        for state in td.get_current_line_meta()?.iter() {
+            let start = line_visual_start(state);
+            let end = start + state.get_txt_len();
+            if byte_offset < start {
+                break;
+            }
+            if byte_offset == start {
+                return Ok((state.clone(), 0));
+            }
+            if byte_offset < end || (!prefer_next_at_boundary && byte_offset == end) {
+                return Ok((state.clone(), byte_offset - start));
+            }
+            if byte_offset == end {
+                boundary_match = Some((state.clone(), byte_offset - start));
+            }
+        }
+    }
+
+    if let Some(matched) = boundary_match {
+        return Ok(matched);
+    }
+
+    Err(ChapError::Unexpected(format!(
+        "undo byte offset {} not found in current page metadata",
+        byte_offset
+    )))
+}
+
 impl HandleBase {
     pub(crate) fn handle_up<'a>(
         &self,
@@ -40,7 +97,10 @@ impl HandleBase {
                 if chap_tui.cursor_y == 0 {
                     //滚动上一行
                     td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
-                    td.get_current_line_meta()?;
+                    line_meta = td.get_current_line_meta()?;
+                    if let Some(first) = line_meta.get(0) {
+                        chap_tui.start_line_state = first.clone();
+                    }
                 }
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
                 if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
@@ -60,6 +120,9 @@ impl HandleBase {
                         if first_meta.has_pre_line() {
                             td.scroll_pre_one_line(first_meta)?;
                             line_meta = td.get_current_line_meta()?;
+                            if let Some(first) = line_meta.get(0) {
+                                chap_tui.start_line_state = first.clone();
+                            }
                         }
                     }
                 }
@@ -93,6 +156,9 @@ impl HandleBase {
                     //滚动下一行
                     td.scroll_next_one_line(line_meta.last().unwrap())?;
                     line_meta = td.get_current_line_meta()?;
+                    if let Some(first) = line_meta.get(0) {
+                        chap_tui.start_line_state = first.clone();
+                    }
                 }
                 if chap_tui.cursor_x
                     >= line_meta
@@ -120,6 +186,9 @@ impl HandleBase {
                     //滚动下一行
                     td.scroll_next_one_line(line_meta.last().unwrap())?;
                     line_meta = td.get_current_line_meta()?;
+                    if let Some(first) = line_meta.get(0) {
+                        chap_tui.start_line_state = first.clone();
+                    }
                 }
                 if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
                     if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
@@ -422,12 +491,13 @@ pub(crate) trait Handle {
     fn handle_ctrl_z<'a>(&self, chap_tui: &mut ChapTui, td: &'a TextDisplay) -> ChapResult<()> {
         // 取一条 undo record
         //    push() 时已存为逆操作，undo() 直接返回可执行的逆操作
-        let Some(op) = chap_tui.undo.as_mut().and_then(|u| u.undo().ok().flatten()) else {
-            return Ok(()); // undo 未启用 或 栈空
+        let Some(undo) = &mut chap_tui.undo else {
+            return Ok(()); // undo 未启用
+        };
+        let Some(op) = undo.undo()? else {
+            return Ok(()); // undo 栈空
         };
 
-        let target_line = op.line_index as usize;
-        // chap_tui.start_line_num = target_line;
         // ④ 按 op_type 执行逆操作（record 里存的就是逆操作类型）
         //
         //   原操作          存储的逆操作      执行动作
@@ -437,50 +507,31 @@ pub(crate) trait Handle {
         //   InsertNewline→ DeleteNewline →  backspace(1 byte)
         //   DeleteNewline→ InsertNewline →  insert_newline
         //
-        // block_offset=0, line_offset=0：backspace 计算
-        //   insert_offset = block_offset + line_offset + bytes_cursor = byte_offset
-        // 直接得到块内绝对位置，无需额外转换。
-        let meta = LineState {
-            char_with: 0,
-            txt_len: 0,
-            char_len: 0,
-            // page_num: 0,
-            block_num: EMPTY_BLOCK_ID,
-            block_line_index: 0,
-            block_offset: 0,
-            // line_num: target_line,
-            line_index: op.line_index as usize,
-            line_offset: 0,
-            line_file_start: 0,
-            line_file_end: 0,
-            // start_line_num: 0,
-            //start_page_num: 0,
-            highlight: None,
-        };
-
         match op.op_type {
             OpType::DeleteChar => {
+                let (meta, bytes_cursor) =
+                    line_state_at_byte_offset(td, op.byte_offset as usize, false)?;
                 td.backspace(
                     op.cursor_y as usize,
-                    op.byte_offset as usize,
+                    bytes_cursor,
                     op.data.len(), // 要删掉的字节数
                     &meta,
                 )?;
             }
             OpType::InsertChar => {
-                td.insert_bytes(
-                    op.cursor_y as usize,
-                    op.byte_offset as usize,
-                    &meta,
-                    &op.data,
-                    false,
-                )?;
+                let (meta, bytes_cursor) =
+                    line_state_at_byte_offset(td, op.byte_offset as usize, false)?;
+                td.insert_bytes(op.cursor_y as usize, bytes_cursor, &meta, &op.data, false)?;
             }
             OpType::DeleteNewline => {
-                td.delete_newline(op.cursor_y as usize, op.byte_offset as usize, &meta)?;
+                let (meta, bytes_cursor) =
+                    line_state_at_byte_offset(td, op.byte_offset as usize, true)?;
+                td.delete_newline(op.cursor_y as usize, bytes_cursor, &meta)?;
             }
             OpType::InsertNewline => {
-                td.insert_newline(op.cursor_y as usize, op.byte_offset as usize, &meta)?;
+                let (meta, bytes_cursor) =
+                    line_state_at_byte_offset(td, op.byte_offset as usize, false)?;
+                td.insert_newline(op.cursor_y as usize, bytes_cursor, &meta)?;
             }
         }
 
@@ -488,7 +539,6 @@ pub(crate) trait Handle {
         chap_tui.cursor_y = op.cursor_y as usize;
         chap_tui.cursor_x = op.cursor_x as usize;
         chap_tui.is_last_line = false;
-        chap_tui.start_line_state = meta;
         // ⑥ 刷新页面
         td.get_one_page_from_state(&chap_tui.start_line_state)?;
         Ok(())

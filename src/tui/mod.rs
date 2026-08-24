@@ -18,6 +18,7 @@ use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
 use crate::textwarp::EditTextWarp;
+use crate::textwarp::LineParts;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
@@ -911,50 +912,49 @@ pub(crate) fn char_range_to_visible<'a>(
     parts: &[&'a [u8]],
     char_start: usize,
     char_end: usize,
-) -> [&'a [u8]; 2] {
-    let mut char_count = 0usize;
-    // char_start 所在的 part 索引及其在该 part 内的字节偏移
-    let mut start_pi = 0usize;
-    let mut start_byte = 0usize;
-    let mut found_start = false;
+) -> LineParts<&'a [u8]> {
+    let mut visible = LineParts::empty();
+    if char_end <= char_start || parts.is_empty() {
+        return visible;
+    }
 
-    for (pi, part) in parts.iter().enumerate() {
+    let mut char_count = 0usize;
+    let mut start = None;
+    let mut end = None;
+
+    'outer: for (pi, part) in parts.iter().enumerate() {
         for (byte_idx, _) in part.char_indices() {
-            // 记录 char_start 位置（仅记录一次）
-            if !found_start && char_count == char_start {
-                start_pi = pi;
-                start_byte = byte_idx;
-                found_start = true;
+            if start.is_none() && char_count == char_start {
+                start = Some((pi, byte_idx));
             }
-            // 到达 char_end：立即提取可见切片并返回
             if char_count == char_end {
-                if !found_start {
-                    return [b"", b""];
-                }
-                return if start_pi == pi {
-                    // 起止在同一 part：单段切片
-                    [&part[start_byte..byte_idx], b""]
-                } else if start_pi + 1 == pi {
-                    // 跨相邻两个 part
-                    [&parts[start_pi][start_byte..], &part[..byte_idx]]
-                } else {
-                    // 跨 3+ 个 part：取前两段（与原 slice_parts_range 行为一致）
-                    [&parts[start_pi][start_byte..], parts[start_pi + 1]]
-                };
+                end = Some((pi, byte_idx));
+                break 'outer;
             }
             char_count += 1;
         }
     }
-    // char_end 超出文本末尾
-    if !found_start || parts.is_empty() {
-        return [b"", b""];
+
+    let Some((start_pi, start_byte)) = start else {
+        return visible;
+    };
+    let (end_pi, end_byte) = end.unwrap_or_else(|| {
+        let last_pi = parts.len() - 1;
+        (last_pi, parts[last_pi].len())
+    });
+
+    for pi in start_pi..=end_pi {
+        let part_start = if pi == start_pi { start_byte } else { 0 };
+        let part_end = if pi == end_pi {
+            end_byte
+        } else {
+            parts[pi].len()
+        };
+        if part_start < part_end {
+            visible.append(&parts[pi][part_start..part_end]);
+        }
     }
-    let last_pi = parts.len() - 1;
-    if start_pi == last_pi {
-        [&parts[start_pi][start_byte..], b""]
-    } else {
-        [&parts[start_pi][start_byte..], parts[start_pi + 1]]
-    }
+    visible
 }
 
 // part 是一个连续的字节块，highlight_start和highlight_end 是高亮开始和结束的地方，然后这个函数把part
@@ -1010,10 +1010,24 @@ pub(crate) fn build_cursor_line<'a>(
     char_count: &[usize],
     char_in_index: usize, //判断光标在那个 part中
 ) -> (Vec<Span<'a>>, usize, usize) {
+    fn last_non_control_char_size(s: &[u8]) -> usize {
+        s.char_indices()
+            .rev()
+            .find(|(_, ch)| !ch.is_control())
+            .map(|(_, ch)| ch.len_utf8())
+            .unwrap_or(0)
+    }
+
     //let (str1, str2) = txt.text(offset..);
     // 优化2：预分配容量：最多 str_parts.len() 个普通段 + 3 个光标相关 span（前段/光标/后段）
     let mut spans = Vec::with_capacity(str_parts.len() + 3);
     let mut last_char_bytes_size: usize = 0;
+    if str_parts.is_empty() {
+        spans.push(Span::raw(" ".repeat(cursor_x)));
+        spans.push(Span::styled(" ", Style::default().bg(Color::LightRed)));
+        return (spans, 0, 0);
+    }
+    let char_in_index = char_in_index.min(str_parts.len() - 1);
     let byte_cursor;
     let (a, b, c) = if char_in_index == 0 {
         let (a, b, c, last_csz) = n_chars_skip_control_mem_opt(str_parts[0], cursor_x);
@@ -1028,9 +1042,7 @@ pub(crate) fn build_cursor_line<'a>(
         );
         //如果上一个字符大小是0则光标可能在第一个字符那里
         if last_csz == 0 {
-            let (_, _, _, sz) =
-                n_chars_skip_control_mem_opt(str_parts[char_in_index - 1], prev_char_sum);
-            last_char_bytes_size = sz;
+            last_char_bytes_size = last_non_control_char_size(str_parts[char_in_index - 1]);
         } else {
             last_char_bytes_size = last_csz;
         }
@@ -1107,23 +1119,24 @@ fn append_padding_lines(
 
 /// 构建行号导航文本
 pub fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_> {
-    let nav_lines: Vec<Line> = (0..height)
-        .map(|i| {
-            line_meta.get(i).map_or_else(
-                || Line::raw(""),
-                |meta| {
-                    if meta.get_line_offset() > 0 {
-                        Line::raw("")
-                    } else {
-                        Line::from(Span::styled(
-                            format!("{:>4} ", meta.get_line_index()),
-                            Style::default().fg(Color::White),
-                        ))
-                    }
-                },
-            )
-        })
-        .collect();
+    let mut next_line_num = line_meta.get(0).map_or(1, |meta| meta.get_line_index() + 1);
+    let mut nav_lines = Vec::with_capacity(height);
+    for i in 0..height {
+        let Some(meta) = line_meta.get(i) else {
+            nav_lines.push(Line::raw(""));
+            continue;
+        };
+        if meta.get_line_offset() > 0 {
+            nav_lines.push(Line::raw(""));
+            continue;
+        }
+        let line_num = (meta.get_line_index() + 1).max(next_line_num);
+        next_line_num = line_num + 1;
+        nav_lines.push(Line::from(Span::styled(
+            format!("{:>4} ", line_num),
+            Style::default().fg(Color::White),
+        )));
+    }
     Text::from(nav_lines)
 }
 

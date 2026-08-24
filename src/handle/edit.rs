@@ -758,6 +758,9 @@ impl Handle for HandleEdit {
             // td.get_one_page(chap_tui.start_line_num)?;
             td.scroll_pre_one_line(&chap_tui.start_line_state);
             let shifted_meta = td.get_current_line_meta()?;
+            if let Some(first) = shifted_meta.get(0) {
+                chap_tui.start_line_state = first.clone();
+            }
             let Some(cur_meta) = shifted_meta.get(1) else {
                 return Ok(());
             };
@@ -1003,7 +1006,8 @@ mod tests {
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
         let mut td =
             TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-        // td.get_one_page(1).unwrap();
+        td.get_one_page_from_state(&LineState::file_start())
+            .unwrap();
 
         let tui = ChapTui::for_test(TV_H, TV_W);
         (tui, td, tmp)
@@ -1071,7 +1075,7 @@ mod tests {
     fn sync_view_state(tui: &mut ChapTui, td: &TextDisplay) {
         let meta = td.get_current_line_meta().unwrap();
         if let Some(first) = meta.get(0) {
-            // tui.start_line_num = first.get_line_num();
+            tui.start_line_state = first.clone();
         }
         sync_cursor_metrics(tui, td);
     }
@@ -2301,8 +2305,8 @@ mod tests {
         let (mut tui, mut td, _f) = setup(&content);
         let h = handle();
 
-        //  td.get_one_page(2).unwrap();
-        // tui.start_line_num = 2;
+        let meta = td.get_current_line_meta().unwrap();
+        td.scroll_next_one_line(meta.last().unwrap()).unwrap();
         tui.cursor_y = 0;
         tui.cursor_x = 0;
         sync_view_state(&mut tui, &td);
@@ -2445,7 +2449,8 @@ mod tests {
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
         let mut td =
             TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-        // td.get_one_page(1).unwrap();
+        td.get_one_page_from_state(&LineState::file_start())
+            .unwrap();
 
         // 使用 TempDir 内的不存在路径，UndoFile::open 会新建并写入文件头
         let undo_dir = TempDir::new().unwrap();

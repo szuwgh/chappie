@@ -13,7 +13,7 @@
 use crate::handle::edit::HandleEdit;
 use crate::handle::Handle;
 use crate::textwarp::edit_block::GapBlockText;
-use crate::textwarp::{EditTextWarp, TextDisplay, TextOper, TextWarpType};
+use crate::textwarp::{EditTextWarp, LineState, TextDisplay, TextOper, TextWarpType};
 use crate::tui::ChapTui;
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -29,7 +29,8 @@ fn setup(content: &str) -> (ChapTui, TextDisplay, NamedTempFile) {
     tmp.flush().unwrap();
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
     let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-    //td.get_one_page(1).unwrap();
+    td.get_one_page_from_state(&LineState::file_start())
+        .unwrap();
     let tui = ChapTui::for_test(TV_H, TV_W);
     (tui, td, tmp)
 }
@@ -591,7 +592,8 @@ fn paste_then_save_content_correct() {
 
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
     let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-    //  td.get_one_page(1).unwrap();
+    td.get_one_page_from_state(&LineState::file_start())
+        .unwrap();
     let mut tui = ChapTui::for_test(TV_H, TV_W);
 
     tui.cursor_x = 5;
@@ -620,7 +622,8 @@ fn char_insert_1000_save_file_grows() {
 
     let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
     let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, TV_H, TV_W, TextWarpType::SoftWrap));
-    // td.get_one_page(1).unwrap();
+    td.get_one_page_from_state(&LineState::file_start())
+        .unwrap();
     let mut tui = ChapTui::for_test(TV_H, TV_W);
 
     tui.cursor_x = 0;

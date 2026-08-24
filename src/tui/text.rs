@@ -37,7 +37,7 @@ impl BuildContent for TextBuildContent {
             let full = txt.text(0..);
             let visible =
                 char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
-            let parts: &[&[u8]] = &visible[..];
+            let parts: &[&[u8]] = visible.as_parts();
             if cursor_y == i && is_txt_model {
                 let (spans, _, _) = build_cursor_line(parts, cursor_x, &[], 0);
                 lines.push(Line::from(spans));

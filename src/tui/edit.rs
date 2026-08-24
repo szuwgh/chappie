@@ -53,7 +53,7 @@ impl BuildContent for EditBuildContent {
             let full = txt.text(0..);
             let visible =
                 char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
-            let parts: &[&[u8]] = &visible[..];
+            let parts: &[&[u8]] = visible.as_parts();
             if cursor_y == i && is_txt_model {
                 //取上一行的最后一个字符char 大小
                 let mut prev_line_last_char_size = 0;
@@ -215,7 +215,9 @@ mod tests {
     // ── 构造辅助 ──────────────────────────────────────────────────────────────
 
     fn make_meta(line_num: usize) -> LineState {
-        LineStateBuilder::new().line_num(line_num).build()
+        LineStateBuilder::new()
+            .line_index(line_num.saturating_sub(1))
+            .build()
     }
 
     fn make_ring_meta(line_nums: &[usize]) -> RingVec<LineState> {
@@ -228,7 +230,7 @@ mod tests {
 
     fn make_meta_with_offsets(line_num: usize, line_offset: usize) -> LineState {
         LineStateBuilder::new()
-            .line_num(line_num)
+            .line_index(line_num.saturating_sub(1))
             .line_offset(line_offset)
             .build()
     }
@@ -248,7 +250,8 @@ mod tests {
 
         let gap = GapBlockText::from_file_path(tmp.path()).unwrap();
         let mut td = TextDisplay::EditBlock(EditTextWarp::new(gap, 20, 80, TextWarpType::SoftWrap));
-        // td.get_one_page(1).unwrap();
+        td.get_one_page_from_state(&LineState::file_start())
+            .unwrap();
 
         let undo_dir = TempDir::new().unwrap();
         let undo_path = undo_dir.path().join("undo.chpu");
@@ -311,21 +314,21 @@ mod tests {
             .iter()
             .enumerate()
             .flat_map(|(line_idx, line)| {
-                line.spans
-                    .iter()
-                    .enumerate()
-                    .filter_map(move |(span_idx, span)| {
-                        if span.style.bg.is_some() {
-                            Some((
-                                line_idx,
-                                span_idx,
-                                span.content.as_ref().to_string(),
-                                span.style.bg,
-                            ))
-                        } else {
-                            None
-                        }
-                    })
+                let mut col = 0usize;
+                line.spans.iter().filter_map(move |span| {
+                    let span_col = col;
+                    col += span.content.chars().count();
+                    if span.style.bg.is_some() {
+                        Some((
+                            line_idx,
+                            span_col,
+                            span.content.as_ref().to_string(),
+                            span.style.bg,
+                        ))
+                    } else {
+                        None
+                    }
+                })
             })
             .collect()
     }
@@ -383,6 +386,27 @@ mod tests {
         render_snapshot(tui, td)
     }
 
+    fn current_file_start_state(td: &TextDisplay) -> LineState {
+        if let TextDisplay::EditBlock(v) = td {
+            if let Some((block_id, block_offset)) =
+                v.resolve_block_for_file_offset_with_boundary(0, true)
+            {
+                let block_line_index = v
+                    .find_block_line_for_offset(block_id, block_offset)
+                    .unwrap_or(0);
+                return LineState::builder()
+                    .block_num(block_id)
+                    .block_line_index(block_line_index)
+                    .block_offset(block_offset)
+                    .line_index(0)
+                    .line_offset(0)
+                    .line_file_start(0)
+                    .build();
+            }
+        }
+        LineState::file_start()
+    }
+
     fn set_viewport_and_cursor(
         tui: &mut ChapTui,
         td: &TextDisplay,
@@ -390,10 +414,19 @@ mod tests {
         cursor_y: usize,
         cursor_x: usize,
     ) {
-        // tui.start_line_num = start_line_num;
+        td.get_one_page_from_state(&current_file_start_state(td))
+            .unwrap();
+        for _ in 1..start_line_num {
+            let Some(last) = td.get_current_line_meta().unwrap().last().cloned() else {
+                break;
+            };
+            td.scroll_next_one_line(&last).unwrap();
+        }
+        if let Some(first) = td.get_current_line_meta().unwrap().get(0) {
+            tui.start_line_state = first.clone();
+        }
         tui.cursor_y = cursor_y;
         tui.cursor_x = cursor_x;
-        //  td.get_one_page(tui.start_line_num).unwrap();
         sync_cursor_metrics(tui, td);
     }
 
@@ -566,6 +599,19 @@ mod tests {
         let (spans, _, _) = build_cursor_line(parts, 5, char_count, 0);
         let cursor_span = spans.iter().find(|s| s.style.bg == Some(Color::LightRed));
         assert!(cursor_span.is_some(), "超出范围光标应显示红色背景");
+    }
+
+    #[test]
+    fn test_build_cursor_line_empty_visible_parts_shows_cursor() {
+        let parts: &[&[u8]] = &[];
+        let (spans, byte_cursor, last_sz) = build_cursor_line(parts, 0, &[], 0);
+
+        assert_eq!(byte_cursor, 0);
+        assert_eq!(last_sz, 0);
+        assert!(
+            spans.iter().any(|s| s.style.bg == Some(Color::LightRed)),
+            "空可见分片仍应渲染光标"
+        );
     }
 
     #[test]

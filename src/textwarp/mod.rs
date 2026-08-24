@@ -1072,7 +1072,7 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
         let process_block = |block: Option<&BlockLineData<'a>>,
                              range_start: usize,
                              range_end: usize,
-                             prev_offset: usize|
+                             _prev_offset: usize|
          -> Option<BlockLineData<'a>> {
             if range_start >= range_end {
                 return None;
@@ -1085,7 +1085,7 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
                         data: LineData::GapBytes(data),
                         block_id: block_line_data.block_id,
                         block_line_index: block_line_data.block_line_index,
-                        block_offset: block_line_data.block_offset + prev_offset + range_start,
+                        block_offset: block_line_data.block_offset + range_start,
                         block_file_start: block_line_data.block_file_start,
                     })
                 }
@@ -1111,10 +1111,10 @@ impl<'a> Line<'a> for LineBlockStr<'a> {
     }
 
     fn get_line_file_end(&self) -> usize {
-        if let Some(b1) = &self.0 {
-            b1.block_file_start + b1.block_offset + b1.data.len()
-        } else if let Some(b2) = &self.1 {
+        if let Some(b2) = &self.1 {
             b2.block_file_start + b2.block_offset + b2.data.len()
+        } else if let Some(b1) = &self.0 {
+            b1.block_file_start + b1.block_offset + b1.data.len()
         } else {
             0
         }
@@ -1311,6 +1311,14 @@ pub(crate) struct LineState {
 impl LineState {
     pub(crate) fn get_block_line_end(&self) -> usize {
         self.block_offset + self.line_offset + self.txt_len
+    }
+
+    pub(crate) fn file_start() -> Self {
+        LineState::builder()
+            .line_index(0)
+            .line_offset(0)
+            .line_file_start(0)
+            .build()
     }
 
     pub(crate) fn has_pre_line(&self) -> bool {
@@ -3082,6 +3090,16 @@ impl EditTextWarp<GapBlockText> {
         self.edit_text
             .borrow_lines()
             .resolve_block_for_file_offset(file_offset)
+    }
+
+    pub(crate) fn resolve_block_for_file_offset_with_boundary(
+        &self,
+        file_offset: usize,
+        prefer_next_at_boundary: bool,
+    ) -> Option<(usize, usize)> {
+        self.edit_text
+            .borrow_lines()
+            .resolve_block_for_file_offset_with_boundary(file_offset, prefer_next_at_boundary)
     }
 
     pub(crate) fn find_block_line_for_offset(
