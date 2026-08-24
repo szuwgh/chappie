@@ -182,7 +182,7 @@ impl Text for MmapText {
         Some(p)
     }
 
-    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState> {
         // 已经是文件第一行（第一个逻辑行的第一个子行）
         if state.line_file_start == 0 && state.line_offset == 0 {
             return None;

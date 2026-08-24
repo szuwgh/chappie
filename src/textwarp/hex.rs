@@ -698,7 +698,7 @@ impl Text for HexText {
         meta.get_line_file_start() > 0 || meta.get_line_offset() > 0
     }
 
-    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState> {
         if state.get_line_file_start() == 0 && state.get_line_offset() == 0 {
             return None;
         }

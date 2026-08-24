@@ -6,8 +6,8 @@ use crate::textwarp::LineState;
 use crate::tui::append_padding_lines;
 use crate::tui::build_cursor_line;
 use crate::tui::build_highlight_spans;
-use crate::tui::build_multi_highlight_spans;
 use crate::tui::build_nav_text;
+use crate::tui::build_text_spans;
 use crate::tui::char_range_to_visible;
 use crate::tui::cut_highlight_part;
 use crate::tui::n_chars_skip_control_mem_opt;
@@ -117,33 +117,64 @@ impl BuildContent for EditBuildContent {
                 // 避免 map().collect() 的迭代器包装和动态扩容开销。
 
                 let meta = line_meta.get(i).unwrap();
+                // if let Some(highlights) = &ed_ctx.highlights {
+                //     if let Some((_, offsets)) = highlights
+                //         .iter()
+                //         .find(|(line_index, _)| *line_index == meta.line_index)
+                //     {
+                //         let spans = build_multi_highlight_spans(
+                //             parts,
+                //             meta,
+                //             column_offset,
+                //             column_offset + with,
+                //             offsets,
+                //             highlight_len,
+                //         );
 
-                if let Some(highlights) = &ed_ctx.highlights {
-                    if let Some((_, offsets)) = highlights
-                        .iter()
-                        .find(|(line_index, _)| *line_index == meta.line_index)
-                    {
-                        let spans = build_multi_highlight_spans(
-                            parts,
-                            meta,
-                            column_offset,
-                            column_offset + with,
-                            offsets,
-                            highlight_len,
-                        );
+                //         if !spans.is_empty() {
+                //             lines.push(Line::from(spans));
+                //             continue;
+                //         }
+                //     }
+                // }
 
-                        if !spans.is_empty() {
-                            lines.push(Line::from(spans));
-                            continue;
-                        }
-                    }
-                }
+                // if cursor_y == i && is_txt_model {
+                //     let (spans, _, _) = build_cursor_line(parts, cursor_x, &[], 0);
+                //     lines.push(Line::from(spans));
+                // } else {
+                //     let mut spans = Vec::with_capacity(parts.len());
+                //     for v in parts {
+                //         spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
+                //     }
+                //     lines.push(Line::from(spans));
+                // }
+                let offsets: &[usize] = ed_ctx
+                    .highlights
+                    .as_ref()
+                    .and_then(|highlights| {
+                        highlights
+                            .iter()
+                            .find(|(line_index, _)| *line_index == meta.line_index)
+                            .map(|(_, offsets)| offsets.as_slice())
+                    })
+                    .unwrap_or(&[]);
 
-                let mut spans = Vec::with_capacity(parts.len());
-                for v in parts {
-                    spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
-                }
-                //spans.push(Span::raw(str::from_utf8(visible[1]).unwrap_or("")));
+                let cursor = if cursor_y == i && is_txt_model {
+                    Some(cursor_x)
+                } else {
+                    None
+                };
+
+                let spans = build_text_spans(
+                    parts,
+                    meta,
+                    column_offset,
+                    column_offset + with,
+                    offsets,
+                    highlight_len,
+                    cursor,
+                );
+
                 lines.push(Line::from(spans));
             }
         }

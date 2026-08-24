@@ -138,7 +138,7 @@ impl Text for GapText {
         None
     }
 
-    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState> {
         None
     }
 

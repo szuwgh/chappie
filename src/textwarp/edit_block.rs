@@ -753,7 +753,7 @@ impl Text for GapBlockText {
         Some(p)
     }
 
-    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState> {
+    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState> {
         let block_id = state.get_block_num(); // block_num 字段存储 block_id
         let block_line_index = state.get_block_line_index();
         let block_offset = state.get_block_offset();
@@ -799,6 +799,7 @@ impl Text for GapBlockText {
                 //取上一个块的最后一行
                 let last_block_index = &self.block_indexs[pos - 1];
                 let last_block_id = last_block_index.block_id;
+                self.ensure_block_loaded(last_block_id).ok()?;
                 let last_block = self.blocks.iter().find(|b| b.block_id == last_block_id)?;
                 let last_last_line_info = last_block.last_line_span()?;
                 if last_last_line_info.is_complete {
@@ -915,11 +916,16 @@ impl Text for GapBlockText {
         )?;
         let mut results = Vec::new();
         // let boy = BoyerMoore::new(partten);
-        for (line, mut index) in scroll_iter {
-            let v = line.search(partten);
-            // let v: Vec<usize> = boy.stream(line.iter_u8()).collect();
-            if v.len() > 0 {
-                index.highlight = Some(v);
+        for (line_idx, (line, mut index)) in scroll_iter.enumerate() {
+            let mut hits = line.search(partten);
+
+            if line_idx == 0 {
+                hits.retain(|pos| *pos >= state.line_offset);
+            }
+
+            if !hits.is_empty() {
+                index.line_offset = 0;
+                index.highlight = Some(hits);
                 results.push(index);
             }
         }

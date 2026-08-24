@@ -1485,7 +1485,7 @@ pub(crate) trait Text {
     fn get_next_line_state(&self, state: &LineState) -> Option<LineState>;
 
     //获取上一行的状态
-    fn get_pre_line_state(&self, state: &LineState) -> Option<LineState>;
+    fn get_pre_line_state(&mut self, state: &LineState) -> Option<LineState>;
 
     //获取行的文本长度
     fn get_line_text_len(&self, line_index: usize, line_start: usize, line_end: usize) -> usize;

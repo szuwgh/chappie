@@ -1139,20 +1139,17 @@ fn cut_highlight_part<'a>(
     (pre, mid, post)
 }
 
-pub(crate) fn build_multi_highlight_spans<'a>(
+fn build_text_spans<'a>(
     parts: &[&'a [u8]],
-    line_meta: &LineState,
+    meta: &LineState,
     visible_start: usize,
     visible_end: usize,
     offsets: &[usize],
     highlight_len: usize,
+    cursor_x: Option<usize>,
 ) -> Vec<Span<'a>> {
-    if offsets.is_empty() || highlight_len == 0 {
-        return Vec::new();
-    }
-
-    let visible_abs_start = line_meta.line_offset + visible_start;
-    let visible_abs_end = line_meta.line_offset + visible_end;
+    let visible_abs_start = meta.line_offset + visible_start;
+    let visible_abs_end = meta.line_offset + visible_end;
 
     let mut ranges: Vec<(usize, usize)> = offsets
         .iter()
@@ -1170,74 +1167,115 @@ pub(crate) fn build_multi_highlight_spans<'a>(
         })
         .collect();
 
-    if ranges.is_empty() {
-        return Vec::new();
-    }
-
     ranges.sort_by_key(|r| r.0);
 
     let mut spans = Vec::new();
     let mut pos = 0usize;
+    let total_len: usize = parts.iter().map(|p| p.len()).sum();
 
-    for (start, end) in ranges {
-        if pos < start {
-            push_raw_parts(&mut spans, parts, pos, start);
+    while pos < total_len {
+        let next_highlight = ranges
+            .iter()
+            .find(|(start, end)| pos >= *start && pos < *end)
+            .copied();
+
+        let mut next_boundary = total_len;
+        let mut highlight = false;
+
+        if let Some((_, end)) = next_highlight {
+            next_boundary = end;
+            highlight = true;
+        } else if let Some((start, _)) = ranges.iter().find(|(start, _)| *start > pos) {
+            next_boundary = *start;
         }
 
-        push_highlight_parts(&mut spans, parts, start, end);
-        pos = end;
+        if let Some(cursor) = cursor_x {
+            if pos < cursor && cursor < next_boundary {
+                next_boundary = cursor;
+            } else if cursor == pos {
+                next_boundary = next_utf8_boundary(parts, pos).unwrap_or(pos + 1);
+            }
+        }
+
+        let cursor = cursor_x == Some(pos);
+        push_range_span(&mut spans, parts, pos, next_boundary, highlight, cursor);
+        pos = next_boundary;
     }
 
-    let total_len: usize = parts.iter().map(|p| p.len()).sum();
-    if pos < total_len {
-        push_raw_parts(&mut spans, parts, pos, total_len);
+    if cursor_x == Some(total_len) {
+        spans.push(Span::styled(
+            " ",
+            Style::default().bg(Color::LightRed).fg(Color::White),
+        ));
     }
 
     spans
 }
 
-fn push_raw_parts<'a>(spans: &mut Vec<Span<'a>>, parts: &[&'a [u8]], start: usize, end: usize) {
-    push_span_parts(spans, parts, start, end, false);
-}
-
-fn push_highlight_parts<'a>(
-    spans: &mut Vec<Span<'a>>,
-    parts: &[&'a [u8]],
-    start: usize,
-    end: usize,
-) {
-    push_span_parts(spans, parts, start, end, true);
-}
-
-fn push_span_parts<'a>(
+fn push_range_span<'a>(
     spans: &mut Vec<Span<'a>>,
     parts: &[&'a [u8]],
     start: usize,
     end: usize,
     highlight: bool,
+    cursor: bool,
 ) {
-    let mut offset = 0usize;
+    let mut base = 0usize;
 
     for part in parts {
-        let next = offset + part.len();
+        let part_end = base + part.len();
 
-        if next <= start || offset >= end {
-            offset = next;
+        if part_end <= start || base >= end {
+            base = part_end;
             continue;
         }
 
-        let s = start.saturating_sub(offset);
-        let e = (end - offset).min(part.len());
-        let text = str::from_utf8(&part[s..e]).unwrap_or("☻");
+        let s = start.saturating_sub(base);
+        let e = (end - base).min(part.len());
+        let text = std::str::from_utf8(&part[s..e]).unwrap_or("☻");
 
-        if highlight {
-            spans.push(Span::styled(text, Style::default().bg(Color::Green)));
+        let style = if cursor {
+            Style::default().bg(Color::LightRed).fg(Color::White)
+        } else if highlight {
+            Style::default().bg(Color::Green)
         } else {
-            spans.push(Span::raw(text));
-        }
+            Style::default()
+        };
 
-        offset = next;
+        spans.push(Span::styled(text, style));
+        base = part_end;
     }
+}
+
+fn next_utf8_boundary(parts: &[&[u8]], pos: usize) -> Option<usize> {
+    let bytes = byte_at(parts, pos)?;
+    let len = if bytes < 0x80 {
+        1
+    } else if bytes & 0b1110_0000 == 0b1100_0000 {
+        2
+    } else if bytes & 0b1111_0000 == 0b1110_0000 {
+        3
+    } else if bytes & 0b1111_1000 == 0b1111_0000 {
+        4
+    } else {
+        1
+    };
+
+    Some(pos + len)
+}
+
+fn byte_at(parts: &[&[u8]], pos: usize) -> Option<u8> {
+    let mut base = 0usize;
+
+    for part in parts {
+        let end = base + part.len();
+        if pos < end {
+            return Some(part[pos - base]);
+        }
+        base = end;
+    }
+
+    None
 }
 
 pub(crate) fn build_highlight_spans<'a>(
