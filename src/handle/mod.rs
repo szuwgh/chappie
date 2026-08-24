@@ -3,6 +3,7 @@ pub(crate) mod hex;
 #[cfg(test)]
 mod large_file_tests;
 pub(crate) mod text;
+use crate::chap;
 use crate::command::Command;
 use crate::command::FindValue;
 use crate::common::error::{ChapError, ChapResult};
@@ -480,6 +481,10 @@ pub(crate) trait Handle {
         chap_tui.assist_tv2_data.clear();
         chap_tui.txt_sel.reset_to_start();
         chap_tui.enter_command_mode();
+        chap_tui.find_highlight_index = 0;
+        chap_tui.highlight_len = 0;
+        chap_tui.find_list = None;
+        chap_tui.find_index = 0;
         Ok(())
     }
 

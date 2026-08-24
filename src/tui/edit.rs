@@ -5,6 +5,7 @@ use crate::textwarp::LineParts;
 use crate::textwarp::LineState;
 use crate::tui::append_padding_lines;
 use crate::tui::build_cursor_line;
+use crate::tui::build_highlight_spans;
 use crate::tui::build_nav_text;
 use crate::tui::char_range_to_visible;
 use crate::tui::cut_highlight_part;
@@ -114,49 +115,60 @@ impl BuildContent for EditBuildContent {
                 // 优化5：visible 固定 2 段，直接按索引构造 Span，预分配容量 2，
                 // 避免 map().collect() 的迭代器包装和动态扩容开销。
 
-                if let Some(line_num) = find_line_index {
-                    let line_meta = line_meta.get(i).unwrap();
-                    // log::debug!("line_meta.get_line_index:{}", line_meta.get_line_index());
-                    // log::debug!("line_num():{}", line_num);
-                    // log::debug!("line_meta.line_offset:{}", line_meta.line_offset);
-                    // log::debug!("find_highlight_offset:{}", find_highlight_offset);
-                    // log::debug!("line_meta.get_line_end():{}", line_meta.get_line_end());
-                    if line_meta.get_line_index() == line_num {
-                        if line_meta.line_offset <= find_highlight_offset
-                            && find_highlight_offset < line_meta.get_line_end()
-                        {
-                            let highlight_start = find_highlight_offset - line_meta.line_offset;
-                            let highlight_end =
-                                (highlight_start + highlight_len).min(line_meta.get_line_end()); // 假设高亮一个字符
-                            let (a, b, c) =
-                                cut_highlight_part(parts, highlight_start, highlight_end);
-                            let mut spans = Vec::with_capacity(a.len() + b.len() + c.len());
-                            for v in a {
-                                log::debug!("a:{}", str::from_utf8(v).unwrap_or("☻"));
-                                spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
-                            }
-                            for v in b {
-                                log::debug!("b:{}", str::from_utf8(v).unwrap_or("☻"));
-                                spans.push(Span::styled(
-                                    str::from_utf8(v).unwrap_or("☻"),
-                                    Style::default().bg(Color::Green),
-                                ));
-                            }
-                            for v in c {
-                                log::debug!("c:{}", str::from_utf8(v).unwrap_or("☻"));
-                                spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
-                            }
-                            highlight_len = highlight_len.saturating_sub(
-                                line_meta
-                                    .get_line_end()
-                                    .saturating_sub(find_highlight_offset),
-                            );
-                            find_highlight_offset = line_meta.get_line_end();
-                            lines.push(Line::from(spans));
-
-                            continue;
-                        }
+                if let Some(target_line_index) = find_line_index {
+                    let meta = line_meta.get(i).unwrap();
+                    if let Some(spans) = build_highlight_spans(
+                        parts,
+                        meta,
+                        target_line_index,
+                        &mut find_highlight_offset,
+                        &mut highlight_len,
+                    ) {
+                        lines.push(Line::from(spans));
+                        continue;
                     }
+                    // let line_meta = line_meta.get(i).unwrap();
+                    // // log::debug!("line_meta.get_line_index:{}", line_meta.get_line_index());
+                    // // log::debug!("line_num():{}", line_num);
+                    // // log::debug!("line_meta.line_offset:{}", line_meta.line_offset);
+                    // // log::debug!("find_highlight_offset:{}", find_highlight_offset);
+                    // // log::debug!("line_meta.get_line_end():{}", line_meta.get_line_end());
+                    // if line_meta.get_line_index() == line_num {
+                    //     if line_meta.line_offset <= find_highlight_offset
+                    //         && find_highlight_offset < line_meta.get_line_end()
+                    //     {
+                    //         let highlight_start = find_highlight_offset - line_meta.line_offset;
+                    //         let highlight_end =
+                    //             (highlight_start + highlight_len).min(line_meta.get_line_end()); // 假设高亮一个字符
+                    //         let (a, b, c) =
+                    //             cut_highlight_part(parts, highlight_start, highlight_end);
+                    //         let mut spans = Vec::with_capacity(a.len() + b.len() + c.len());
+                    //         for v in a {
+                    //             log::debug!("a:{}", str::from_utf8(v).unwrap_or("☻"));
+                    //             spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
+                    //         }
+                    //         for v in b {
+                    //             log::debug!("b:{}", str::from_utf8(v).unwrap_or("☻"));
+                    //             spans.push(Span::styled(
+                    //                 str::from_utf8(v).unwrap_or("☻"),
+                    //                 Style::default().bg(Color::Green),
+                    //             ));
+                    //         }
+                    //         for v in c {
+                    //             log::debug!("c:{}", str::from_utf8(v).unwrap_or("☻"));
+                    //             spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
+                    //         }
+                    //         highlight_len = highlight_len.saturating_sub(
+                    //             line_meta
+                    //                 .get_line_end()
+                    //                 .saturating_sub(find_highlight_offset),
+                    //         );
+                    //         find_highlight_offset = line_meta.get_line_end();
+                    //         lines.push(Line::from(spans));
+
+                    //     continue;
+                    // }
+                    // }
                 }
 
                 let mut spans = Vec::with_capacity(parts.len());

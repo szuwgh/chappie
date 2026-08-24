@@ -253,10 +253,14 @@ impl Text for MmapText {
             line_index: state.line_index,
         };
         let mut results = Vec::new();
-        for (line, mut index) in i {
-            let v = line.search(partten);
-            if v.len() > 0 {
-                index.highlight = Some(v);
+        for (line_idx, (line, mut index)) in i.enumerate() {
+            let mut hits = line.search(partten);
+            if line_idx == 0 {
+                hits.retain(|pos| *pos >= state.line_offset);
+            }
+            if let Some(first_hit) = hits.first().copied() {
+                index.line_offset = first_hit;
+                index.highlight = Some(hits);
                 results.push(index);
             }
         }

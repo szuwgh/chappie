@@ -307,6 +307,12 @@ impl HandleCmdInpEdit {
                 chap_tui.find_highlight_index = 0;
                 chap_tui.highlight_len = pattern.len();
                 td.get_one_page_from_state(&r[chap_tui.find_index])?;
+                let meta = td.get_current_line_meta()?;
+                if let Some(first) = meta.get(0) {
+                    chap_tui.start_line_state = first.clone();
+                }
+                chap_tui.cursor_y = 0;
+                chap_tui.cursor_x = 0;
             }
         }
         chap_tui.find_list = result;
