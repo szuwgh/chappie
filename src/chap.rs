@@ -1,5 +1,6 @@
 use crate::cli::Cli;
 use crate::common::error::ChapResult;
+use crate::tui::RenderSource;
 use crate::undo::undo::UndoFile;
 use crate::ChapTui;
 use simplelog::*;
@@ -7,7 +8,6 @@ use std::fs;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
-
 // const LLM_MODEL_DIR: &'static str = "~/.chap/model";
 // const CHAP_VB_DIR: &'static str = "~/.chap/data";
 // const CHAP_LOG_DIR: &'static str = "~/.chap/log";
@@ -36,7 +36,7 @@ impl Chappie {
         Ok(())
     }
 
-    pub(crate) fn new(cli: &Cli) -> ChapResult<Chappie> {
+    pub(crate) fn new(cli: &Cli, source: &RenderSource) -> ChapResult<Chappie> {
         let home = dirs::home_dir().expect("Failed to get home directory");
         let chap_log_dir = home.join(".chap/log");
         let chap_plugin_dir = home.join(".chap/plugin");
@@ -48,11 +48,16 @@ impl Chappie {
             Config::default(),                            // 使用默认日志配置
             File::create(chap_log_dir.join("chap.log"))?, // 创建日志文件
         )?;
-        let undo = if let Ok(p) = cli.get_filepath() {
-            let path: &Path = Path::new(p);
-            UndoFile::open(path.with_extension("undo")).ok()
-        } else {
-            None
+        let undo = match source {
+            RenderSource::File(_) => {
+                if let Ok(p) = cli.get_filepath() {
+                    let path: &Path = Path::new(p);
+                    UndoFile::open(path.with_extension("undo")).ok()
+                } else {
+                    None
+                }
+            }
+            RenderSource::StdinTemp(_) => None,
         };
 
         let chap_ui = ChapTui::new(cli.get_chap_mod(), cli.get_ui_type(), cli.get_que(), undo)?;
@@ -64,8 +69,9 @@ impl Chappie {
         })
     }
 
-    pub(crate) fn run<P: AsRef<Path>>(&mut self, p: P) -> ChapResult<()> {
-        self.tui.render(p, self.chap_plugin_dir.as_path())
+    pub(crate) fn run(&mut self, source: RenderSource) -> ChapResult<()> {
+        self.tui
+            .render_source(source, self.chap_plugin_dir.as_path())
     }
 }
 

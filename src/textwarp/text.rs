@@ -10,18 +10,30 @@ use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
 use memmap2::Mmap;
+use std::io::Write;
+use tempfile::NamedTempFile;
 pub(crate) struct MmapText {
     mmap: Mmap,
+    _temp: Option<tempfile::NamedTempFile>,
 }
 
 impl MmapText {
     pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<MmapText> {
         let mmap = mmap_file(filename)?;
-        Ok(MmapText { mmap })
+        Ok(MmapText { mmap, _temp: None })
+    }
+
+    pub(crate) fn from_temp_file(temp: NamedTempFile) -> ChapResult<MmapText> {
+        temp.as_file().sync_all()?;
+        let mmap = unsafe { Mmap::map(temp.as_file())? };
+        Ok(MmapText {
+            mmap,
+            _temp: Some(temp),
+        })
     }
 
     pub(crate) fn new(mmap: Mmap) -> MmapText {
-        MmapText { mmap }
+        MmapText { mmap, _temp: None }
     }
 }
 
@@ -255,13 +267,22 @@ impl Text for MmapText {
         let mut results = Vec::new();
         for (line_idx, (line, mut index)) in i.enumerate() {
             let mut hits = line.search(partten);
-            if line_idx == 0 {
-                hits.retain(|pos| *pos >= state.line_offset);
-            }
-            if let Some(first_hit) = hits.first().copied() {
-                index.line_offset = first_hit;
-                index.highlight = Some(hits);
-                results.push(index);
+            // if line_idx == 0 {
+            //     hits.retain(|pos| *pos >= state.line_offset);
+            // }
+            if !hits.is_empty() {
+                index.line_offset = 0;
+                let mut hits = line.search(partten);
+
+                if line_idx == 0 {
+                    hits.retain(|pos| *pos >= state.line_offset);
+                }
+
+                if !hits.is_empty() {
+                    index.line_offset = 0;
+                    index.highlight = Some(hits);
+                    results.push(index);
+                }
             }
         }
 

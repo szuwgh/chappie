@@ -5,6 +5,7 @@ use crate::textwarp::LineParts;
 use crate::textwarp::LineState;
 use crate::tui::build_cursor_line;
 use crate::tui::build_highlight_spans;
+use crate::tui::build_multi_highlight_spans;
 use crate::tui::build_nav_text;
 use crate::tui::char_range_to_visible;
 use crate::tui::BuildContent;
@@ -34,8 +35,8 @@ impl BuildContent for TextBuildContent {
         let cursor_x = ed_ctx.cursor_x;
         let is_txt_model = ed_ctx.is_txt_model;
 
-        let mut find_highlight_offset = ed_ctx.find_highlight_offset;
-        let find_line_index = ed_ctx.find_line_index;
+        // let mut find_highlight_offset = ed_ctx.find_highlight_offset;
+        // let find_line_index = ed_ctx.find_line_index;
         let mut highlight_len = ed_ctx.highlight_len;
 
         for (i, txt) in txts.iter().enumerate() {
@@ -44,19 +45,43 @@ impl BuildContent for TextBuildContent {
                 char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
             let parts: &[&[u8]] = visible.as_parts();
 
-            if let Some(target_line_index) = find_line_index {
-                let meta = line_meta.get(i).unwrap();
-                if let Some(spans) = build_highlight_spans(
-                    parts,
-                    meta,
-                    target_line_index,
-                    &mut find_highlight_offset,
-                    &mut highlight_len,
-                ) {
-                    lines.push(Line::from(spans));
-                    continue;
+            // if let Some(target_line_index) = find_line_index {
+            //     let meta = line_meta.get(i).unwrap();
+            //     if let Some(spans) = build_highlight_spans(
+            //         parts,
+            //         meta,
+            //         target_line_index,
+            //         column_offset,
+            //         column_offset + with,
+            //         &mut find_highlight_offset,
+            //         &mut highlight_len,
+            //     ) {
+            //         lines.push(Line::from(spans));
+            //         continue;
+            //     }
+            // }
+            let meta = line_meta.get(i).unwrap();
+            if let Some(highlights) = &ed_ctx.highlights {
+                if let Some((_, offsets)) = highlights
+                    .iter()
+                    .find(|(line_index, _)| *line_index == meta.line_index)
+                {
+                    let spans = build_multi_highlight_spans(
+                        parts,
+                        meta,
+                        column_offset,
+                        column_offset + with,
+                        offsets,
+                        highlight_len,
+                    );
+
+                    if !spans.is_empty() {
+                        lines.push(Line::from(spans));
+                        continue;
+                    }
                 }
             }
+
             if cursor_y == i && is_txt_model {
                 let (spans, _, _) = build_cursor_line(parts, cursor_x, &[], 0);
                 lines.push(Line::from(spans));

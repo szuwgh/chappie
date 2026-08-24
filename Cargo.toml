@@ -57,6 +57,7 @@ dirs = "5.0"
 mlua = { version = "0.10", features = ["lua54", "vendored", "error-send"] }
 crc = "3.0"
 byteorder = "1"
+tempfile = "3"
 
 [dev-dependencies]
 tempfile = "3"

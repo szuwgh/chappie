@@ -1,21 +1,26 @@
 use crate::chap;
 use crate::command::Command;
-use crate::command::FindValue;
+use crate::command::Value;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
 use crate::handle::HandleBase;
+use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
+use crate::textwarp::TextWarp;
 use crate::textwarp::TextWarpType;
+use crate::tui::SearchResultEntry;
+use crate::tui::SearchResultStore;
+use crate::tui::ViewMode;
 use crate::undo::undo::EditOp;
 use crate::undo::undo::OpType;
 use crate::ChapTui;
+use std::io::Write;
 use std::path::Path;
 use utf8_iter::Utf8CharsEx;
-
 const CMD_INPUT_MAX: usize = 60;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -250,6 +255,50 @@ impl HandleTxtEdit {
     }
 }
 
+fn build_search_result(
+    td: &TextDisplay,
+    start: &LineState,
+    pattern: &[u8],
+    height: usize,
+    width: usize,
+    warp_type: TextWarpType,
+) -> ChapResult<Option<SearchResultStore>> {
+    let result = td.search(pattern, start)?;
+    let Some(matches) = result else {
+        return Ok(None);
+    };
+
+    let mut temp = tempfile::NamedTempFile::new()?;
+    let mut entries = Vec::new();
+
+    for source_state in matches {
+        let data = td.get_line_data(&source_state)?;
+
+        let result_line_index = entries.len();
+
+        temp.write_all(data.as_slice())?;
+        temp.write_all(b"\n")?;
+
+        entries.push(SearchResultEntry {
+            result_line_index,
+            source_state: source_state.clone(),
+            highlight: source_state.highlight.clone().unwrap_or_default(),
+        });
+    }
+
+    temp.flush()?;
+
+    let result_text = MmapText::from_temp_file(temp)?;
+    let mut result_td = TextDisplay::Text(TextWarp::new(result_text, height, width, warp_type));
+    result_td.get_one_page_from_state(&LineState::file_start())?;
+
+    Ok(Some(SearchResultStore {
+        td: result_td,
+        entries,
+        pattern_len: pattern.len(),
+    }))
+}
+
 pub(crate) struct HandleCmdInpEdit;
 
 impl HandleCmdInpEdit {
@@ -329,9 +378,34 @@ impl HandleCmdInpEdit {
         let cmd = Command::parse(cmd_inp);
         match &cmd {
             Command::Find(v) => match v {
-                FindValue::Ascii(s) => {
+                Value::Ascii(s) => {
                     let pattern = s.as_bytes();
                     self.find_jump(chap_tui, pattern, line_meta, td)?;
+                }
+                _ => {}
+            },
+            Command::Search(v) => match v {
+                Value::Ascii(s) => {
+                    let pattern = s.as_bytes();
+                    let store = build_search_result(
+                        td,
+                        line_meta,
+                        pattern,
+                        chap_tui.elem.tv.get_height(),
+                        chap_tui.elem.tv.get_width(),
+                        chap_tui.warp_type,
+                    )?;
+
+                    if let Some(store) = store {
+                        chap_tui.highlight_len = pattern.len();
+                        chap_tui.search_result = Some(store);
+                        chap_tui.view_mode = ViewMode::SearchResult;
+                        chap_tui.search_result_index = 0;
+                        chap_tui.cursor_y = 0;
+                        chap_tui.cursor_x = 0;
+                    } else {
+                        chap_tui.assist_tv2_data = "no matches".to_string();
+                    }
                 }
                 _ => {}
             },
@@ -513,50 +587,6 @@ impl Handle for HandleEdit {
         self.txt_edit
             .txt_base
             .handle_down(chap_tui, line_meta, td)?;
-        // match chap_tui.warp_type {
-        //     TextWarpType::NoWrap => {
-        //         if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
-        //             chap_tui.cursor_y += 1;
-        //         } else {
-        //             //滚动下一行
-        //             td.scroll_next_one_line(line_meta.last().unwrap())?;
-        //             line_meta = td.get_current_line_meta()?;
-        //         }
-        //         if chap_tui.cursor_x
-        //             >= line_meta
-        //                 .get(chap_tui.cursor_y)
-        //                 .unwrap()
-        //                 .get_char_len()
-        //                 .saturating_sub(1)
-        //         {
-        //             chap_tui.cursor_x = line_meta
-        //                 .get(chap_tui.cursor_y)
-        //                 .unwrap()
-        //                 .get_char_len()
-        //                 .saturating_sub(1);
-        //         }
-        //         let meta = line_meta.get(chap_tui.cursor_y).unwrap();
-        //         if chap_tui.column_offset >= meta.get_char_len() {
-        //             chap_tui.column_offset = meta.get_char_len();
-        //         }
-        //         chap_tui.is_last_line = false;
-        //     }
-        //     TextWarpType::SoftWrap => {
-        //         if chap_tui.cursor_y < chap_tui.elem.tv.get_height().saturating_sub(1) {
-        //             chap_tui.cursor_y += 1;
-        //         } else {
-        //             //滚动下一行
-        //             td.scroll_next_one_line(line_meta.last().unwrap())?;
-        //             line_meta = td.get_current_line_meta()?;
-        //         }
-        //         if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
-        //             if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
-        //                 chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
-        //             }
-        //         }
-        //         chap_tui.is_last_line = false;
-        //     }
-        // }
         Ok(())
     }
 
@@ -1062,8 +1092,7 @@ mod tests {
             cursor_y: tui.cursor_y,
             cursor_x: tui.cursor_x,
             is_txt_model: true,
-            find_highlight_offset: 0,
-            find_line_index: None,
+            highlights: None,
             highlight_len: 0,
         };
         let content = EditBuildContent::build_content(

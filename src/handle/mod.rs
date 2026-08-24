@@ -3,9 +3,6 @@ pub(crate) mod hex;
 #[cfg(test)]
 mod large_file_tests;
 pub(crate) mod text;
-use crate::chap;
-use crate::command::Command;
-use crate::command::FindValue;
 use crate::common::error::{ChapError, ChapResult};
 use crate::common::ring_vec::RingVec;
 use crate::execute;
@@ -15,6 +12,7 @@ use crate::textwarp::LineState;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarpType;
+use crate::tui::ViewMode;
 use crate::undo::undo::OpType;
 use crate::ChapTui;
 use crossterm::cursor::Show;
@@ -485,6 +483,9 @@ pub(crate) trait Handle {
         chap_tui.highlight_len = 0;
         chap_tui.find_list = None;
         chap_tui.find_index = 0;
+        chap_tui.search_result = None;
+        chap_tui.view_mode = ViewMode::Normal;
+        chap_tui.search_result_index = 0;
         Ok(())
     }
 

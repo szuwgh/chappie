@@ -18,6 +18,7 @@ use crate::textwarp::edit::GapText;
 use crate::textwarp::edit_block::GapBlockText;
 use crate::textwarp::hex::HexText;
 use crate::textwarp::text::MmapText;
+use crate::ChapError;
 use mlua::Either;
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
@@ -617,7 +618,7 @@ impl<'a> LineData<'a> {
         LineData::GapBytes(GapBytes::empty())
     }
 
-    fn as_slice(&self) -> &[u8] {
+    pub(crate) fn as_slice(&self) -> &[u8] {
         match self {
             LineData::Own(v) => v,
             LineData::Bytes(v) => v,
@@ -1684,6 +1685,31 @@ pub(crate) enum TextDisplay {
     Hex(EditTextWarp<HexText>),
     Edit(EditTextWarp<GapText>),
     EditBlock(EditTextWarp<GapBlockText>),
+}
+
+impl TextDisplay {
+    pub(crate) fn get_line_data(&self, state: &LineState) -> ChapResult<LineData<'_>> {
+        match self {
+            TextDisplay::Text(v) => {
+                let line = v.borrow_lines().get_line(state).ok_or_else(|| {
+                    ChapError::Unexpected("TextDisplay::get_line_data: line not found".to_string())
+                })?;
+                Ok(line.get_data())
+            }
+            TextDisplay::EditBlock(v) => {
+                let line = v.edit_text.borrow_lines().get_line(state).ok_or_else(|| {
+                    ChapError::Unexpected("TextDisplay::get_line_data: line not found".to_string())
+                })?;
+                Ok(line.get_data())
+            }
+            TextDisplay::Hex(_) => Err(ChapError::Unexpected(
+                "TextDisplay::get_line_data: hex mode is not supported".to_string(),
+            )),
+            TextDisplay::Edit(_) => Err(ChapError::Unexpected(
+                "TextDisplay::get_line_data: edit mode is not supported".to_string(),
+            )),
+        }
+    }
 }
 
 impl TextOper for TextDisplay {

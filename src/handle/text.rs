@@ -4,6 +4,8 @@ use crate::handle::Handle;
 use crate::handle::HandleBase;
 use crate::handle::RingVec;
 use crate::textwarp::LineState;
+use crate::textwarp::TextOper;
+use crate::tui::ViewMode;
 pub struct HandleText {
     txt_base: HandleBase,
     cmd_inp: HandleCmdInpEdit,
@@ -93,6 +95,26 @@ impl Handle for HandleText {
         line_meta: &'a RingVec<LineState>,
         td: &'a crate::textwarp::TextDisplay,
     ) -> ChapResult<()> {
+        if matches!(chap_tui.view_mode, ViewMode::SearchResult) {
+            let Some(store) = &chap_tui.search_result else {
+                return Ok(());
+            };
+            let result_row = chap_tui.cursor_y;
+            let Some(result_meta) = line_meta.get(result_row) else {
+                return Ok(());
+            };
+            let entry_index = result_meta.line_index;
+            let Some(entry) = store.entries.get(entry_index) else {
+                return Ok(());
+            };
+
+            chap_tui.view_mode = ViewMode::Normal;
+            td.get_one_page_from_state(&entry.source_state)?;
+            chap_tui.start_line_state = entry.source_state.clone();
+            chap_tui.cursor_y = 0;
+            chap_tui.cursor_x = 0;
+            return Ok(());
+        }
         if let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) {
             self.cmd_inp.handle_cmd_command(chap_tui, cur_meta, td)?;
         };

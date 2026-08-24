@@ -5,7 +5,8 @@ pub(crate) enum Command {
     Back,
     SetEndian(Endian), // big or little
     Jump(usize),       // address to jump to
-    Find(FindValue),   // value to find
+    Find(Value),       // value to find
+    Search(Value),     // value to find
     GTop,              // value to find
     GBottom,           // value to find
     Unknown(String),   // unknown command
@@ -52,7 +53,7 @@ impl CutSelFile {
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum FindValue {
+pub(crate) enum Value {
     Hex(Vec<u8>),
     Ascii(String),
 }
@@ -109,9 +110,18 @@ impl Command {
                 if value.starts_with("0x") {
                     let hex_value = value.trim_start_matches("0x");
                     let bytes = hex::decode(hex_value).unwrap_or_else(|_| vec![]);
-                    Command::Find(FindValue::Hex(bytes))
+                    Command::Find(Value::Hex(bytes))
                 } else {
-                    Command::Find(FindValue::Ascii(value.to_string()))
+                    Command::Find(Value::Ascii(value.to_string()))
+                }
+            }
+            ["/s", value] => {
+                if value.starts_with("0x") {
+                    let hex_value = value.trim_start_matches("0x");
+                    let bytes = hex::decode(hex_value).unwrap_or_else(|_| vec![]);
+                    Command::Search(Value::Hex(bytes))
+                } else {
+                    Command::Search(Value::Ascii(value.to_string()))
                 }
             }
             ["/cut", count, filepath] if count.parse::<usize>().is_ok() => Command::Cut(CutFile {
@@ -161,11 +171,11 @@ mod test {
         assert_eq!(Command::parse("/j 100"), Command::Jump(100));
         assert_eq!(
             Command::parse("/f 0x4a0f99"),
-            Command::Find(FindValue::Hex(vec![0x4a, 0x0f, 0x99]))
+            Command::Find(Value::Hex(vec![0x4a, 0x0f, 0x99]))
         );
         assert_eq!(
             Command::parse("/f eeee"),
-            Command::Find(FindValue::Ascii("eeee".to_string()))
+            Command::Find(Value::Ascii("eeee".to_string()))
         );
         assert!(matches!(
             Command::parse("unknown command"),

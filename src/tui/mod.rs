@@ -38,7 +38,6 @@ use crossterm::{
     cursor,
     event::{self, KeyCode},
 };
-use ratatui::init;
 use ratatui::prelude::Constraint;
 use ratatui::prelude::CrosstermBackend;
 use ratatui::prelude::Direction;
@@ -55,6 +54,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
+use tempfile::NamedTempFile;
 use utf8_iter::Utf8CharsEx;
 
 pub(crate) struct Content<'a> {
@@ -70,8 +71,10 @@ pub(crate) struct EditContext {
     pub(crate) cursor_y: usize,
     pub(crate) cursor_x: usize,
     pub(crate) is_txt_model: bool,
-    pub(crate) find_highlight_offset: usize,
-    pub(crate) find_line_index: Option<usize>,
+    // pub(crate) find_highlight_offset: usize,
+    // pub(crate) find_line_index: Option<usize>,
+    // pub(crate) highlight_len: usize,
+    pub(crate) highlights: Option<Vec<(usize, Vec<usize>)>>,
     pub(crate) highlight_len: usize,
 }
 
@@ -291,6 +294,28 @@ pub(crate) struct TuiElement {
     pub(crate) assist_tv2: TextView,
 }
 
+pub(crate) enum ViewMode {
+    Normal,
+    SearchResult,
+}
+
+pub(crate) struct SearchResultEntry {
+    pub(crate) result_line_index: usize,
+    pub(crate) source_state: LineState,
+    pub(crate) highlight: Vec<usize>,
+}
+
+pub(crate) struct SearchResultStore {
+    pub(crate) td: TextDisplay,
+    pub(crate) entries: Vec<SearchResultEntry>,
+    pub(crate) pattern_len: usize,
+}
+
+pub(crate) enum RenderSource {
+    File(PathBuf),
+    StdinTemp(NamedTempFile),
+}
+
 pub(crate) struct ChapTui {
     chap_mod: ChapMod,
     ui_type: UIType,
@@ -319,6 +344,10 @@ pub(crate) struct ChapTui {
     pub(crate) highlight_len: usize, //关键字高亮的长度
     pub(crate) cur_cmd: Command,
     input_focus: InputFocus,
+
+    pub(crate) search_result: Option<SearchResultStore>,
+    pub(crate) view_mode: ViewMode,
+    pub(crate) search_result_index: usize,
 }
 
 impl ChapTui {
@@ -345,7 +374,7 @@ impl ChapTui {
     ) -> ChapResult<ChapTui> {
         let (_, row) = cursor::position()?; // (x, y) 返回的是光标的 (列号, 行号)
                                             //let backend = CrosstermBackend::new(std::io::stdout());
-        let mut terminal = init();
+        let mut terminal = ratatui::init();
         execute!(terminal.backend_mut(), EnableBracketedPaste)?;
         let size = terminal.size()?;
         let elem = Self::get_react(&ui_type, &chap_mod, &size)?;
@@ -376,6 +405,9 @@ impl ChapTui {
             highlight_len: 0,
             cur_cmd: Command::Empty,
             input_focus: InputFocus::Text,
+            search_result: None,
+            view_mode: ViewMode::Normal,
+            search_result_index: 0,
         })
     }
 
@@ -399,7 +431,7 @@ impl ChapTui {
         // 文本框显示内容的高度
         let tv_heigth = (tui_height - 1) as usize;
         // 文本框显示内容的宽度
-        let tv_width = (tui_width as f32 * 0.5) as usize - 3;
+        let tv_width = (tui_width as f32) as usize - 3;
 
         let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
@@ -554,6 +586,34 @@ impl ChapTui {
         Ok(line_meta)
     }
 
+    pub(crate) fn render_source<P2: AsRef<Path>>(
+        &mut self,
+        source: RenderSource,
+        plugin: P2,
+    ) -> ChapResult<()> {
+        match source {
+            RenderSource::File(path) => {
+                if let Err(e) = self.render(path, plugin) {
+                    eprintln!("Error rendering file: {}", e);
+                }
+            }
+            RenderSource::StdinTemp(temp_file) => {
+                if let Err(e) = self.render(temp_file.path(), plugin) {
+                    eprintln!("Error rendering temp file: {}", e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn active_text_display<'a>(&'a self, td: &'a TextDisplay) -> &'a TextDisplay {
+        if matches!(self.view_mode, ViewMode::SearchResult) {
+            self.search_result.as_ref().map(|s| &s.td).unwrap_or(td)
+        } else {
+            td
+        }
+    }
+
     pub(crate) fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
         &mut self,
         p: P1,
@@ -615,25 +675,29 @@ impl ChapTui {
                 if size != self.size {
                     break 'tui;
                 }
+                let active_td: *const TextDisplay =
+                    if matches!(self.view_mode, ViewMode::SearchResult) {
+                        let search_result = self.search_result.as_ref().unwrap();
+                        &search_result.td as *const TextDisplay
+                    } else {
+                        &td as *const TextDisplay
+                    };
                 let line_meta = match self.chap_mod {
-                    ChapMod::Edit => self.render_edit::<EditBuildContent>(
-                        self.cursor_x,
-                        self.cursor_y,
-                        self.column_offset,
-                        &td,
-                    )?,
-                    ChapMod::EditBlock => self.render_edit::<EditBuildContent>(
-                        self.cursor_x,
-                        self.cursor_y,
-                        self.column_offset,
-                        &td,
-                    )?,
-                    ChapMod::Text => self.render_edit::<TextBuildContent>(
-                        self.cursor_x,
-                        self.cursor_y,
-                        self.column_offset,
-                        &td,
-                    )?,
+                    ChapMod::Edit => {
+                        self.render_content::<EditBuildContent>(self.column_offset, &td)?
+                    }
+                    ChapMod::EditBlock => {
+                        self.render_content::<EditBuildContent>(self.column_offset, &td)?
+                    }
+                    ChapMod::Text => {
+                        unsafe {
+                            self.render_content::<TextBuildContent>(
+                                self.column_offset,
+                                &*active_td,
+                            )?
+                        }
+                        //  }
+                    }
                     ChapMod::Hex => {
                         self.render_hex(self.cursor_x, self.cursor_y, self.txt_sel.clone(), &td)?
                     }
@@ -675,12 +739,16 @@ impl ChapTui {
                                     }
                                 }
                                 (KeyCode::Up, _) => {
-                                    if let Err(e) = hand.handle_up(self, &line_meta, &td) {
+                                    if let Err(e) =
+                                        hand.handle_up(self, &line_meta, unsafe { &*active_td })
+                                    {
                                         self.assist_tv2_data = e.to_string(); // 记录错误信息
                                     }
                                 }
                                 (KeyCode::Down, _) => {
-                                    if let Err(e) = hand.handle_down(self, &line_meta, &td) {
+                                    if let Err(e) =
+                                        hand.handle_down(self, &line_meta, unsafe { &*active_td })
+                                    {
                                         self.assist_tv2_data = e.to_string(); // 记录错误信息
                                     }
                                 }
@@ -760,10 +828,47 @@ impl ChapTui {
         }
     }
 
-    pub(crate) fn render_edit<'a, T: BuildContent>(
+    fn current_highlight_for_render(
+        &self,
+        meta: &RingVec<LineState>,
+    ) -> (usize, Option<usize>, usize) {
+        if matches!(self.view_mode, ViewMode::SearchResult) {
+            let Some(store) = &self.search_result else {
+                return (0, None, 0);
+            };
+
+            let row = self.cursor_y.min(meta.len().saturating_sub(1));
+            let Some(result_meta) = meta.get(row) else {
+                return (0, None, 0);
+            };
+
+            let Some(entry) = store.entries.get(result_meta.line_index) else {
+                return (0, None, 0);
+            };
+
+            let Some(offset) = entry.highlight.get(self.find_highlight_index).copied() else {
+                return (0, None, 0);
+            };
+
+            return (offset, Some(result_meta.line_index), store.pattern_len);
+        }
+
+        if let Some(find_list) = self.find_list.as_ref() {
+            let state = &find_list[self.find_index];
+            if let Some(h) = &state.highlight {
+                return (
+                    h[self.find_highlight_index],
+                    Some(state.line_index),
+                    self.highlight_len,
+                );
+            }
+        }
+
+        (0, None, 0)
+    }
+
+    pub(crate) fn render_content<'a, T: BuildContent>(
         &mut self,
-        cursor_x: usize,
-        cursor_y: usize,
         offset: usize,
         td: &'a TextDisplay,
     ) -> ChapResult<&'a RingVec<LineState>> {
@@ -781,25 +886,55 @@ impl ChapTui {
             let select_line = self.elem.navi.select_line;
             let cursor_x_vis = self.cursor_x;
             let cursor_y_vis = self.cursor_y;
-            let (find_highlight_offset, find_line_index) =
-                if let Some(find_line_state) = &self.find_list {
-                    let state: &LineState = &find_line_state[self.find_index];
-                    if let Some(h) = &state.highlight {
-                        (h[self.find_highlight_index], Some(state.line_index))
-                    } else {
-                        (0, None)
-                    }
+
+            // let find_list = self.find_list.as_ref();
+            // let (find_highlight_offset, find_line_index) = if let Some(find_line_state) = find_list
+            // {
+            //     let state: &LineState = &find_line_state[self.find_index];
+            //     if let Some(h) = &state.highlight {
+            //         (h[self.find_highlight_index], Some(state.line_index))
+            //     } else {
+            //         (0, None)
+            //     }
+            // } else {
+            //     (0, None)
+            // };
+
+            // let (find_highlight_offset, find_line_index, highlight_len) =
+            //     self.current_highlight_for_render(meta);
+            let highlights = if matches!(self.view_mode, ViewMode::SearchResult) {
+                if let Some(store) = self.search_result.as_ref() {
+                    meta.iter()
+                        .filter_map(|line_state| {
+                            let entry = store.entries.get(line_state.line_index)?;
+                            if entry.highlight.is_empty() {
+                                None
+                            } else {
+                                Some((line_state.line_index, entry.highlight.clone()))
+                            }
+                        })
+                        .collect()
                 } else {
-                    (0, None)
-                };
+                    Vec::new()
+                }
+            } else if let Some(find_list) = self.find_list.as_ref() {
+                let state = &find_list[self.find_index];
+                state
+                    .highlight
+                    .clone()
+                    .map(|h| vec![(state.line_index, h)])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
             let ed_ctx = EditContext {
                 height: tv_height,
                 column_offset: offset.saturating_sub(self.elem.tv.width),
                 cursor_y: cursor_y_vis,
                 cursor_x: cursor_x_vis,
                 is_txt_model: !command_focus,
-                find_highlight_offset: find_highlight_offset,
-                find_line_index: find_line_index,
+                highlights: Some(highlights),
                 highlight_len: self.highlight_len,
             };
             //let column_offset = self.column_offset;
@@ -1004,10 +1139,113 @@ fn cut_highlight_part<'a>(
     (pre, mid, post)
 }
 
+pub(crate) fn build_multi_highlight_spans<'a>(
+    parts: &[&'a [u8]],
+    line_meta: &LineState,
+    visible_start: usize,
+    visible_end: usize,
+    offsets: &[usize],
+    highlight_len: usize,
+) -> Vec<Span<'a>> {
+    if offsets.is_empty() || highlight_len == 0 {
+        return Vec::new();
+    }
+
+    let visible_abs_start = line_meta.line_offset + visible_start;
+    let visible_abs_end = line_meta.line_offset + visible_end;
+
+    let mut ranges: Vec<(usize, usize)> = offsets
+        .iter()
+        .filter_map(|offset| {
+            let start = *offset;
+            let end = start + highlight_len;
+            let start = start.max(visible_abs_start);
+            let end = end.min(visible_abs_end);
+
+            if start < end {
+                Some((start - visible_abs_start, end - visible_abs_start))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+
+    ranges.sort_by_key(|r| r.0);
+
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+
+    for (start, end) in ranges {
+        if pos < start {
+            push_raw_parts(&mut spans, parts, pos, start);
+        }
+
+        push_highlight_parts(&mut spans, parts, start, end);
+        pos = end;
+    }
+
+    let total_len: usize = parts.iter().map(|p| p.len()).sum();
+    if pos < total_len {
+        push_raw_parts(&mut spans, parts, pos, total_len);
+    }
+
+    spans
+}
+
+fn push_raw_parts<'a>(spans: &mut Vec<Span<'a>>, parts: &[&'a [u8]], start: usize, end: usize) {
+    push_span_parts(spans, parts, start, end, false);
+}
+
+fn push_highlight_parts<'a>(
+    spans: &mut Vec<Span<'a>>,
+    parts: &[&'a [u8]],
+    start: usize,
+    end: usize,
+) {
+    push_span_parts(spans, parts, start, end, true);
+}
+
+fn push_span_parts<'a>(
+    spans: &mut Vec<Span<'a>>,
+    parts: &[&'a [u8]],
+    start: usize,
+    end: usize,
+    highlight: bool,
+) {
+    let mut offset = 0usize;
+
+    for part in parts {
+        let next = offset + part.len();
+
+        if next <= start || offset >= end {
+            offset = next;
+            continue;
+        }
+
+        let s = start.saturating_sub(offset);
+        let e = (end - offset).min(part.len());
+        let text = str::from_utf8(&part[s..e]).unwrap_or("☻");
+
+        if highlight {
+            spans.push(Span::styled(text, Style::default().bg(Color::Green)));
+        } else {
+            spans.push(Span::raw(text));
+        }
+
+        offset = next;
+    }
+}
+
 pub(crate) fn build_highlight_spans<'a>(
     parts: &[&'a [u8]],
     line_meta: &LineState,
     target_line_index: usize,
+    visible_start: usize,
+    visible_end: usize,
     find_highlight_offset: &mut usize,
     highlight_len: &mut usize,
 ) -> Option<Vec<Span<'a>>> {
@@ -1019,8 +1257,22 @@ pub(crate) fn build_highlight_spans<'a>(
     {
         return None;
     }
-    let highlight_start = *find_highlight_offset - line_meta.line_offset;
-    let highlight_end = (highlight_start + *highlight_len).min(line_meta.get_line_end());
+    let highlight_abs_start = *find_highlight_offset;
+    let highlight_abs_end = highlight_abs_start + *highlight_len;
+
+    let visible_abs_start = line_meta.line_offset + visible_start;
+    let visible_abs_end = line_meta.line_offset + visible_end;
+
+    let start = highlight_abs_start.max(visible_abs_start);
+    let end = highlight_abs_end.min(visible_abs_end);
+
+    if start >= end {
+        return None;
+    }
+
+    let highlight_start = start - visible_abs_start;
+    let highlight_end = end - visible_abs_start;
+
     let (a, b, c) = cut_highlight_part(parts, highlight_start, highlight_end);
 
     let mut spans = Vec::with_capacity(a.len() + b.len() + c.len());
@@ -1038,12 +1290,9 @@ pub(crate) fn build_highlight_spans<'a>(
         spans.push(Span::raw(str::from_utf8(v).unwrap_or("☻")));
     }
 
-    *highlight_len = highlight_len.saturating_sub(
-        line_meta
-            .get_line_end()
-            .saturating_sub(*find_highlight_offset),
-    );
-    *find_highlight_offset = line_meta.get_line_end();
+    let consumed = end.saturating_sub(highlight_abs_start);
+    *highlight_len = highlight_len.saturating_sub(consumed);
+    *find_highlight_offset = end;
     Some(spans)
 }
 
@@ -1266,6 +1515,10 @@ impl ChapTui {
             highlight_len: 0,
             cur_cmd: Command::Empty,
             input_focus: InputFocus::Text,
+
+            search_result: None,
+            view_mode: ViewMode::Normal,
+            search_result_index: 0,
         }
     }
 }

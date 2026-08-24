@@ -1,7 +1,7 @@
 use crossterm::cursor;
 
 use crate::command::Command;
-use crate::command::FindValue;
+use crate::command::Value;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
@@ -283,14 +283,15 @@ impl<T: Plugin> Handle for HandleHex<T> {
                     .get_line_file_start()
                     + chap_tui.cursor_x;
                 match value {
-                    FindValue::Hex(pattern) => {
+                    Value::Hex(pattern) => {
                         self.find_jump(chap_tui, line_meta, td, seek_start, pattern.as_slice())?;
                     }
-                    FindValue::Ascii(pattern) => {
+                    Value::Ascii(pattern) => {
                         self.find_jump(chap_tui, line_meta, td, seek_start, pattern.as_bytes())?;
                     }
                 }
             }
+            Command::Search(value) => {}
             Command::Cut(c) => {
                 let seek_start = line_meta
                     .get(chap_tui.cursor_y)
