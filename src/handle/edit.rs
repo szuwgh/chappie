@@ -314,6 +314,9 @@ impl HandleCmdInpEdit {
         td: &'a TextDisplay,
         c: char,
     ) -> ChapResult<()> {
+        if matches!(chap_tui.view_mode, ViewMode::SearchResult) {
+            return Ok(());
+        }
         let cmd_inp = &mut chap_tui.elem.cmd_inp;
         if cmd_inp.len() >= CMD_INPUT_MAX {
             return Ok(());
@@ -454,6 +457,9 @@ impl HandleCmdInpEdit {
                 }
                 _ => {}
             },
+            Command::StrInput(s) => {
+                self.search_jump(Partten::fuzzy(s.as_bytes()), chap_tui, line_meta, td)?;
+            }
             _ => {
                 chap_tui.elem.cmd_inp.clear();
                 chap_tui.elem.cmd_inp.push_str("Unknown command");
