@@ -643,7 +643,7 @@ impl<'a> LineData<'a> {
         }
     }
 
-    fn as_parts(&self) -> LineParts<&[u8]> {
+    pub(crate) fn as_parts(&self) -> LineParts<&[u8]> {
         match self {
             LineData::Own(v) => LineParts::from_1(v.as_slice()),
             LineData::Bytes(v) => LineParts::from_1(v),

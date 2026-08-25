@@ -278,9 +278,11 @@ fn build_search_result(
         let data = td.get_line_data(&source_state)?;
 
         let result_line_index = entries.len();
-
-        temp.write_all(data.as_slice())?;
-        temp.write_all(b"\n")?;
+        data.as_parts()
+            .as_parts()
+            .iter()
+            .for_each(|part| temp.write_all(part).unwrap());
+        //temp.write_all(b"\n")?;
 
         entries.push(SearchResultEntry {
             result_line_index,
@@ -292,7 +294,7 @@ fn build_search_result(
     temp.flush()?;
 
     let result_text = MmapText::from_temp_file(temp)?;
-    let mut result_td = TextDisplay::Text(TextWarp::new(result_text, height, width, warp_type));
+    let result_td = TextDisplay::Text(TextWarp::new(result_text, height, width, warp_type));
     result_td.get_one_page_from_state(&LineState::file_start())?;
 
     Ok(Some(SearchResultStore {
@@ -371,6 +373,38 @@ impl HandleCmdInpEdit {
         Ok(())
     }
 
+    fn search_jump(
+        &self,
+        partten: Partten,
+        chap_tui: &mut ChapTui,
+        line_meta: &LineState,
+        td: &TextDisplay,
+    ) -> ChapResult<()> {
+        // let pattern = s.as_bytes();
+        let partten_len = partten.partten_len();
+        let store = build_search_result(
+            td,
+            line_meta,
+            partten,
+            chap_tui.elem.tv.get_height(),
+            chap_tui.elem.tv.get_width(),
+            chap_tui.warp_type,
+        )?;
+
+        if let Some(store) = store {
+            chap_tui.highlight_len = partten_len;
+            chap_tui.search_result = Some(store);
+            chap_tui.view_mode = ViewMode::SearchResult;
+            chap_tui.search_result_index = 0;
+            chap_tui.cursor_y = 0;
+            chap_tui.cursor_x = 0;
+        } else {
+            chap_tui.assist_tv2_data = "no matches".to_string();
+        }
+        chap_tui.chap_mod = crate::tui::ChapMod::Text;
+        Ok(())
+    }
+
     pub(crate) fn handle_cmd_command(
         &self,
         chap_tui: &mut ChapTui,
@@ -389,51 +423,34 @@ impl HandleCmdInpEdit {
             },
             Command::Search(v) => match v {
                 Value::Ascii(s) => {
-                    let pattern = s.as_bytes();
-                    let store = build_search_result(
-                        td,
-                        line_meta,
-                        Partten::exact(pattern),
-                        chap_tui.elem.tv.get_height(),
-                        chap_tui.elem.tv.get_width(),
-                        chap_tui.warp_type,
-                    )?;
+                    self.search_jump(Partten::exact(s.as_bytes()), chap_tui, line_meta, td)?;
+                    // let pattern = s.as_bytes();
+                    // let store = build_search_result(
+                    //     td,
+                    //     line_meta,
+                    //     Partten::exact(pattern),
+                    //     chap_tui.elem.tv.get_height(),
+                    //     chap_tui.elem.tv.get_width(),
+                    //     chap_tui.warp_type,
+                    // )?;
 
-                    if let Some(store) = store {
-                        chap_tui.highlight_len = pattern.len();
-                        chap_tui.search_result = Some(store);
-                        chap_tui.view_mode = ViewMode::SearchResult;
-                        chap_tui.search_result_index = 0;
-                        chap_tui.cursor_y = 0;
-                        chap_tui.cursor_x = 0;
-                    } else {
-                        chap_tui.assist_tv2_data = "no matches".to_string();
-                    }
+                    // if let Some(store) = store {
+                    //     chap_tui.highlight_len = pattern.len();
+                    //     chap_tui.search_result = Some(store);
+                    //     chap_tui.view_mode = ViewMode::SearchResult;
+                    //     chap_tui.search_result_index = 0;
+                    //     chap_tui.cursor_y = 0;
+                    //     chap_tui.cursor_x = 0;
+                    // } else {
+                    //     chap_tui.assist_tv2_data = "no matches".to_string();
+                    // }
+                    // chap_tui.chap_mod = crate::tui::ChapMod::Text;
                 }
                 _ => {}
             },
             Command::Fuzzy(v) => match v {
                 Value::Ascii(s) => {
-                    let pattern = s.as_bytes();
-                    let store = build_search_result(
-                        td,
-                        line_meta,
-                        Partten::fuzzy(pattern),
-                        chap_tui.elem.tv.get_height(),
-                        chap_tui.elem.tv.get_width(),
-                        chap_tui.warp_type,
-                    )?;
-
-                    if let Some(store) = store {
-                        chap_tui.highlight_len = pattern.len();
-                        chap_tui.search_result = Some(store);
-                        chap_tui.view_mode = ViewMode::SearchResult;
-                        chap_tui.search_result_index = 0;
-                        chap_tui.cursor_y = 0;
-                        chap_tui.cursor_x = 0;
-                    } else {
-                        chap_tui.assist_tv2_data = "no matches".to_string();
-                    }
+                    self.search_jump(Partten::fuzzy(s.as_bytes()), chap_tui, line_meta, td)?;
                 }
                 _ => {}
             },
@@ -820,7 +837,7 @@ impl Handle for HandleEdit {
 
             // chap_tui.start_line_num -= 1;
             // td.get_one_page(chap_tui.start_line_num)?;
-            td.scroll_pre_one_line(&chap_tui.start_line_state);
+            td.scroll_pre_one_line(&chap_tui.start_line_state)?;
             let shifted_meta = td.get_current_line_meta()?;
             if let Some(first) = shifted_meta.get(0) {
                 chap_tui.start_line_state = first.clone();
@@ -1048,6 +1065,7 @@ mod tests {
     use crate::tui::BuildContent;
     use crate::tui::ChapTui;
     use crate::tui::EditContext;
+    use crate::tui::HighlightSource;
     use crate::undo::undo::UndoFile;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -1120,10 +1138,12 @@ mod tests {
             cursor_y: tui.cursor_y,
             cursor_x: tui.cursor_x,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
+        let mut lines = Vec::with_capacity(meta.len());
         let content = EditBuildContent::build_content(
+            &mut lines,
             content,
             tui.elem.tv.get_width(),
             &meta,

@@ -10,7 +10,7 @@ pub(crate) enum Command {
     Fuzzy(Value),      // value to find
     GTop,              // value to find
     GBottom,           // value to find
-    Unknown(String),   // unknown command
+    StrInput(String),  // unknown command
     Cut(CutFile),
     CutSel(CutSelFile),
     Call(String),
@@ -97,11 +97,11 @@ impl Command {
                         let endian = match endian.to_lowercase().as_str() {
                             "big" => Endian::Big,
                             "little" => Endian::Little,
-                            _ => return Command::Unknown(input.to_string()),
+                            _ => return Command::StrInput(input.to_string()),
                         };
                         Command::SetEndian(endian)
                     }
-                    _ => Command::Unknown(input.to_string()),
+                    _ => Command::StrInput(input.to_string()),
                 }
             }
             ["/j", address] if address.parse::<usize>().is_ok() => {
@@ -146,7 +146,7 @@ impl Command {
                         filepath: filepath.to_string(),
                     })
                 } else {
-                    Command::Unknown(input.to_string())
+                    Command::StrInput(input.to_string())
                 }
             }
             ["/call", function] => Command::Call(function.to_string()),
@@ -154,15 +154,15 @@ impl Command {
                 if let Ok(count) = value.parse::<usize>() {
                     Command::Insert(count)
                 } else {
-                    Command::Unknown(input.to_string())
+                    Command::StrInput(input.to_string())
                 }
             }
             _ => {
-                // Try to parse as hex input before returning Unknown
+                // Try to parse as hex input before returning StrInput
                 if let Some(bytes) = Self::parse_hex_input(input) {
                     Command::HexInput(bytes)
                 } else {
-                    Command::Unknown(input.to_string())
+                    Command::StrInput(input.to_string())
                 }
             }
         }
@@ -189,7 +189,7 @@ mod test {
         );
         assert!(matches!(
             Command::parse("unknown command"),
-            Command::Unknown(_)
+            Command::StrInput(_)
         ));
 
         assert_eq!(
@@ -233,12 +233,12 @@ mod test {
         );
 
         // Test invalid: odd length (not complete byte)
-        assert!(matches!(Command::parse("F"), Command::Unknown(_)));
-        assert!(matches!(Command::parse("F0A"), Command::Unknown(_)));
+        assert!(matches!(Command::parse("F"), Command::StrInput(_)));
+        assert!(matches!(Command::parse("F0A"), Command::StrInput(_)));
 
         // Test invalid: non-hex characters
-        assert!(matches!(Command::parse("GG"), Command::Unknown(_)));
-        assert!(matches!(Command::parse("XY"), Command::Unknown(_)));
+        assert!(matches!(Command::parse("GG"), Command::StrInput(_)));
+        assert!(matches!(Command::parse("XY"), Command::StrInput(_)));
 
         // Test get_hex_bytes method
         let cmd = Command::parse("AF");

@@ -66,26 +66,24 @@ impl<'a> Iterator for MmapTextIter<'a> {
         let slice = &self.mmap[self.line_file_start..];
 
         // 优化 1: 首行已知 line_file_end，无需扫描 \n
-        let end = if let Some(known) = self.first_line_file_end.take() {
-            if known > self.line_file_start {
-                known - self.line_file_start
-            } else {
-                // 优化 2: SIMD 扫描 \n（比逐字节快 10-20 倍）
-                memchr(slice, b'\n').unwrap_or(slice.len().saturating_sub(1))
-            }
+        let content_len = if let Some(known) = self.first_line_file_end.take() {
+            (known >= self.line_file_start)
+                .then_some(known - self.line_file_start)
+                .unwrap_or_else(|| memchr(slice, b'\n').unwrap_or(slice.len()))
         } else {
-            memchr(slice, b'\n').unwrap_or(slice.len().saturating_sub(1))
+            memchr(slice, b'\n').unwrap_or(slice.len())
         };
 
-        let line = &slice[..end];
+        let line_len = content_len + usize::from(slice.get(content_len) == Some(&b'\n'));
+        let line = &slice[..line_len];
         let line_start = self.line_file_start;
-        self.line_file_start += end + 1;
+        self.line_file_start += line_len;
         Some(LineStr {
             data: LineData::Bytes(line),
             block_id: 0,
             block_offset: 0,
             line_file_start: line_start,
-            line_file_end: line_start + end,
+            line_file_end: line_start + content_len,
         })
     }
 }
@@ -150,7 +148,10 @@ impl Text for MmapText {
     }
 
     fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
-        let line = &self.mmap[state.line_file_start + state.line_offset..state.line_file_end];
+        let start = state.line_file_start + state.line_offset;
+        let end =
+            state.line_file_end + usize::from(self.mmap.get(state.line_file_end) == Some(&b'\n'));
+        let line = &self.mmap[start..end];
         Some(LineStr {
             data: LineData::Bytes(line),
             block_id: state.block_num,
@@ -360,14 +361,19 @@ mod tests {
         let mut expected_file_start = 0usize;
         for (i, (line, exp_bytes)) in actual.iter().zip(expected_lines.iter()).enumerate() {
             let bytes = extract_bytes(line);
+            let expected_bytes = if expected_file_start + exp_bytes.len() < raw.len() {
+                [&**exp_bytes, b"\n"].concat()
+            } else {
+                exp_bytes.to_vec()
+            };
 
             // 内容一致
             assert_eq!(
                 bytes,
-                *exp_bytes,
+                expected_bytes,
                 "第 {} 行内容不匹配\n期望: {:?}\n实际: {:?}",
                 i,
-                String::from_utf8_lossy(exp_bytes),
+                String::from_utf8_lossy(&expected_bytes),
                 String::from_utf8_lossy(&bytes),
             );
 
@@ -460,6 +466,31 @@ mod tests {
 
         let lines: Vec<LineStr> = mmap_text.iter(&line_state).collect();
         assert_eq!(lines.len(), 1, "单行文件应产出恰好一行");
+        assert_eq!(extract_bytes(&lines[0]), b"hello world\n");
+        assert_eq!(lines[0].line_file_start, 0);
+        assert_eq!(lines[0].line_file_end, 11);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_mmap_text_iter_single_line_without_trailing_newline_keeps_last_byte() {
+        use std::io::Write;
+        let dir = std::env::temp_dir();
+        let path = dir.join("chappie_test_single_line_no_newline.txt");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world").unwrap();
+        }
+
+        let mut mmap_text = MmapText::from_file_path(&path).unwrap();
+        let line_state = LineState::builder()
+            .line_index(0)
+            .line_file_start(0)
+            .build();
+
+        let lines: Vec<LineStr> = mmap_text.iter(&line_state).collect();
+        assert_eq!(lines.len(), 1);
         assert_eq!(extract_bytes(&lines[0]), b"hello world");
         assert_eq!(lines[0].line_file_start, 0);
         assert_eq!(lines[0].line_file_end, 11);
@@ -488,10 +519,10 @@ mod tests {
         // "aaa\n\nbbb\n\n" → split gives ["aaa", "", "bbb", "", ""]
         // 迭代器去掉末尾空行后应为 ["aaa", "", "bbb", ""]
         assert_eq!(lines.len(), 4, "期望 4 行，实际 {}", lines.len());
-        assert_eq!(extract_bytes(&lines[0]), b"aaa");
-        assert_eq!(extract_bytes(&lines[1]), b"");
-        assert_eq!(extract_bytes(&lines[2]), b"bbb");
-        assert_eq!(extract_bytes(&lines[3]), b"");
+        assert_eq!(extract_bytes(&lines[0]), b"aaa\n");
+        assert_eq!(extract_bytes(&lines[1]), b"\n");
+        assert_eq!(extract_bytes(&lines[2]), b"bbb\n");
+        assert_eq!(extract_bytes(&lines[3]), b"\n");
 
         // 验证空行的 line_file_start / line_file_end 一致性
         assert_eq!(lines[1].line_file_start, 4); // 紧跟 "aaa\n" 之后

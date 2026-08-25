@@ -61,12 +61,53 @@ use utf8_iter::Utf8CharsEx;
 
 pub(crate) struct Content<'a> {
     pub(crate) navi: Text<'a>,
-    pub(crate) visible_content: Text<'a>,
+    //pub(crate) visible_content: Text<'a>,
     pub(crate) byte_cursor: usize,
     pub(crate) last_char_bytes_size: usize,
 }
 
-pub(crate) struct EditContext {
+pub(crate) struct SearchResultEntry {
+    pub(crate) result_line_index: usize,
+    pub(crate) source_state: LineState,
+    pub(crate) highlight: Vec<Match>,
+}
+
+pub(crate) struct SearchResultStore {
+    pub(crate) td: TextDisplay,
+    pub(crate) entries: Vec<SearchResultEntry>,
+    pub(crate) pattern_len: usize,
+}
+
+pub(crate) enum HighlightSource<'a> {
+    None,
+    CurrentFind {
+        line_index: usize,
+        matches: &'a [Match],
+    },
+    SearchResult {
+        entries: &'a [SearchResultEntry],
+    },
+}
+
+impl<'a> HighlightSource<'a> {
+    pub(crate) fn for_line(&self, line_index: usize) -> &'a [Match] {
+        match self {
+            HighlightSource::None => &[],
+            HighlightSource::CurrentFind {
+                line_index: target,
+                matches,
+            } if *target == line_index => matches,
+            HighlightSource::SearchResult { entries } => entries
+                .get(line_index)
+                .filter(|entry| entry.result_line_index == line_index)
+                .map(|entry| entry.highlight.as_slice())
+                .unwrap_or(&[]),
+            _ => &[],
+        }
+    }
+}
+
+pub(crate) struct EditContext<'a> {
     pub(crate) height: usize,
     pub(crate) column_offset: usize,
     pub(crate) cursor_y: usize,
@@ -75,18 +116,19 @@ pub(crate) struct EditContext {
     // pub(crate) find_highlight_offset: usize,
     // pub(crate) find_line_index: Option<usize>,
     // pub(crate) highlight_len: usize,
-    pub(crate) highlights: Option<Vec<(usize, Vec<Match>)>>,
+    pub(crate) highlights: HighlightSource<'a>,
     pub(crate) highlight_len: usize,
 }
 
 pub(crate) trait BuildContent {
     fn build_content<'a>(
+        lines: &mut Vec<Line<'a>>,
         txts: &'a RingVec<CacheStr>,
         with: usize,
         line_meta: &'a RingVec<LineState>,
         cur_line: usize,
         select_line: &Option<(usize, usize)>,
-        ed_ctx: &EditContext,
+        ed_ctx: &EditContext<'_>,
     ) -> Content<'a>;
 
     fn command_focus() -> bool;
@@ -300,25 +342,13 @@ pub(crate) enum ViewMode {
     SearchResult,
 }
 
-pub(crate) struct SearchResultEntry {
-    pub(crate) result_line_index: usize,
-    pub(crate) source_state: LineState,
-    pub(crate) highlight: Vec<Match>,
-}
-
-pub(crate) struct SearchResultStore {
-    pub(crate) td: TextDisplay,
-    pub(crate) entries: Vec<SearchResultEntry>,
-    pub(crate) pattern_len: usize,
-}
-
 pub(crate) enum RenderSource {
     File(PathBuf),
     StdinTemp(NamedTempFile),
 }
 
 pub(crate) struct ChapTui {
-    chap_mod: ChapMod,
+    pub(crate) chap_mod: ChapMod,
     ui_type: UIType,
     size: Size,
     pub(crate) warp_type: TextWarpType,
@@ -430,11 +460,11 @@ impl ChapTui {
         };
 
         // 文本框显示内容的高度
-        let tv_heigth = (tui_height - 1) as usize;
+        // let tv_heigth = (tui_height - 1) as usize;
         // 文本框显示内容的宽度
         //let tv_width = (tui_width as f32) as usize;
 
-        let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
+        //let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
         let max_line = (tui_height - 3) as usize;
         let hex_with = if 82 < tui_width { 82 } else { tui_width };
@@ -530,61 +560,65 @@ impl ChapTui {
 
     fn render_hex<'a>(
         &mut self,
+        visible_content: Text,
+        content: Content,
+        hex_sel: TextSelect,
+        td: &'a TextDisplay,
+    ) -> ChapResult<()> {
+        self.terminal.draw(|f| {
+            let text_para = Paragraph::new(visible_content)
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(text_para, self.elem.tv.get_rect());
+
+            let nav_paragraph = Paragraph::new(content.navi);
+            f.render_widget(nav_paragraph, self.elem.navi.get_rect());
+
+            let sel_content = td.get_text_from_sel(&hex_sel);
+            let assist =
+                get_data_inspector_content(hex_sel.get_start(), sel_content, self.endian.clone());
+            let assist_para1 = Paragraph::new(assist)
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(assist_para1, self.elem.assist_tv1.get_rect());
+
+            let assist_para2 = Paragraph::new(Text::raw(&self.assist_tv2_data))
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(assist_para2, self.elem.assist_tv2.get_rect());
+
+            let input_title_box = Paragraph::new(Text::raw(" >: "))
+                .block(Block::default())
+                .style(Style::default().fg(Color::White)); // 设置输入框样式
+            f.render_widget(input_title_box, self.elem.cmd_title);
+
+            let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(input_box, self.elem.cmd_inp.get_rect());
+        })?;
+        Ok(())
+    }
+
+    fn get_hex_content<'a>(
+        &mut self,
         cursor_x: usize,
         cursor_y: usize,
         hex_sel: TextSelect,
         td: &'a TextDisplay,
-    ) -> ChapResult<&'a RingVec<LineState>> {
-        let line_meta = {
-            let (content, meta) = td.get_current_page()?;
-            self.terminal.draw(|f| {
-                let (navi, visible_content) = get_hex_content(
-                    content,
-                    &meta,
-                    self.elem.navi.get_cur_line(),
-                    &hex_sel,
-                    self.elem.tv.get_height(),
-                    cursor_y,
-                    cursor_x,
-                );
-                let text_para = Paragraph::new(visible_content)
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(text_para, self.elem.tv.get_rect());
+    ) -> ChapResult<(&'a RingVec<LineState>, Content<'a>)> {
+        let (content, meta) = td.get_current_page()?;
+        let visible_content = get_hex_content(
+            content,
+            &meta,
+            self.elem.navi.get_cur_line(),
+            &hex_sel,
+            self.elem.tv.get_height(),
+            cursor_y,
+            cursor_x,
+        );
 
-                let nav_paragraph = Paragraph::new(navi);
-                f.render_widget(nav_paragraph, self.elem.navi.get_rect());
-
-                let sel_content = td.get_text_from_sel(&hex_sel);
-                let assist = get_data_inspector_content(
-                    hex_sel.get_start(),
-                    sel_content,
-                    self.endian.clone(),
-                );
-                let assist_para1 = Paragraph::new(assist)
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(assist_para1, self.elem.assist_tv1.get_rect());
-
-                let assist_para2 = Paragraph::new(Text::raw(&self.assist_tv2_data))
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(assist_para2, self.elem.assist_tv2.get_rect());
-
-                let input_title_box = Paragraph::new(Text::raw(" >: "))
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White)); // 设置输入框样式
-                f.render_widget(input_title_box, self.elem.cmd_title);
-
-                let input_box = Paragraph::new(Text::raw(self.elem.cmd_inp.get_inp()))
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(input_box, self.elem.cmd_inp.get_rect());
-            })?;
-
-            meta
-        };
-        Ok(line_meta)
+        Ok((meta, visible_content))
     }
 
     pub(crate) fn render_source<P2: AsRef<Path>>(
@@ -629,6 +663,7 @@ impl ChapTui {
                 todo!()
             }
         };
+
         loop {
             let size = self.terminal.size()?;
             let elem = Self::get_react(&self.ui_type, &self.chap_mod, &size)?;
@@ -672,6 +707,7 @@ impl ChapTui {
 
             td.get_one_page_from_state(&self.start_line_state)?;
             'tui: loop {
+                let mut lines = Vec::with_capacity(self.elem.tv.get_height());
                 let size = self.terminal.size()?;
                 if size != self.size {
                     break 'tui;
@@ -683,29 +719,43 @@ impl ChapTui {
                     } else {
                         &td as *const TextDisplay
                     };
-                let line_meta = match self.chap_mod {
+                let (line_meta, content) = match self.chap_mod {
                     ChapMod::Edit => {
-                        self.render_content::<EditBuildContent>(self.column_offset, &td)?
+                        self.get_content::<EditBuildContent>(&mut lines, self.column_offset, &td)?
                     }
                     ChapMod::EditBlock => {
-                        self.render_content::<EditBuildContent>(self.column_offset, &td)?
+                        self.get_content::<EditBuildContent>(&mut lines, self.column_offset, &td)?
                     }
                     ChapMod::Text => {
                         unsafe {
-                            self.render_content::<TextBuildContent>(
+                            self.get_content::<TextBuildContent>(
+                                &mut lines,
                                 self.column_offset,
                                 &*active_td,
                             )?
                         }
                         //  }
                     }
-                    ChapMod::Hex => {
-                        self.render_hex(self.cursor_x, self.cursor_y, self.txt_sel.clone(), &td)?
-                    }
+                    ChapMod::Hex => self.get_hex_content(
+                        self.cursor_x,
+                        self.cursor_y,
+                        self.txt_sel.clone(),
+                        &td,
+                    )?,
                     _ => {
                         todo!()
                     }
                 };
+                let text = Text::from(lines);
+                match self.chap_mod {
+                    ChapMod::Edit => self.render_content::<EditBuildContent>(text, content)?,
+                    ChapMod::EditBlock => self.render_content::<EditBuildContent>(text, content)?,
+                    ChapMod::Text => self.render_content::<TextBuildContent>(text, content)?,
+                    ChapMod::Hex => self.render_hex(text, content, self.txt_sel.clone(), &td)?,
+                    _ => {
+                        todo!()
+                    }
+                }
                 if let Some(start_line_meta) = line_meta.get(0) {
                     // self.start_line_num = start_line_meta.get_line_num();
                     self.start_line_state = start_line_meta.clone();
@@ -778,9 +828,21 @@ impl ChapTui {
                                         self.assist_tv2_data = e.to_string(); // 记录错误信息
                                     }
                                 }
-                                (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                                (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
                                     self.elem.cmd_inp.clear();
                                     self.enter_text_mode();
+                                }
+                                (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                                    if let Some(meta) = line_meta.get(self.cursor_y) {
+                                        let line = unsafe { (&*active_td).get_line_data(meta)? };
+                                        ratatui::restore();
+                                        use std::io::Write;
+                                        let mut stdout = std::io::stdout();
+                                        stdout.write_all(line.as_slice())?;
+                                        stdout.write_all(b"\n")?;
+                                        stdout.flush()?;
+                                        std::process::exit(0);
+                                    }
                                 }
                                 (KeyCode::Enter, _) => {
                                     if let Err(e) = hand.handle_enter(self, line_meta, &td) {
@@ -872,125 +934,156 @@ impl ChapTui {
         (0, None, 0)
     }
 
-    pub(crate) fn render_content<'a, T: BuildContent>(
+    pub(crate) fn render_content<T: BuildContent>(
         &mut self,
+        text: Text,
+        content: Content,
+    ) -> ChapResult<()> {
+        let command_focus = matches!(self.chap_mod, ChapMod::EditBlock) && self.in_command_mode();
+        let cmd_rect = self.elem.cmd_inp.get_rect();
+        // let cmd_input_len = self.elem.cmd_inp.get_inp().len() as u16;
+        let tv_rect = self.elem.tv.get_rect();
+        let tv_height = self.elem.tv.get_height();
+        let tv_width = self.elem.tv.get_width();
+        let navi_rect = self.elem.navi.get_rect();
+        let navi_cur_line = self.elem.navi.get_cur_line();
+        self.terminal.draw(|f| {
+            let text_para = Paragraph::new(text)
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(text_para, tv_rect);
+
+            let nav_paragraph = Paragraph::new(content.navi);
+            f.render_widget(nav_paragraph, navi_rect);
+
+            let prompt = if command_focus || T::command_focus() {
+                ">: "
+            } else {
+                ""
+            };
+            let input_title_box = Paragraph::new(Text::raw(prompt))
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(input_title_box, self.elem.cmd_title);
+
+            let input = self.elem.cmd_inp.get_inp();
+            let input_text = if command_focus || T::command_focus() {
+                let input_parts = [input.as_bytes()];
+                let input_char_count = [self.inp_cursor_x];
+                let (spans, _, _) =
+                    build_cursor_line(&input_parts, input_char_count[0], &input_char_count, 0);
+                Text::from(Line::from(spans))
+            } else {
+                Text::raw(input)
+            };
+            let input_para = Paragraph::new(input_text)
+                .block(Block::default())
+                .style(Style::default().fg(Color::White));
+            f.render_widget(input_para, cmd_rect);
+        })?;
+        Ok(())
+    }
+
+    pub(crate) fn get_content<'a, T: BuildContent>(
+        &mut self,
+        lines: &mut Vec<Line<'a>>,
         offset: usize,
         td: &'a TextDisplay,
-    ) -> ChapResult<&'a RingVec<LineState>> {
-        let line_meta = {
-            let (content, meta) = td.get_current_page()?;
-            let command_focus =
-                matches!(self.chap_mod, ChapMod::EditBlock) && self.in_command_mode();
-            let cmd_rect = self.elem.cmd_inp.get_rect();
-            // let cmd_input_len = self.elem.cmd_inp.get_inp().len() as u16;
-            let tv_rect = self.elem.tv.get_rect();
-            let tv_height = self.elem.tv.get_height();
-            let tv_width = self.elem.tv.get_width();
-            let navi_rect = self.elem.navi.get_rect();
-            let navi_cur_line = self.elem.navi.get_cur_line();
-            let select_line = self.elem.navi.select_line;
-            let cursor_x_vis = self.cursor_x;
-            let cursor_y_vis = self.cursor_y;
+    ) -> ChapResult<(&'a RingVec<LineState>, Content<'a>)> {
+        //let line_meta = {
+        let (line_content, line_meta) = td.get_current_page()?;
+        let command_focus = matches!(self.chap_mod, ChapMod::EditBlock) && self.in_command_mode();
+        let cmd_rect = self.elem.cmd_inp.get_rect();
+        // let cmd_input_len = self.elem.cmd_inp.get_inp().len() as u16;
+        let tv_rect = self.elem.tv.get_rect();
+        let tv_height = self.elem.tv.get_height();
+        let tv_width = self.elem.tv.get_width();
+        let navi_rect = self.elem.navi.get_rect();
+        let navi_cur_line = self.elem.navi.get_cur_line();
+        let select_line = self.elem.navi.select_line;
+        let cursor_x_vis = self.cursor_x;
+        let cursor_y_vis = self.cursor_y;
+        let highlights = if matches!(self.view_mode, ViewMode::SearchResult) {
+            self.search_result
+                .as_ref()
+                .map(|store| HighlightSource::SearchResult {
+                    entries: store.entries.as_slice(),
+                })
+                .unwrap_or(HighlightSource::None)
+        } else if let Some(find_list) = self.find_list.as_ref() {
+            let state = &find_list[self.find_index];
+            state
+                .highlight
+                .as_deref()
+                .map(|matches| HighlightSource::CurrentFind {
+                    line_index: state.line_index,
+                    matches,
+                })
+                .unwrap_or(HighlightSource::None)
+        } else {
+            HighlightSource::None
+        };
 
-            // let find_list = self.find_list.as_ref();
-            // let (find_highlight_offset, find_line_index) = if let Some(find_line_state) = find_list
-            // {
-            //     let state: &LineState = &find_line_state[self.find_index];
-            //     if let Some(h) = &state.highlight {
-            //         (h[self.find_highlight_index], Some(state.line_index))
-            //     } else {
-            //         (0, None)
-            //     }
-            // } else {
-            //     (0, None)
-            // };
-
-            // let (find_highlight_offset, find_line_index, highlight_len) =
-            //     self.current_highlight_for_render(meta);
-            let highlights = if matches!(self.view_mode, ViewMode::SearchResult) {
-                if let Some(store) = self.search_result.as_ref() {
-                    meta.iter()
-                        .filter_map(|line_state| {
-                            let entry = store.entries.get(line_state.line_index)?;
-                            if entry.highlight.is_empty() {
-                                None
-                            } else {
-                                Some((line_state.line_index, entry.highlight.clone()))
-                            }
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            } else if let Some(find_list) = self.find_list.as_ref() {
-                let state = &find_list[self.find_index];
-                state
-                    .highlight
-                    .clone()
-                    .map(|h| vec![(state.line_index, h)])
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-
-            let ed_ctx = EditContext {
-                height: tv_height,
-                column_offset: content_column_offset(self.warp_type, offset, self.elem.tv.width),
-                cursor_y: cursor_y_vis,
-                cursor_x: cursor_x_vis,
-                is_txt_model: !command_focus,
-                highlights: Some(highlights),
-                highlight_len: self.highlight_len,
-            };
-            //let column_offset = self.column_offset;
-            self.terminal.draw(|f| {
-                let  content  = //(navi, visible_content, byte_cursor, last_char_bytes_size)
+        let ed_ctx = EditContext {
+            height: tv_height,
+            column_offset: content_column_offset(self.warp_type, offset, self.elem.tv.width),
+            cursor_y: cursor_y_vis,
+            cursor_x: cursor_x_vis,
+            is_txt_model: !command_focus,
+            highlights,
+            highlight_len: self.highlight_len,
+        };
+        let content  = //(navi, visible_content, byte_cursor, last_char_bytes_size)
                     T::build_content(
-                        content,
+                        lines,
+                        line_content,
                         tv_width,
-                        &meta,
+                        &line_meta,
                         navi_cur_line,
                         &select_line,
                         &ed_ctx,
                     );
-                self.bytes_cursor = content.byte_cursor;
-                self.bytes_cursor_size = content.last_char_bytes_size;
-                let text_para = Paragraph::new(content.visible_content)
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(text_para, tv_rect);
+        self.bytes_cursor = content.byte_cursor;
+        self.bytes_cursor_size = content.last_char_bytes_size;
+        //let column_offset = self.column_offset;
+        // let text = Text::from(lines);
+        // self.terminal.draw(|f| {
+        //     let text_para = Paragraph::new(text)
+        //         .block(Block::default())
+        //         .style(Style::default().fg(Color::White));
+        //     f.render_widget(text_para, tv_rect);
 
-                let nav_paragraph = Paragraph::new(content.navi);
-                f.render_widget(nav_paragraph, navi_rect);
+        //     let nav_paragraph = Paragraph::new(content.navi);
+        //     f.render_widget(nav_paragraph, navi_rect);
 
-                let prompt = if command_focus || T::command_focus() {
-                    ">: "
-                } else {
-                    ""
-                };
-                let input_title_box = Paragraph::new(Text::raw(prompt))
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(input_title_box, self.elem.cmd_title);
+        //     let prompt = if command_focus || T::command_focus() {
+        //         ">: "
+        //     } else {
+        //         ""
+        //     };
+        //     let input_title_box = Paragraph::new(Text::raw(prompt))
+        //         .block(Block::default())
+        //         .style(Style::default().fg(Color::White));
+        //     f.render_widget(input_title_box, self.elem.cmd_title);
 
-                let input = self.elem.cmd_inp.get_inp();
-                let input_text = if command_focus || T::command_focus() {
-                    let input_parts = [input.as_bytes()];
-                    let input_char_count = [self.inp_cursor_x];
-                    let (spans, _, _) =
-                        build_cursor_line(&input_parts, input_char_count[0], &input_char_count, 0);
-                    Text::from(Line::from(spans))
-                } else {
-                    Text::raw(input)
-                };
-                let input_para = Paragraph::new(input_text)
-                    .block(Block::default())
-                    .style(Style::default().fg(Color::White));
-                f.render_widget(input_para, cmd_rect);
-            })?;
-            meta
-        };
-        return Ok(line_meta);
+        //     let input = self.elem.cmd_inp.get_inp();
+        //     let input_text = if command_focus || T::command_focus() {
+        //         let input_parts = [input.as_bytes()];
+        //         let input_char_count = [self.inp_cursor_x];
+        //         let (spans, _, _) =
+        //             build_cursor_line(&input_parts, input_char_count[0], &input_char_count, 0);
+        //         Text::from(Line::from(spans))
+        //     } else {
+        //         Text::raw(input)
+        //     };
+        //     let input_para = Paragraph::new(input_text)
+        //         .block(Block::default())
+        //         .style(Style::default().fg(Color::White));
+        //     f.render_widget(input_para, cmd_rect);
+        // })?;
+        //  meta
+        //};
+        return Ok((line_meta, content));
     }
 }
 
@@ -1061,11 +1154,24 @@ pub(crate) fn char_range_to_visible_with_byte_range<'a>(
     char_start: usize,
     char_end: usize,
 ) -> (LineParts<&'a [u8]>, usize, usize) {
+    let (visible, visible_byte_start, visible_byte_end, _) =
+        char_range_to_visible_with_cursor_byte(parts, char_start, char_end, None);
+    (visible, visible_byte_start, visible_byte_end)
+}
+
+pub(crate) fn char_range_to_visible_with_cursor_byte<'a>(
+    parts: &[&'a [u8]],
+    char_start: usize,
+    char_end: usize,
+    cursor_x: Option<usize>,
+) -> (LineParts<&'a [u8]>, usize, usize, Option<usize>) {
     let mut visible = LineParts::empty();
     if char_end <= char_start || parts.is_empty() {
-        return (visible, 0, 0);
+        return (visible, 0, 0, None);
     }
 
+    let cursor_target = cursor_x.map(|x| char_start + x);
+    let mut cursor_abs_byte = None;
     let mut char_count = 0usize;
     let mut start = None;
     let mut end = None;
@@ -1075,6 +1181,9 @@ pub(crate) fn char_range_to_visible_with_byte_range<'a>(
         for (byte_idx, _) in part.char_indices() {
             if start.is_none() && char_count == char_start {
                 start = Some((pi, byte_idx, base + byte_idx));
+            }
+            if cursor_abs_byte.is_none() && cursor_target == Some(char_count) {
+                cursor_abs_byte = Some(base + byte_idx);
             }
             if char_count == char_end {
                 end = Some((pi, byte_idx, base + byte_idx));
@@ -1086,13 +1195,15 @@ pub(crate) fn char_range_to_visible_with_byte_range<'a>(
     }
 
     let Some((start_pi, start_byte, visible_byte_start)) = start else {
-        return (visible, 0, 0);
+        return (visible, 0, 0, None);
     };
     let (end_pi, end_byte, visible_byte_end) = end.unwrap_or_else(|| {
         let last_pi = parts.len() - 1;
-        let byte_end = parts.iter().map(|part| part.len()).sum();
-        (last_pi, parts[last_pi].len(), byte_end)
+        (last_pi, parts[last_pi].len(), base)
     });
+    if cursor_abs_byte.is_none() && cursor_target == Some(char_count) {
+        cursor_abs_byte = Some(visible_byte_end);
+    }
 
     for pi in start_pi..=end_pi {
         let part_start = if pi == start_pi { start_byte } else { 0 };
@@ -1105,7 +1216,11 @@ pub(crate) fn char_range_to_visible_with_byte_range<'a>(
             visible.append(&parts[pi][part_start..part_end]);
         }
     }
-    (visible, visible_byte_start, visible_byte_end)
+    let cursor_byte = cursor_abs_byte
+        .filter(|b| *b >= visible_byte_start && *b <= visible_byte_end)
+        .map(|b| b - visible_byte_start);
+
+    (visible, visible_byte_start, visible_byte_end, cursor_byte)
 }
 
 fn content_column_offset(warp_type: TextWarpType, offset: usize, width: usize) -> usize {
@@ -1127,6 +1242,33 @@ mod tests {
     #[test]
     fn no_wrap_render_keeps_horizontal_column_offset() {
         assert_eq!(content_column_offset(TextWarpType::NoWrap, 82, 80), 2);
+    }
+
+    #[test]
+    fn char_range_to_visible_with_cursor_byte_maps_multibyte_cursor_in_one_scan() {
+        let left = "中a".as_bytes();
+        let right = "文bc\n".as_bytes();
+
+        let (visible, start, end, cursor) =
+            char_range_to_visible_with_cursor_byte(&[left, right], 1, 4, Some(1));
+
+        assert_eq!(visible.as_parts(), [&b"a"[..], "文b".as_bytes()]);
+        assert_eq!(start, 3);
+        assert_eq!(end, 8);
+        assert_eq!(cursor, Some(1));
+    }
+
+    #[test]
+    fn char_range_to_visible_with_cursor_byte_maps_visible_end() {
+        let line = "中abc".as_bytes();
+
+        let (visible, start, end, cursor) =
+            char_range_to_visible_with_cursor_byte(&[line], 1, 4, Some(3));
+
+        assert_eq!(visible.as_parts(), [&b"abc"[..]]);
+        assert_eq!(start, 3);
+        assert_eq!(end, 6);
+        assert_eq!(cursor, Some(3));
     }
 }
 
@@ -1187,43 +1329,36 @@ fn build_text_spans<'a>(
 ) -> Vec<Span<'a>> {
     let visible_abs_start = meta.line_offset + visible_byte_start;
     let visible_abs_end = meta.line_offset + visible_byte_end;
+    debug_assert!(offsets.windows(2).all(|w| w[0].start <= w[1].start));
 
-    let mut ranges: Vec<(usize, usize)> = offsets
-        .iter()
-        .filter_map(|m| {
-            let start = m.start;
-            let end = m.end;
-            let start = start.max(visible_abs_start);
-            let end = end.min(visible_abs_end);
-
-            if start < end {
-                Some((start - visible_abs_start, end - visible_abs_start))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    ranges.sort_by_key(|r| r.0);
-
-    let mut spans = Vec::new();
+    let mut spans = Vec::with_capacity(offsets.len().saturating_mul(2).saturating_add(2));
     let mut pos = 0usize;
     let total_len: usize = parts.iter().map(|p| p.len()).sum();
+    let mut match_idx = offsets.partition_point(|m| m.end <= visible_abs_start);
 
     while pos < total_len {
-        let next_highlight = ranges
-            .iter()
-            .find(|(start, end)| pos >= *start && pos < *end)
-            .copied();
+        let abs_pos = visible_abs_start + pos;
+
+        while match_idx < offsets.len() && offsets[match_idx].end <= abs_pos {
+            match_idx += 1;
+        }
 
         let mut next_boundary = total_len;
         let mut highlight = false;
 
-        if let Some((_, end)) = next_highlight {
-            next_boundary = end;
-            highlight = true;
-        } else if let Some((start, _)) = ranges.iter().find(|(start, _)| *start > pos) {
-            next_boundary = *start;
+        if let Some(m) = offsets
+            .get(match_idx)
+            .filter(|m| m.start < visible_abs_end && m.end > visible_abs_start)
+        {
+            let start = m.start.max(visible_abs_start) - visible_abs_start;
+            let end = m.end.min(visible_abs_end) - visible_abs_start;
+
+            if pos >= start && pos < end {
+                next_boundary = end;
+                highlight = true;
+            } else if start > pos {
+                next_boundary = start;
+            }
         }
 
         if let Some(cursor) = cursor_x {

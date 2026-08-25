@@ -4,13 +4,13 @@ use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
 use crate::textwarp::TextSelect;
+use crate::tui::Content;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::text::Text;
-
 // ========== 编译期静态查找表 ==========
 
 /// 十六进制大写字节对表
@@ -326,7 +326,7 @@ pub(crate) fn get_hex_content<'a>(
     height: usize,
     cursor_y: usize,
     cursor_x: usize,
-) -> (Text<'a>, Text<'a>) {
+) -> Content<'a> {
     let mut lines = Vec::with_capacity(line_meta.len() + 2);
 
     // 添加头部
@@ -359,9 +359,12 @@ pub(crate) fn get_hex_content<'a>(
     add_cursor_padding(&mut lines, cursor_y, line_meta.len(), cursor_x);
 
     let nav_text = create_navigation_text(height, line_meta);
-    let text = Text::from(lines);
-
-    (nav_text, text)
+    // let text = Text::from(lines);
+    Content {
+        navi: nav_text,
+        byte_cursor: 0,
+        last_char_bytes_size: 0,
+    }
 }
 
 /// 处理单行字节数据，生成完整的 [hex_spans | padding | char_spans] 合并视图

@@ -365,7 +365,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
                 )?;
                 td.get_one_page_from_state(&chap_tui.start_line_state)?;
             }
-            Command::Unknown(cmd) => {}
+            Command::StrInput(cmd) => {}
         }
 
         Ok(())

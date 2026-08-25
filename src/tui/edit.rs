@@ -14,6 +14,7 @@ use crate::tui::n_chars_skip_control_mem_opt;
 use crate::tui::BuildContent;
 use crate::tui::Content;
 use crate::tui::EditContext;
+use crate::tui::HighlightSource;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -30,12 +31,13 @@ pub(crate) struct EditBuildContent;
 
 impl BuildContent for EditBuildContent {
     fn build_content<'a>(
+        lines: &mut Vec<Line<'a>>,
         txts: &'a RingVec<CacheStr>,
         with: usize,
         line_meta: &'a RingVec<LineState>,
         cur_line: usize,
         select_line: &Option<(usize, usize)>,
-        ed_ctx: &EditContext,
+        ed_ctx: &EditContext<'_>,
     ) -> super::Content<'a> {
         let height = ed_ctx.height;
         let column_offset = ed_ctx.column_offset;
@@ -45,7 +47,7 @@ impl BuildContent for EditBuildContent {
         //let mut find_highlight_offset = ed_ctx.find_highlight_offset;
         //let find_line_index = ed_ctx.find_line_index;
         assert!(txts.len() == line_meta.len());
-        let mut lines = Vec::with_capacity(line_meta.len());
+        lines.clear();
         let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
         let mut prev_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
         for (i, txt) in txts.iter().enumerate() {
@@ -151,16 +153,7 @@ impl BuildContent for EditBuildContent {
                 //     }
                 //     lines.push(Line::from(spans));
                 // }
-                let offsets = ed_ctx
-                    .highlights
-                    .as_ref()
-                    .and_then(|highlights| {
-                        highlights
-                            .iter()
-                            .find(|(line_index, _)| *line_index == meta.line_index)
-                            .map(|(_, offsets)| offsets.as_slice())
-                    })
-                    .unwrap_or(&[]);
+                let offsets = ed_ctx.highlights.for_line(meta.line_index);
 
                 let cursor = if cursor_y == i && is_txt_model {
                     Some(cursor_x)
@@ -180,12 +173,12 @@ impl BuildContent for EditBuildContent {
                 lines.push(Line::from(spans));
             }
         }
-        append_padding_lines(&mut lines, cursor_y, cursor_x, line_meta.len());
+        append_padding_lines(lines, cursor_y, cursor_x, line_meta.len());
         let nav_text = build_nav_text(line_meta, height);
-        let text = Text::from(lines);
+        //let text = Text::from(lines);
         return Content {
             navi: nav_text,
-            visible_content: text,
+            //visible_content: text,
             byte_cursor,
             last_char_bytes_size: prev_char_bytes_size,
         };
@@ -290,11 +283,13 @@ mod tests {
             cursor_y: tui.cursor_y,
             cursor_x: tui.cursor_x,
             is_txt_model: !tui.in_command_mode(),
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
         let (content, meta) = td.get_current_page().unwrap();
+        let mut lines = Vec::with_capacity(meta.len());
         let content = EditBuildContent::build_content(
+            &mut lines,
             content,
             tui.elem.tv.get_width(),
             &meta,
@@ -361,12 +356,14 @@ mod tests {
             cursor_y: tui.cursor_y,
             cursor_x: tui.cursor_x,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
         // td.get_one_page(tui.start_line_num).unwrap();
         let (content, meta) = td.get_current_page().unwrap();
+        let mut lines = Vec::with_capacity(meta.len());
         let content = EditBuildContent::build_content(
+            &mut lines,
             content,
             tui.elem.tv.get_width(),
             &meta,
@@ -374,10 +371,11 @@ mod tests {
             &None,
             &ed_ctx,
         );
+        let visible_content = Text::from(lines);
         (
             render_text_lines(&content.navi),
-            render_text_lines(&content.visible_content),
-            render_cursor_marks(&content.visible_content),
+            render_text_lines(&visible_content),
+            render_cursor_marks(&visible_content),
             content.byte_cursor,
             content.last_char_bytes_size,
         )
@@ -729,13 +727,15 @@ mod tests {
             cursor_y: 0,
             cursor_x: 0,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
-        let content = EditBuildContent::build_content(&txts, 80, &meta, 0, &None, &ed_ctx);
+        let mut lines = Vec::with_capacity(meta.len());
+        let content =
+            EditBuildContent::build_content(&mut lines, &txts, 80, &meta, 0, &None, &ed_ctx);
         assert_eq!(content.byte_cursor, 0);
         // 文本内容应可见
-        let text = content.visible_content.to_string();
+        let text = Text::from(lines).to_string();
         assert!(
             text.contains("hello") || text.contains("h"),
             "内容应含 hello"
@@ -753,10 +753,12 @@ mod tests {
             cursor_y: 0,
             cursor_x: 2,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
-        let content = EditBuildContent::build_content(&txts, 80, &meta, 0, &None, &ed_ctx);
+        let mut lines = Vec::with_capacity(meta.len());
+        let content =
+            EditBuildContent::build_content(&mut lines, &txts, 80, &meta, 0, &None, &ed_ctx);
         assert_eq!(content.byte_cursor, 2);
         assert_eq!(content.last_char_bytes_size, 1); // 前一字符 'e' 占 1 字节
     }
@@ -772,10 +774,12 @@ mod tests {
             cursor_y: 0,
             cursor_x: 2,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
-        let content = EditBuildContent::build_content(&txts, 80, &meta, 0, &None, &ed_ctx);
+        let mut lines = Vec::with_capacity(meta.len());
+        let content =
+            EditBuildContent::build_content(&mut lines, &txts, 80, &meta, 0, &None, &ed_ctx);
         assert_eq!(content.byte_cursor, 6);
         assert_eq!(content.last_char_bytes_size, 3); // 前一字符 "好" 占 3 字节
     }
@@ -791,10 +795,12 @@ mod tests {
             cursor_y: 0,
             cursor_x: 2,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
-        let content = EditBuildContent::build_content(&txts, 80, &meta, 0, &None, &ed_ctx);
+        let mut lines = Vec::with_capacity(meta.len());
+        let content =
+            EditBuildContent::build_content(&mut lines, &txts, 80, &meta, 0, &None, &ed_ctx);
         assert!(content.navi.to_string().contains("1"));
         assert!(content.navi.to_string().contains("2"));
         assert!(content.navi.to_string().contains("3"));
@@ -811,12 +817,14 @@ mod tests {
             cursor_y: 3,
             cursor_x: 0,
             is_txt_model: true,
-            highlights: None,
+            highlights: HighlightSource::None,
             highlight_len: 0,
         };
-        let content = EditBuildContent::build_content(&txts, 80, &meta, 0, &None, &ed_ctx);
+        let mut lines = Vec::with_capacity(meta.len());
+        let _content =
+            EditBuildContent::build_content(&mut lines, &txts, 80, &meta, 0, &None, &ed_ctx);
         // 应有超过 2 行的渲染输出（含 padding 行）
-        assert!(content.visible_content.lines.len() >= 3);
+        assert!(Text::from(lines).lines.len() >= 3);
     }
 
     #[test]
