@@ -928,7 +928,7 @@ impl Text for GapBlockText {
             let mut hits = line.search(&partten);
 
             if line_idx == 0 {
-                hits.retain(|pos| *pos >= state.line_offset);
+                hits.retain(|pos| pos.start >= state.line_offset);
             }
 
             if !hits.is_empty() {

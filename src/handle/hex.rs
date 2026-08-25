@@ -291,7 +291,7 @@ impl<T: Plugin> Handle for HandleHex<T> {
                     }
                 }
             }
-            Command::Search(value) => {}
+            Command::Search(_) | Command::Fuzzy(_) => {}
             Command::Cut(c) => {
                 let seek_start = line_meta
                     .get(chap_tui.cursor_y)

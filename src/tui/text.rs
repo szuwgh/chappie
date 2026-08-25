@@ -1,12 +1,11 @@
 use crate::chap;
 use crate::common::ring_vec::RingVec;
+use crate::fuzzy::Match;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineParts;
 use crate::textwarp::LineState;
-use crate::tui::build_cursor_line;
-use crate::tui::build_highlight_spans;
 use crate::tui::build_nav_text;
-use crate::tui::char_range_to_visible;
+use crate::tui::char_range_to_visible_with_byte_range;
 use crate::tui::BuildContent;
 use crate::tui::ChapTui;
 use crate::tui::EditContext;
@@ -20,20 +19,19 @@ use utf8_iter::Utf8CharsEx;
 fn build_text_spans<'a>(
     parts: &[&'a [u8]],
     meta: &LineState,
-    visible_start: usize,
-    visible_end: usize,
-    offsets: &[usize],
-    highlight_len: usize,
+    visible_byte_start: usize,
+    visible_byte_end: usize,
+    offsets: &[Match],
     cursor_x: Option<usize>,
 ) -> Vec<Span<'a>> {
-    let visible_abs_start = meta.line_offset + visible_start;
-    let visible_abs_end = meta.line_offset + visible_end;
+    let visible_abs_start = meta.line_offset + visible_byte_start;
+    let visible_abs_end = meta.line_offset + visible_byte_end;
 
     let mut ranges: Vec<(usize, usize)> = offsets
         .iter()
-        .filter_map(|offset| {
-            let start = *offset;
-            let end = start + highlight_len;
+        .filter_map(|m| {
+            let start = m.start;
+            let end = m.end;
             let start = start.max(visible_abs_start);
             let end = end.min(visible_abs_end);
 
@@ -176,12 +174,14 @@ impl BuildContent for TextBuildContent {
 
         // let mut find_highlight_offset = ed_ctx.find_highlight_offset;
         // let find_line_index = ed_ctx.find_line_index;
-        let highlight_len = ed_ctx.highlight_len;
-
         for (i, txt) in txts.iter().enumerate() {
             let full = txt.text(0..);
-            let visible =
-                char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
+            let (visible, visible_byte_start, visible_byte_end) =
+                char_range_to_visible_with_byte_range(
+                    full.as_parts(),
+                    column_offset,
+                    column_offset + with,
+                );
             let parts: &[&[u8]] = visible.as_parts();
 
             // if let Some(target_line_index) = find_line_index {
@@ -231,7 +231,7 @@ impl BuildContent for TextBuildContent {
             //     }
             //     lines.push(Line::from(spans));
             // }
-            let offsets: &[usize] = ed_ctx
+            let offsets: &[Match] = ed_ctx
                 .highlights
                 .as_ref()
                 .and_then(|highlights| {
@@ -251,10 +251,9 @@ impl BuildContent for TextBuildContent {
             let spans = build_text_spans(
                 parts,
                 meta,
-                column_offset,
-                column_offset + with,
+                visible_byte_start,
+                visible_byte_end,
                 offsets,
-                highlight_len,
                 cursor,
             );
 
@@ -272,5 +271,36 @@ impl BuildContent for TextBuildContent {
 
     fn command_focus() -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_spans_highlight_uses_match_byte_range_after_multibyte_prefix() {
+        let line = "中文abcdef".as_bytes();
+        let (visible, visible_byte_start, visible_byte_end) =
+            char_range_to_visible_with_byte_range(&[line], 2, 5);
+        let meta = LineState::builder().line_offset(0).build();
+        let offsets = vec![Match {
+            score: 0,
+            start: "中文".len(),
+            end: "中文abc".len(),
+        }];
+
+        let spans = build_text_spans(
+            &visible.as_parts(),
+            &meta,
+            visible_byte_start,
+            visible_byte_end,
+            &offsets,
+            None,
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content.as_ref(), "abc");
+        assert_eq!(spans[0].style.bg, Some(Color::Green));
     }
 }

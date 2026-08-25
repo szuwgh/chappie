@@ -1,4 +1,5 @@
 use crate::common::util::mmap_file;
+use crate::fuzzy::smithwaterman::SmithWaterman;
 use crate::searcher::memchr::memchr;
 use crate::textwarp::ChapResult;
 use crate::textwarp::LineData;
@@ -15,13 +16,18 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 pub(crate) struct MmapText {
     mmap: Mmap,
+    sw: SmithWaterman,
     _temp: Option<tempfile::NamedTempFile>,
 }
 
 impl MmapText {
     pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<MmapText> {
         let mmap = mmap_file(filename)?;
-        Ok(MmapText { mmap, _temp: None })
+        Ok(MmapText {
+            mmap,
+            sw: SmithWaterman::new(),
+            _temp: None,
+        })
     }
 
     pub(crate) fn from_temp_file(temp: NamedTempFile) -> ChapResult<MmapText> {
@@ -29,12 +35,17 @@ impl MmapText {
         let mmap = unsafe { Mmap::map(temp.as_file())? };
         Ok(MmapText {
             mmap,
+            sw: SmithWaterman::new(),
             _temp: Some(temp),
         })
     }
 
     pub(crate) fn new(mmap: Mmap) -> MmapText {
-        MmapText { mmap, _temp: None }
+        MmapText {
+            mmap,
+            sw: SmithWaterman::new(),
+            _temp: None,
+        }
     }
 }
 
@@ -271,16 +282,16 @@ impl Text for MmapText {
         };
         let mut results = Vec::new();
         for (line_idx, (line, mut index)) in i.enumerate() {
-            let mut hits = line.search(&partten);
+            let hits = line.search(&partten, &mut self.sw);
             // if line_idx == 0 {
             //     hits.retain(|pos| *pos >= state.line_offset);
             // }
             if !hits.is_empty() {
                 index.line_offset = 0;
-                let mut hits = line.search(&partten);
+                let mut hits = line.search(&partten, &mut self.sw);
 
                 if line_idx == 0 {
-                    hits.retain(|pos| *pos >= state.line_offset);
+                    hits.retain(|pos| pos.start >= state.line_offset);
                 }
 
                 if !hits.is_empty() {

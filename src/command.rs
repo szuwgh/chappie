@@ -7,6 +7,7 @@ pub(crate) enum Command {
     Jump(usize),       // address to jump to
     Find(Value),       // value to find
     Search(Value),     // value to find
+    Fuzzy(Value),      // value to find
     GTop,              // value to find
     GBottom,           // value to find
     Unknown(String),   // unknown command
@@ -115,13 +116,22 @@ impl Command {
                     Command::Find(Value::Ascii(value.to_string()))
                 }
             }
-            ["/s", value] => {
+            ["/ss", value] => {
                 if value.starts_with("0x") {
                     let hex_value = value.trim_start_matches("0x");
                     let bytes = hex::decode(hex_value).unwrap_or_else(|_| vec![]);
                     Command::Search(Value::Hex(bytes))
                 } else {
                     Command::Search(Value::Ascii(value.to_string()))
+                }
+            }
+            ["/s", value] => {
+                if value.starts_with("0x") {
+                    let hex_value = value.trim_start_matches("0x");
+                    let bytes = hex::decode(hex_value).unwrap_or_else(|_| vec![]);
+                    Command::Fuzzy(Value::Hex(bytes))
+                } else {
+                    Command::Fuzzy(Value::Ascii(value.to_string()))
                 }
             }
             ["/cut", count, filepath] if count.parse::<usize>().is_ok() => Command::Cut(CutFile {

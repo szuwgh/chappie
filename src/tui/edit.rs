@@ -8,7 +8,7 @@ use crate::tui::build_cursor_line;
 use crate::tui::build_highlight_spans;
 use crate::tui::build_nav_text;
 use crate::tui::build_text_spans;
-use crate::tui::char_range_to_visible;
+use crate::tui::char_range_to_visible_with_byte_range;
 use crate::tui::cut_highlight_part;
 use crate::tui::n_chars_skip_control_mem_opt;
 use crate::tui::BuildContent;
@@ -44,7 +44,6 @@ impl BuildContent for EditBuildContent {
         let is_txt_model = ed_ctx.is_txt_model;
         //let mut find_highlight_offset = ed_ctx.find_highlight_offset;
         //let find_line_index = ed_ctx.find_line_index;
-        let highlight_len = ed_ctx.highlight_len;
         assert!(txts.len() == line_meta.len());
         let mut lines = Vec::with_capacity(line_meta.len());
         let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
@@ -53,8 +52,12 @@ impl BuildContent for EditBuildContent {
             //一行数据可能会分成很多个块
             // 单次字符遍历求可见切片（融合原 char_range_to_byte_range + slice_parts_range）
             let full = txt.text(0..);
-            let visible =
-                char_range_to_visible(full.as_parts(), column_offset, column_offset + with);
+            let (visible, visible_byte_start, visible_byte_end) =
+                char_range_to_visible_with_byte_range(
+                    full.as_parts(),
+                    column_offset,
+                    column_offset + with,
+                );
             let parts: &[&[u8]] = visible.as_parts();
             if cursor_y == i && is_txt_model {
                 //取上一行的最后一个字符char 大小
@@ -148,7 +151,7 @@ impl BuildContent for EditBuildContent {
                 //     }
                 //     lines.push(Line::from(spans));
                 // }
-                let offsets: &[usize] = ed_ctx
+                let offsets = ed_ctx
                     .highlights
                     .as_ref()
                     .and_then(|highlights| {
@@ -168,10 +171,9 @@ impl BuildContent for EditBuildContent {
                 let spans = build_text_spans(
                     parts,
                     meta,
-                    column_offset,
-                    column_offset + with,
+                    visible_byte_start,
+                    visible_byte_end,
                     offsets,
-                    highlight_len,
                     cursor,
                 );
 

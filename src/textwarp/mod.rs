@@ -12,6 +12,8 @@ use crate::common::gap_buffer::GapBytesCharIter;
 use crate::common::gap_buffer::GapBytesIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
+use crate::fuzzy::smithwaterman::SmithWaterman;
+use crate::fuzzy::Match;
 use crate::searcher::boyermoore::BoyerMoore;
 use crate::searcher::memmem::{memmem, memmem_small_slices_no_alloc, memmem_two_slices_no_alloc};
 use crate::textwarp::edit::GapText;
@@ -786,7 +788,7 @@ impl<'a> Line<'a> for LineStr<'a> {
 }
 
 #[inline]
-fn find_in_parts(parts: &[&[u8]], key: &[u8], is_fuzzy: bool) -> Option<usize> {
+fn find_in_parts(parts: &[&[u8]], key: &[u8]) -> Option<usize> {
     match parts.len() {
         0 => None,
         1 => memmem(parts[0], key),
@@ -835,23 +837,29 @@ impl<'a> LineStr<'a> {
         }
     }
 
-    pub(crate) fn search(&self, partten: &Partten) -> Vec<usize> {
+    pub(crate) fn search(&self, partten: &Partten, sw: &mut SmithWaterman) -> Vec<Match> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
+        }
+        if partten.is_fuzzy {
+            return sw.find_parts(key, &[self.data.as_slice()]);
         }
         let total_len = self.data.len();
         let mut matches = Vec::new();
         let mut search_start = 0;
         while search_start < total_len {
             let (suffix, suffix_len) = suffix_parts(&[self.data.as_slice()], search_start);
-            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key, partten.is_fuzzy)
-            else {
+            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key) else {
                 break;
             };
 
             let match_pos = search_start + relative_pos;
-            matches.push(match_pos);
+            matches.push(Match {
+                score: 0,
+                start: match_pos,
+                end: match_pos + key.len(),
+            });
             search_start = match_pos + key.len();
         }
 
@@ -977,7 +985,7 @@ impl<'a> LineBlockStr<'a> {
         result
     }
 
-    pub(crate) fn search(&self, partten: &Partten) -> Vec<usize> {
+    pub(crate) fn search(&self, partten: &Partten) -> Vec<Match> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
@@ -1020,13 +1028,16 @@ impl<'a> LineBlockStr<'a> {
 
         while search_start < total_len {
             let (suffix, suffix_len) = suffix_parts(&parts[..parts_len], search_start);
-            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key, partten.is_fuzzy)
-            else {
+            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key) else {
                 break;
             };
 
             let match_pos = search_start + relative_pos;
-            matches.push(match_pos);
+            matches.push(Match {
+                score: 0,
+                start: match_pos,
+                end: match_pos + key.len(),
+            });
             search_start = match_pos + key.len();
         }
 
@@ -1314,7 +1325,7 @@ pub(crate) struct LineState {
     pub(crate) line_file_end: usize, //行在文件结束的位置
     // pub(crate) start_line_num: usize, //开始的行数
     //pub(crate) start_page_num: usize,   //这一行在第几页开始
-    pub(crate) highlight: Option<Vec<usize>>, //高亮范围  有搜索的时候
+    pub(crate) highlight: Option<Vec<Match>>, //高亮范围  有搜索的时候
 }
 
 impl LineState {
@@ -1486,6 +1497,10 @@ impl Partten<'_> {
             partten,
             is_fuzzy: false,
         }
+    }
+
+    pub(crate) fn partten_len(&self) -> usize {
+        self.partten.len()
     }
 }
 
@@ -3209,6 +3224,10 @@ mod tests {
         }
     }
 
+    fn match_ranges(matches: &[Match]) -> Vec<(usize, usize)> {
+        matches.iter().map(|m| (m.start, m.end)).collect()
+    }
+
     #[test]
     fn test_line_block_str_u8_iter_yields_block1_then_block2_bytes() {
         let mut iter = LineBlockStrU8Iter {
@@ -3225,14 +3244,20 @@ mod tests {
     fn test_line_block_str_search_finds_match_in_single_slice() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha needle omega", b"")), None);
 
-        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
+        assert_eq!(
+            match_ranges(&line.search(&Partten::exact(b"needle"))),
+            vec![(6, 12)]
+        );
     }
 
     #[test]
     fn test_line_block_str_search_finds_match_across_two_slices() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha nee", b"dle omega")), None);
 
-        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
+        assert_eq!(
+            match_ranges(&line.search(&Partten::exact(b"needle"))),
+            vec![(6, 12)]
+        );
     }
 
     #[test]
@@ -3242,7 +3267,10 @@ mod tests {
             Some(gap_block_line(b"needle omega", b"")),
         );
 
-        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
+        assert_eq!(
+            match_ranges(&line.search(&Partten::exact(b"needle"))),
+            vec![(6, 12)]
+        );
     }
 
     #[test]
@@ -3252,7 +3280,10 @@ mod tests {
             Some(gap_block_line(b"dle omega", b"")),
         );
 
-        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
+        assert_eq!(
+            match_ranges(&line.search(&Partten::exact(b"needle"))),
+            vec![(6, 12)]
+        );
     }
 
     #[test]
@@ -3262,14 +3293,17 @@ mod tests {
             Some(gap_block_line(b"needle zz ne", b"edle")),
         );
 
-        assert_eq!(line.search(&Partten::exact(b"needle")), vec![2, 12, 22]);
+        assert_eq!(
+            match_ranges(&line.search(&Partten::exact(b"needle"))),
+            vec![(2, 8), (12, 18), (22, 28)]
+        );
     }
 
     #[test]
     fn test_line_block_str_search_returns_empty_for_empty_or_missing_key() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha", b" beta")), None);
 
-        assert_eq!(line.search(&Partten::exact(b"")), Vec::<usize>::new());
-        assert_eq!(line.search(&Partten::exact(b"needle")), Vec::<usize>::new());
+        assert!(line.search(&Partten::exact(b"")).is_empty());
+        assert!(line.search(&Partten::exact(b"needle")).is_empty());
     }
 }

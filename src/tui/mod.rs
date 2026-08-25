@@ -6,6 +6,7 @@ use crate::cli::UIType;
 use crate::command::Command;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
+use crate::fuzzy::Match;
 use crate::handle::text::HandleText;
 use crate::handle::Handle;
 use crate::handle::HandleEdit;
@@ -74,7 +75,7 @@ pub(crate) struct EditContext {
     // pub(crate) find_highlight_offset: usize,
     // pub(crate) find_line_index: Option<usize>,
     // pub(crate) highlight_len: usize,
-    pub(crate) highlights: Option<Vec<(usize, Vec<usize>)>>,
+    pub(crate) highlights: Option<Vec<(usize, Vec<Match>)>>,
     pub(crate) highlight_len: usize,
 }
 
@@ -302,7 +303,7 @@ pub(crate) enum ViewMode {
 pub(crate) struct SearchResultEntry {
     pub(crate) result_line_index: usize,
     pub(crate) source_state: LineState,
-    pub(crate) highlight: Vec<usize>,
+    pub(crate) highlight: Vec<Match>,
 }
 
 pub(crate) struct SearchResultStore {
@@ -431,7 +432,7 @@ impl ChapTui {
         // 文本框显示内容的高度
         let tv_heigth = (tui_height - 1) as usize;
         // 文本框显示内容的宽度
-        let tv_width = (tui_width as f32) as usize - 3;
+        //let tv_width = (tui_width as f32) as usize;
 
         let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
@@ -492,8 +493,8 @@ impl ChapTui {
         };
 
         let tv = TextView {
-            height: tv_heigth,
-            width: tv_width,
+            height: tv_chk.height as usize,
+            width: tv_chk.width as usize,
             scroll: 1,
             rect: tv_chk,
         };
@@ -501,14 +502,14 @@ impl ChapTui {
         let cmd_inp = CmdInput::new(seach_chk);
 
         let assist_tv1 = TextView {
-            height: tv_heigth,
-            width: assist_tv_width,
+            height: assist_tv_chk1.height as usize,
+            width: assist_tv_chk1.width as usize,
             scroll: 1,
             rect: assist_tv_chk1,
         };
         let assist_tv2 = TextView {
-            height: tv_heigth,
-            width: assist_tv_width,
+            height: assist_tv_chk2.height as usize,
+            width: assist_tv_chk2.width as usize,
             scroll: 1,
             rect: assist_tv_chk2,
         };
@@ -846,18 +847,22 @@ impl ChapTui {
                 return (0, None, 0);
             };
 
-            let Some(offset) = entry.highlight.get(self.find_highlight_index).copied() else {
+            let Some(offset) = entry.highlight.get(self.find_highlight_index) else {
                 return (0, None, 0);
             };
 
-            return (offset, Some(result_meta.line_index), store.pattern_len);
+            return (
+                offset.start,
+                Some(result_meta.line_index),
+                store.pattern_len,
+            );
         }
 
         if let Some(find_list) = self.find_list.as_ref() {
             let state = &find_list[self.find_index];
             if let Some(h) = &state.highlight {
                 return (
-                    h[self.find_highlight_index],
+                    h[self.find_highlight_index].start,
                     Some(state.line_index),
                     self.highlight_len,
                 );
@@ -930,7 +935,7 @@ impl ChapTui {
 
             let ed_ctx = EditContext {
                 height: tv_height,
-                column_offset: offset.saturating_sub(self.elem.tv.width),
+                column_offset: content_column_offset(self.warp_type, offset, self.elem.tv.width),
                 cursor_y: cursor_y_vis,
                 cursor_x: cursor_x_vis,
                 is_txt_model: !command_focus,
@@ -1043,39 +1048,50 @@ fn n_chars_skip_control_mem_opt(s: &[u8], n: usize) -> (&[u8], &[u8], &[u8], usi
 /// 到达 char_end 时即刻提取切片返回，字节只扫描一遍，节省约 50% 扫描量。
 ///
 /// 可见区域跨越 3+ 段时取前两段（与原 slice_parts_range 行为一致）。
-pub(crate) fn char_range_to_visible<'a>(
+// pub(crate) fn char_range_to_visible<'a>(
+//     parts: &[&'a [u8]],
+//     char_start: usize,
+//     char_end: usize,
+// ) -> LineParts<&'a [u8]> {
+//     char_range_to_visible_with_byte_range(parts, char_start, char_end).0
+// }
+
+pub(crate) fn char_range_to_visible_with_byte_range<'a>(
     parts: &[&'a [u8]],
     char_start: usize,
     char_end: usize,
-) -> LineParts<&'a [u8]> {
+) -> (LineParts<&'a [u8]>, usize, usize) {
     let mut visible = LineParts::empty();
     if char_end <= char_start || parts.is_empty() {
-        return visible;
+        return (visible, 0, 0);
     }
 
     let mut char_count = 0usize;
     let mut start = None;
     let mut end = None;
+    let mut base = 0usize;
 
     'outer: for (pi, part) in parts.iter().enumerate() {
         for (byte_idx, _) in part.char_indices() {
             if start.is_none() && char_count == char_start {
-                start = Some((pi, byte_idx));
+                start = Some((pi, byte_idx, base + byte_idx));
             }
             if char_count == char_end {
-                end = Some((pi, byte_idx));
+                end = Some((pi, byte_idx, base + byte_idx));
                 break 'outer;
             }
             char_count += 1;
         }
+        base += part.len();
     }
 
-    let Some((start_pi, start_byte)) = start else {
-        return visible;
+    let Some((start_pi, start_byte, visible_byte_start)) = start else {
+        return (visible, 0, 0);
     };
-    let (end_pi, end_byte) = end.unwrap_or_else(|| {
+    let (end_pi, end_byte, visible_byte_end) = end.unwrap_or_else(|| {
         let last_pi = parts.len() - 1;
-        (last_pi, parts[last_pi].len())
+        let byte_end = parts.iter().map(|part| part.len()).sum();
+        (last_pi, parts[last_pi].len(), byte_end)
     });
 
     for pi in start_pi..=end_pi {
@@ -1089,7 +1105,29 @@ pub(crate) fn char_range_to_visible<'a>(
             visible.append(&parts[pi][part_start..part_end]);
         }
     }
-    visible
+    (visible, visible_byte_start, visible_byte_end)
+}
+
+fn content_column_offset(warp_type: TextWarpType, offset: usize, width: usize) -> usize {
+    match warp_type {
+        TextWarpType::SoftWrap => 0,
+        TextWarpType::NoWrap => offset.saturating_sub(width),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn soft_wrap_render_does_not_apply_horizontal_column_offset() {
+        assert_eq!(content_column_offset(TextWarpType::SoftWrap, 82, 80), 0);
+    }
+
+    #[test]
+    fn no_wrap_render_keeps_horizontal_column_offset() {
+        assert_eq!(content_column_offset(TextWarpType::NoWrap, 82, 80), 2);
+    }
 }
 
 // part 是一个连续的字节块，highlight_start和highlight_end 是高亮开始和结束的地方，然后这个函数把part
@@ -1142,20 +1180,19 @@ fn cut_highlight_part<'a>(
 fn build_text_spans<'a>(
     parts: &[&'a [u8]],
     meta: &LineState,
-    visible_start: usize,
-    visible_end: usize,
-    offsets: &[usize],
-    highlight_len: usize,
+    visible_byte_start: usize,
+    visible_byte_end: usize,
+    offsets: &[Match],
     cursor_x: Option<usize>,
 ) -> Vec<Span<'a>> {
-    let visible_abs_start = meta.line_offset + visible_start;
-    let visible_abs_end = meta.line_offset + visible_end;
+    let visible_abs_start = meta.line_offset + visible_byte_start;
+    let visible_abs_end = meta.line_offset + visible_byte_end;
 
     let mut ranges: Vec<(usize, usize)> = offsets
         .iter()
-        .filter_map(|offset| {
-            let start = *offset;
-            let end = start + highlight_len;
+        .filter_map(|m| {
+            let start = m.start;
+            let end = m.end;
             let start = start.max(visible_abs_start);
             let end = end.min(visible_abs_end);
 

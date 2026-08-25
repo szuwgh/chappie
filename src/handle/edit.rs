@@ -5,6 +5,7 @@ use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
 use crate::handle::HandleBase;
+use crate::pg::parse_heap_tuple_header;
 use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
@@ -259,12 +260,13 @@ impl HandleTxtEdit {
 fn build_search_result(
     td: &TextDisplay,
     start: &LineState,
-    pattern: &[u8],
+    pattern: Partten,
     height: usize,
     width: usize,
     warp_type: TextWarpType,
 ) -> ChapResult<Option<SearchResultStore>> {
-    let result = td.search(Partten::exact(pattern), start)?;
+    let pattern_len = pattern.partten_len();
+    let result = td.search(pattern, start)?;
     let Some(matches) = result else {
         return Ok(None);
     };
@@ -296,7 +298,7 @@ fn build_search_result(
     Ok(Some(SearchResultStore {
         td: result_td,
         entries,
-        pattern_len: pattern.len(),
+        pattern_len: pattern_len,
     }))
 }
 
@@ -391,7 +393,32 @@ impl HandleCmdInpEdit {
                     let store = build_search_result(
                         td,
                         line_meta,
-                        pattern,
+                        Partten::exact(pattern),
+                        chap_tui.elem.tv.get_height(),
+                        chap_tui.elem.tv.get_width(),
+                        chap_tui.warp_type,
+                    )?;
+
+                    if let Some(store) = store {
+                        chap_tui.highlight_len = pattern.len();
+                        chap_tui.search_result = Some(store);
+                        chap_tui.view_mode = ViewMode::SearchResult;
+                        chap_tui.search_result_index = 0;
+                        chap_tui.cursor_y = 0;
+                        chap_tui.cursor_x = 0;
+                    } else {
+                        chap_tui.assist_tv2_data = "no matches".to_string();
+                    }
+                }
+                _ => {}
+            },
+            Command::Fuzzy(v) => match v {
+                Value::Ascii(s) => {
+                    let pattern = s.as_bytes();
+                    let store = build_search_result(
+                        td,
+                        line_meta,
+                        Partten::fuzzy(pattern),
                         chap_tui.elem.tv.get_height(),
                         chap_tui.elem.tv.get_width(),
                         chap_tui.warp_type,
