@@ -30,6 +30,13 @@ fn line_visual_start(state: &LineState) -> usize {
     state.get_line_file_start() + state.get_line_offset()
 }
 
+fn reset_empty_page_cursor(chap_tui: &mut ChapTui) {
+    chap_tui.cursor_y = 0;
+    chap_tui.cursor_x = 0;
+    chap_tui.column_offset = 0;
+    chap_tui.is_last_line = false;
+}
+
 fn line_state_at_byte_offset(
     td: &TextDisplay,
     byte_offset: usize,
@@ -95,13 +102,24 @@ impl HandleBase {
             TextWarpType::NoWrap => {
                 if chap_tui.cursor_y == 0 {
                     //滚动上一行
-                    td.scroll_pre_one_line(line_meta.get(0).unwrap())?;
+                    // TUI pages can be empty after EOF, filtering, or resize.
+                    // Navigation should become a no-op instead of crashing.
+                    let Some(first) = line_meta.get(0) else {
+                        reset_empty_page_cursor(chap_tui);
+                        return Ok(());
+                    };
+                    td.scroll_pre_one_line(first)?;
                     line_meta = td.get_current_line_meta()?;
                     if let Some(first) = line_meta.get(0) {
                         chap_tui.start_line_state = first.clone();
                     }
                 }
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                if line_meta.is_empty() {
+                    reset_empty_page_cursor(chap_tui);
+                    return Ok(());
+                }
+                chap_tui.cursor_y = chap_tui.cursor_y.min(line_meta.len() - 1);
                 if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
                     if chap_tui.cursor_x >= meta.get_char_len() {
                         chap_tui.cursor_x = meta.get_char_len();
@@ -126,6 +144,11 @@ impl HandleBase {
                     }
                 }
                 chap_tui.cursor_y = chap_tui.cursor_y.saturating_sub(1);
+                if line_meta.is_empty() {
+                    reset_empty_page_cursor(chap_tui);
+                    return Ok(());
+                }
+                chap_tui.cursor_y = chap_tui.cursor_y.min(line_meta.len() - 1);
                 if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
                     if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
                         chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
@@ -149,30 +172,36 @@ impl HandleBase {
         // }
         match chap_tui.warp_type {
             TextWarpType::NoWrap => {
-                if chap_tui.cursor_y < chap_tui.elem.tv.get_height() - 1 {
+                if chap_tui.cursor_y < chap_tui.elem.tv.get_height().saturating_sub(1) {
                     chap_tui.cursor_y += 1;
                 } else {
                     //滚动下一行
-                    td.scroll_next_one_line(line_meta.last().unwrap())?;
+                    // TUI pages can be empty after EOF, filtering, or resize.
+                    // Navigation should become a no-op instead of crashing.
+                    let Some(last) = line_meta.last() else {
+                        reset_empty_page_cursor(chap_tui);
+                        return Ok(());
+                    };
+                    td.scroll_next_one_line(last)?;
                     line_meta = td.get_current_line_meta()?;
                     if let Some(first) = line_meta.get(0) {
                         chap_tui.start_line_state = first.clone();
                     }
                 }
-                if chap_tui.cursor_x
-                    >= line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_char_len()
-                        .saturating_sub(1)
-                {
-                    chap_tui.cursor_x = line_meta
-                        .get(chap_tui.cursor_y)
-                        .unwrap()
-                        .get_char_len()
-                        .saturating_sub(1);
+                if line_meta.is_empty() {
+                    reset_empty_page_cursor(chap_tui);
+                    return Ok(());
                 }
-                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                // cursor_y is screen state; clamp it because the current page may
+                // now contain fewer visual rows than the previous render.
+                chap_tui.cursor_y = chap_tui.cursor_y.min(line_meta.len() - 1);
+
+                let Some(meta) = line_meta.get(chap_tui.cursor_y) else {
+                    return Ok(());
+                };
+                if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
+                    chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
+                }
                 if chap_tui.column_offset >= meta.get_char_len() {
                     chap_tui.column_offset = meta.get_char_len();
                 }
@@ -183,12 +212,25 @@ impl HandleBase {
                     chap_tui.cursor_y += 1;
                 } else {
                     //滚动下一行
-                    td.scroll_next_one_line(line_meta.last().unwrap())?;
+                    // TUI pages can be empty after EOF, filtering, or resize.
+                    // Navigation should become a no-op instead of crashing.
+                    let Some(last) = line_meta.last() else {
+                        reset_empty_page_cursor(chap_tui);
+                        return Ok(());
+                    };
+                    td.scroll_next_one_line(last)?;
                     line_meta = td.get_current_line_meta()?;
                     if let Some(first) = line_meta.get(0) {
                         chap_tui.start_line_state = first.clone();
                     }
                 }
+                if line_meta.is_empty() {
+                    reset_empty_page_cursor(chap_tui);
+                    return Ok(());
+                }
+                // cursor_y is screen state; clamp it because the current page may
+                // now contain fewer visual rows than the previous render.
+                chap_tui.cursor_y = chap_tui.cursor_y.min(line_meta.len() - 1);
                 if let Some(meta) = line_meta.get(chap_tui.cursor_y) {
                     if chap_tui.cursor_x >= meta.get_char_len().saturating_sub(1) {
                         chap_tui.cursor_x = meta.get_char_len().saturating_sub(1);
@@ -243,7 +285,11 @@ impl HandleBase {
     ) -> ChapResult<()> {
         match chap_tui.warp_type {
             TextWarpType::NoWrap => {
-                let meta = line_meta.get(chap_tui.cursor_y).unwrap();
+                let Some(meta) = line_meta.get(chap_tui.cursor_y) else {
+                    chap_tui.cursor_y = chap_tui.cursor_y.min(line_meta.len().saturating_sub(1));
+                    chap_tui.is_last_line = false;
+                    return Ok(());
+                };
                 if chap_tui.cursor_x < meta.get_char_len()
                     && chap_tui.cursor_x < chap_tui.elem.tv.get_width()
                 {
@@ -646,5 +692,55 @@ pub(crate) trait Handle {
 
     fn handle_ctrl_r<'a>(&self, chap_tui: &mut ChapTui, td: &'a TextDisplay) -> ChapResult<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::textwarp::text::MmapText;
+    use crate::textwarp::TextWarp;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn text_display() -> TextDisplay {
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(b"line\n").unwrap();
+        tmp.flush().unwrap();
+        TextDisplay::Text(TextWarp::new(
+            MmapText::from_file_path(tmp.path()).unwrap(),
+            3,
+            10,
+            TextWarpType::NoWrap,
+        ))
+    }
+
+    #[test]
+    fn handle_down_no_wrap_empty_meta_is_noop() {
+        let mut tui = ChapTui::for_test(3, 10);
+        tui.warp_type = TextWarpType::NoWrap;
+        let meta = RingVec::with_capacity(1);
+        let td = text_display();
+
+        HandleBase.handle_down(&mut tui, &meta, &td).unwrap();
+
+        assert_eq!(tui.cursor_y, 0);
+        assert_eq!(tui.cursor_x, 0);
+        assert_eq!(tui.column_offset, 0);
+    }
+
+    #[test]
+    fn handle_down_soft_wrap_empty_meta_is_noop() {
+        let mut tui = ChapTui::for_test(3, 10);
+        tui.warp_type = TextWarpType::SoftWrap;
+        tui.cursor_y = tui.elem.tv.get_height().saturating_sub(1);
+        let meta = RingVec::with_capacity(1);
+        let td = text_display();
+
+        HandleBase.handle_down(&mut tui, &meta, &td).unwrap();
+
+        assert_eq!(tui.cursor_y, 0);
+        assert_eq!(tui.cursor_x, 0);
+        assert_eq!(tui.column_offset, 0);
     }
 }

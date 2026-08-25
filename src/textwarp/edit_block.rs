@@ -352,8 +352,22 @@ impl GapBlockText {
 
             if let Some(i) = j {
                 // 找到了；查该块在 block_indexs 中的位置
-                let cur_block_id = self.blocks.get(i).unwrap().block_id;
-                let pos_in_idx = self.block_pos(cur_block_id).unwrap_or(0);
+                let cur_block_id =
+                    self.blocks
+                        .get(i)
+                        .map(|block| block.block_id)
+                        .ok_or_else(|| {
+                            ChapError::Unexpected(format!(
+                                "get_block3: loaded block at pos {} missing",
+                                i
+                            ))
+                        })?;
+                let pos_in_idx = self.block_pos(cur_block_id).ok_or_else(|| {
+                    ChapError::Unexpected(format!(
+                        "get_block3: block_id {} missing from block_indexs",
+                        cur_block_id
+                    ))
+                })?;
 
                 if i == 0 {
                     if pos_in_idx == 0 {
@@ -830,7 +844,14 @@ impl Text for GapBlockText {
                         .build();
                     return Some(p);
                 } else {
-                    todo!()
+                    let p = LineState::builder()
+                        .line_index(state.get_line_index().saturating_sub(1))
+                        .line_offset(0)
+                        .block_num(last_block_id)
+                        .block_line_index(last_last_line_info.index_num)
+                        .block_offset(last_last_line_info.block_start)
+                        .build();
+                    return Some(p);
                 }
             } else {
                 let p = LineState::builder()
@@ -884,7 +905,9 @@ impl Text for GapBlockText {
     }
 
     fn has_next_line(&self, meta: &LineState) -> bool {
-        let last_block_index = self.block_indexs.last().unwrap();
+        let Some(last_block_index) = self.block_indexs.last() else {
+            return false;
+        };
         if meta.get_block_num() == last_block_index.block_id
             && meta.get_block_line_end() >= last_block_index.logic_block_size
         {
@@ -894,13 +917,19 @@ impl Text for GapBlockText {
     }
 
     fn iter<'a>(&'a mut self, state: &LineState) -> impl Iterator<Item = Self::LineItem<'a>> {
-        self.get_iter(state.block_num, state.block_line_index, state.block_offset)
-            .unwrap()
+        FallibleLineBlockIter::new(self.get_iter(
+            state.block_num,
+            state.block_line_index,
+            state.block_offset,
+        ))
     }
 
     fn iter_rev<'a>(&'a mut self, state: &LineState) -> impl Iterator<Item = Self::LineItem<'a>> {
-        self.get_iter_rev(state.block_num, state.block_line_index, state.block_offset)
-            .unwrap()
+        FallibleLineBlockIter::new(self.get_iter_rev(
+            state.block_num,
+            state.block_line_index,
+            state.block_offset,
+        ))
     }
 
     fn iter_u8<'a>(
@@ -1017,8 +1046,19 @@ impl GapBlockText {
         let mut block_id = line_meta.get_block_num(); // 语义上是 block_id
         let block_offset = line_meta.get_block_offset();
         // let mut block_line_index = line_meta.get_block_line_index();
-        let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
-        let mut pos = self.block_pos(block_id).unwrap();
+        let mut insert_offset = block_offset
+            .saturating_add(line_meta.line_offset)
+            .saturating_add(bytes_cursor);
+        let mut pos = self.block_pos(block_id).ok_or_else(|| {
+            ChapError::Unexpected(format!("resolve_target: block_id {} not found", block_id))
+        })?;
+        if pos >= self.block_indexs.len() {
+            return Err(ChapError::Unexpected(format!(
+                "resolve_target: block position {} out of index bounds {}",
+                pos,
+                self.block_indexs.len()
+            )));
+        }
         block_id = self.block_indexs[pos].block_id;
         log::debug!(
             "resolve_insert_target: pos={}, block_id={}, block_offset={}, line_offset={}, bytes_cursor={}, computed insert_offset={}",
@@ -1539,7 +1579,12 @@ impl EditText for GapBlockText {
                     .blocks
                     .iter_mut()
                     .find(|b| b.block_id == current_block_id)
-                    .unwrap();
+                    .ok_or_else(|| {
+                        ChapError::Unexpected(format!(
+                            "backspace: block_id {} missing after load",
+                            current_block_id
+                        ))
+                    })?;
                 block.backspace(insert_offset, delete_in_block)
             };
             deleted_parts.push(deleted_bytes);
@@ -1598,7 +1643,12 @@ impl EditText for GapBlockText {
             .blocks
             .iter_mut()
             .find(|b| b.block_id == block_id)
-            .unwrap();
+            .ok_or_else(|| {
+                ChapError::Unexpected(format!(
+                    "insert_bytes: block_id {} missing after load",
+                    block_id
+                ))
+            })?;
         let added = bytes.len();
         block.insert(insert_offset, bytes);
         self.block_indexs[pos].logic_block_size += added;
@@ -1631,7 +1681,12 @@ impl EditText for GapBlockText {
             .blocks
             .iter_mut()
             .find(|b| b.block_id == block_id)
-            .unwrap();
+            .ok_or_else(|| {
+                ChapError::Unexpected(format!(
+                    "insert_char: block_id {} missing after load",
+                    block_id
+                ))
+            })?;
         let chb = c.encode_utf8(&mut [0; 4]).as_bytes().to_vec();
         let added = chb.len();
         block.insert(insert_offset, &chb);
@@ -1662,7 +1717,12 @@ impl EditText for GapBlockText {
             .blocks
             .iter_mut()
             .find(|b| b.block_id == block_id)
-            .unwrap();
+            .ok_or_else(|| {
+                ChapError::Unexpected(format!(
+                    "insert_newline: block_id {} missing after load",
+                    block_id
+                ))
+            })?;
         block.insert(insert_offset, b"\n");
         self.block_indexs[pos].logic_block_size += 1;
         drop(block);
@@ -1680,9 +1740,19 @@ impl EditText for GapBlockText {
         let mut block_id = line_meta.get_block_num(); // 语义上是 block_id
         let block_offset = line_meta.get_block_offset();
         let mut block_line_index = line_meta.get_block_line_index();
-        let mut insert_offset = block_offset + line_meta.line_offset + bytes_cursor;
-        let mut pos = self.block_pos(block_id).unwrap();
+        let mut insert_offset = block_offset
+            .saturating_add(line_meta.line_offset)
+            .saturating_add(bytes_cursor);
+        let mut pos = self.block_pos(block_id).ok_or_else(|| {
+            ChapError::Unexpected(format!("delete_line: block_id {} not found", block_id))
+        })?;
         while insert_offset >= self.block_indexs[pos].logic_block_size {
+            if pos + 1 >= self.block_indexs.len() {
+                return Err(ChapError::Unexpected(format!(
+                    "delete_line: offset {} beyond last block {} size {}",
+                    insert_offset, block_id, self.block_indexs[pos].logic_block_size
+                )));
+            }
             insert_offset -= self.block_indexs[pos].logic_block_size;
             pos += 1;
             block_id = self.block_indexs[pos].block_id;
@@ -1707,7 +1777,12 @@ impl EditText for GapBlockText {
             self.blocks
                 .iter_mut()
                 .find(|b| b.block_id == block_id)
-                .unwrap()
+                .ok_or_else(|| {
+                    ChapError::Unexpected(format!(
+                        "delete_line: block_id {} missing from memory",
+                        block_id
+                    ))
+                })?
                 .backspace(insert_offset, 1);
             // blocks 的可变借用在上一语句结束后由 NLL 释放
             self.block_indexs[pos].logic_block_size =
@@ -1717,13 +1792,21 @@ impl EditText for GapBlockText {
             return Ok(());
         } else {
             //在块首 需要合并上一个块的最后一行
-            let pos = self.block_pos(block_id).unwrap();
+            let pos = self.block_pos(block_id).ok_or_else(|| {
+                ChapError::Unexpected(format!("delete_line: block_id {} not found", block_id))
+            })?;
             if pos > 0 {
                 let prev_block_id = self.block_indexs[pos - 1].block_id;
+                self.ensure_block_loaded_impl(prev_block_id)?;
                 self.blocks
                     .iter_mut()
                     .find(|b| b.block_id == prev_block_id)
-                    .unwrap()
+                    .ok_or_else(|| {
+                        ChapError::Unexpected(format!(
+                            "delete_line: prev block_id {} missing after load",
+                            prev_block_id
+                        ))
+                    })?
                     .backspace_last(1);
                 // blocks 借用释放
                 self.block_indexs[pos - 1].logic_block_size = self.block_indexs[pos - 1]
@@ -1740,7 +1823,7 @@ impl EditText for GapBlockText {
     }
 
     fn make_backup<P: AsRef<Path>>(&mut self, backup_name: P) -> ChapResult<()> {
-        let file = std::fs::File::create(backup_name).unwrap();
+        let file = std::fs::File::create(backup_name)?;
         let mut w = std::io::BufWriter::new(&file);
         let block_ids: Vec<BlockId> = self.block_indexs.iter().map(|bi| bi.block_id).collect();
         for block_id in block_ids {
@@ -1979,6 +2062,40 @@ impl<'a> Iterator for GapBlockTextIterRev<'a> {
             }
         }
         Some(ret)
+    }
+}
+
+enum FallibleLineBlockIter<'a, I>
+where
+    I: Iterator<Item = LineBlockStr<'a>>,
+{
+    Inner(I),
+    Empty(iter::Empty<LineBlockStr<'a>>),
+}
+
+impl<'a, I> FallibleLineBlockIter<'a, I>
+where
+    I: Iterator<Item = LineBlockStr<'a>>,
+{
+    fn new(result: ChapResult<I>) -> Self {
+        match result {
+            Ok(iter) => Self::Inner(iter),
+            Err(_) => Self::Empty(iter::empty()),
+        }
+    }
+}
+
+impl<'a, I> Iterator for FallibleLineBlockIter<'a, I>
+where
+    I: Iterator<Item = LineBlockStr<'a>>,
+{
+    type Item = LineBlockStr<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Inner(iter) => iter.next(),
+            Self::Empty(iter) => iter.next(),
+        }
     }
 }
 
@@ -3337,6 +3454,108 @@ mod tests {
         let data = get_block_text(&mut gbt, 0);
         let text = String::from_utf8_lossy(&data);
         assert!(text.starts_with("LINE-0000:"));
+    }
+
+    #[test]
+    fn test_edit_block_has_next_line_empty_index_is_safe() {
+        let mut gbt = create_gap_block_text("");
+        gbt.block_indexs.clear();
+
+        assert!(!gbt.has_next_line(&LineState::default()));
+    }
+
+    #[test]
+    fn test_edit_block_insert_stale_block_id_returns_error() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let stale = LineState::builder().block_num(usize::MAX - 1).build();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gbt.insert_bytes(0, 0, &stale, b"x", false)
+        }));
+
+        assert!(result.is_ok(), "stale block id must not panic");
+        assert!(result.unwrap().is_err(), "stale block id should return Err");
+    }
+
+    #[test]
+    fn test_edit_block_iter_stale_block_id_is_empty() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let stale = LineState::builder().block_num(usize::MAX - 1).build();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut iter = gbt.iter(&stale);
+            iter.next().is_none()
+        }));
+
+        assert_eq!(result.ok(), Some(true));
+    }
+
+    #[test]
+    fn test_edit_block_iter_rev_stale_block_id_is_empty() {
+        let mut gbt = create_gap_block_text("hello\n");
+        let stale = LineState::builder().block_num(usize::MAX - 1).build();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut iter = gbt.iter_rev(&stale);
+            iter.next().is_none()
+        }));
+
+        assert_eq!(result.ok(), Some(true));
+    }
+
+    #[test]
+    fn test_edit_block_pre_line_incomplete_cross_block_state_is_safe() {
+        let mut gbt = create_gap_block_text("seed\n");
+        let left_id = 10;
+        let right_id = 11;
+        let left = b"long-left";
+        let right = b"long-right";
+
+        let mut blocks = RingVec::with_capacity(BLOKK_NUM);
+        blocks.push(Block {
+            data: GapBuffer::from_bytes(left, CHAR_GAP_SIZE),
+            source_file_start: 0,
+            source_file_end: left.len(),
+            block_id: left_id,
+            is_modified: false,
+        });
+        blocks.push(Block {
+            data: GapBuffer::from_bytes(right, CHAR_GAP_SIZE),
+            source_file_start: left.len(),
+            source_file_end: left.len() + right.len(),
+            block_id: right_id,
+            is_modified: false,
+        });
+        gbt.blocks = blocks;
+        gbt.block_indexs = vec![
+            BlockIndex::from_block_bytes(0, 0, left.len(), left_id, left.len(), 0).unwrap(),
+            BlockIndex::from_block_bytes(
+                left.len(),
+                left.len(),
+                left.len() + right.len(),
+                right_id,
+                right.len(),
+                0,
+            )
+            .unwrap(),
+        ];
+        gbt.file_size = left.len() + right.len();
+        let state = LineState::builder()
+            .block_num(right_id)
+            .block_line_index(1)
+            .block_offset(0)
+            .line_index(1)
+            .build();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            gbt.get_pre_line_state(&state, 80)
+        }));
+
+        assert!(
+            result.is_ok(),
+            "incomplete cross-block fallback must not panic"
+        );
+        assert!(result.unwrap().is_some());
     }
 
     #[test]

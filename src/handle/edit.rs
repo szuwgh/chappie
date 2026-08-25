@@ -278,10 +278,13 @@ fn build_search_result(
         let data = td.get_line_data(&source_state)?;
 
         let result_line_index = entries.len();
-        data.as_parts()
-            .as_parts()
-            .iter()
-            .for_each(|part| temp.write_all(part).unwrap());
+        // data.as_parts()
+        //     .as_parts()
+        //     .iter()
+        //     .for_each(|part| temp.write_all(part).unwrap());
+        for part in data.as_parts().as_parts() {
+            temp.write_all(part)?;
+        }
         //temp.write_all(b"\n")?;
 
         entries.push(SearchResultEntry {

@@ -46,11 +46,13 @@ impl BuildContent for EditBuildContent {
         let is_txt_model = ed_ctx.is_txt_model;
         //let mut find_highlight_offset = ed_ctx.find_highlight_offset;
         //let find_line_index = ed_ctx.find_line_index;
-        assert!(txts.len() == line_meta.len());
+        // Content and metadata should stay aligned, but render defensively so a
+        // transient backend mismatch cannot crash the TUI.
+        debug_assert_eq!(txts.len(), line_meta.len());
         lines.clear();
         let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8
         let mut prev_char_bytes_size: usize = 0; //获取上一个字符bytes大小用来做删除操作
-        for (i, txt) in txts.iter().enumerate() {
+        for (i, (txt, meta)) in txts.iter().zip(line_meta.iter()).enumerate() {
             //一行数据可能会分成很多个块
             // 单次字符遍历求可见切片（融合原 char_range_to_byte_range + slice_parts_range）
             let full = txt.text(0..);
@@ -121,7 +123,6 @@ impl BuildContent for EditBuildContent {
                 // 优化5：visible 固定 2 段，直接按索引构造 Span，预分配容量 2，
                 // 避免 map().collect() 的迭代器包装和动态扩容开销。
 
-                let meta = line_meta.get(i).unwrap();
                 // if let Some(highlights) = &ed_ctx.highlights {
                 //     if let Some((_, offsets)) = highlights
                 //         .iter()

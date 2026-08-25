@@ -2095,10 +2095,11 @@ impl<T: Text + TextIndex> TextWarp<T> {
             return (None, LineState::default());
         }
 
-        let pre_line_state = self
-            .borrow_lines_mut()
-            .get_pre_line_state(meta, self.with)
-            .unwrap();
+        let Some(pre_line_state) = self.borrow_lines_mut().get_pre_line_state(meta, self.with)
+        else {
+            return (None, LineState::default());
+        };
+
         // let mut line_index = meta.get_line_index();
         // let mut line_offset = meta.get_line_offset();
         // let mut line_file_start = meta.get_line_file_start();
@@ -2179,7 +2180,9 @@ impl<T: Text + TextIndex> TextWarp<T> {
             log::debug!("没有下一行了");
             return (None, LineState::default());
         }
-        let mut next_line_state = self.borrow_lines_mut().get_next_line_state(&meta).unwrap();
+        let Some(next_line_state) = self.borrow_lines_mut().get_next_line_state(&meta) else {
+            return (None, LineState::default());
+        };
 
         //这行已经读完 开始下一行
         // if line_end == meta.get_txt_len() {

@@ -231,7 +231,10 @@ impl BuildContent for TextBuildContent {
 
         // let mut find_highlight_offset = ed_ctx.find_highlight_offset;
         // let find_line_index = ed_ctx.find_line_index;
-        for (i, txt) in txts.iter().enumerate() {
+        // Content and metadata should stay aligned, but render defensively so a
+        // transient backend mismatch cannot crash the TUI.
+        debug_assert_eq!(txts.len(), line_meta.len());
+        for (i, (txt, meta)) in txts.iter().zip(line_meta.iter()).enumerate() {
             let full = txt.text(0..);
             let cursor = if cursor_y == i && is_txt_model {
                 Some(cursor_x)
@@ -246,7 +249,6 @@ impl BuildContent for TextBuildContent {
                     cursor,
                 );
             let parts: &[&[u8]] = visible.as_parts();
-            let meta = line_meta.get(i).unwrap();
             let offsets = ed_ctx.highlights.for_line(meta.line_index);
 
             let spans = build_text_spans(

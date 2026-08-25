@@ -143,15 +143,17 @@ impl Text for MmapText {
         self.mmap.len()
     }
 
-    fn text_from_sel(&self, sel: &TextSelect) -> Vec<u8> {
-        todo!("Not implement text_from_sel for MmapText");
+    fn text_from_sel(&self, _sel: &TextSelect) -> Vec<u8> {
+        // Text preview selection is not implemented yet. Return empty data instead
+        // of panicking if a selection command reaches this backend.
+        Vec::new()
     }
 
     fn get_line<'a>(&'a self, state: &LineState) -> Option<LineStr<'a>> {
         let start = state.line_file_start + state.line_offset;
         let end =
             state.line_file_end + usize::from(self.mmap.get(state.line_file_end) == Some(&b'\n'));
-        let line = &self.mmap[start..end];
+        let line = self.mmap.get(start..end)?;
         Some(LineStr {
             data: LineData::Bytes(line),
             block_id: state.block_num,
@@ -283,23 +285,14 @@ impl Text for MmapText {
         };
         let mut results = Vec::new();
         for (line_idx, (line, mut index)) in i.enumerate() {
-            let hits = line.search(&partten, &mut self.sw);
-            // if line_idx == 0 {
-            //     hits.retain(|pos| *pos >= state.line_offset);
-            // }
+            let mut hits = line.search(&partten, &mut self.sw);
+            if line_idx == 0 {
+                hits.retain(|pos| pos.start >= state.line_offset);
+            }
             if !hits.is_empty() {
                 index.line_offset = 0;
-                let mut hits = line.search(&partten, &mut self.sw);
-
-                if line_idx == 0 {
-                    hits.retain(|pos| pos.start >= state.line_offset);
-                }
-
-                if !hits.is_empty() {
-                    index.line_offset = 0;
-                    index.highlight = Some(hits);
-                    results.push(index);
-                }
+                index.highlight = Some(hits);
+                results.push(index);
             }
         }
 

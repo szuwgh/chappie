@@ -256,7 +256,7 @@ impl TextView {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(crate) enum InputFocus {
+pub enum InputFocus {
     Text,
     Command,
 }
@@ -714,8 +714,15 @@ impl ChapTui {
                 }
                 let active_td: *const TextDisplay =
                     if matches!(self.view_mode, ViewMode::SearchResult) {
-                        let search_result = self.search_result.as_ref().unwrap();
-                        &search_result.td as *const TextDisplay
+                        // SearchResult view is only valid while search_result exists. If state
+                        // becomes stale, fall back to the source document instead of panicking.
+                        match self.search_result.as_ref() {
+                            Some(search_result) => &search_result.td as *const TextDisplay,
+                            None => {
+                                self.view_mode = ViewMode::Normal;
+                                &td as *const TextDisplay
+                            }
+                        }
                     } else {
                         &td as *const TextDisplay
                     };
@@ -790,6 +797,70 @@ impl ChapTui {
                         event::Event::Key(KeyEvent {
                             code, modifiers, ..
                         }) => {
+                            if matches!(self.view_mode, ViewMode::SearchResult) {
+                                // Search-result metadata belongs to the temporary MmapText page.
+                                // Only Enter intentionally uses the source td to jump back.
+                                match (code, modifiers) {
+                                    (KeyCode::Esc, _) => {
+                                        hand.handle_esc(self)?;
+                                    }
+                                    (KeyCode::Up, _) => {
+                                        if let Err(e) =
+                                            hand.handle_up(self, &line_meta, unsafe { &*active_td })
+                                        {
+                                            self.assist_tv2_data = e.to_string();
+                                        }
+                                    }
+                                    (KeyCode::Down, _) => {
+                                        if let Err(e) = hand
+                                            .handle_down(self, &line_meta, unsafe { &*active_td })
+                                        {
+                                            self.assist_tv2_data = e.to_string();
+                                        }
+                                    }
+                                    (KeyCode::Left, _) => {
+                                        if let Err(e) = hand
+                                            .handle_left(self, &line_meta, unsafe { &*active_td })
+                                        {
+                                            self.assist_tv2_data = e.to_string();
+                                        }
+                                    }
+                                    (KeyCode::Right, _) => {
+                                        if let Err(e) =
+                                            hand.handle_right(self, &line_meta, unsafe {
+                                                &*active_td
+                                            })
+                                        {
+                                            self.assist_tv2_data = e.to_string();
+                                        }
+                                    }
+                                    (KeyCode::Enter, _) => {
+                                        if let Err(e) = hand.handle_enter(self, line_meta, &td) {
+                                            self.assist_tv2_data = e.to_string();
+                                        }
+                                    }
+                                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                        if let Err(e) = hand.handle_ctrl_c(self) {
+                                            self.assist_tv2_data = e.to_string();
+                                        }
+                                    }
+                                    (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                                        if let Some(meta) = line_meta.get(self.cursor_y) {
+                                            let line =
+                                                unsafe { (&*active_td).get_line_data(meta)? };
+                                            ratatui::restore();
+                                            use std::io::Write;
+                                            let mut stdout = std::io::stdout();
+                                            stdout.write_all(line.as_slice())?;
+                                            stdout.write_all(b"\n")?;
+                                            stdout.flush()?;
+                                            std::process::exit(0);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                                break 'key;
+                            }
                             match (code, modifiers) {
                                 (KeyCode::Esc, _) => {
                                     hand.handle_esc(self)?;
@@ -895,6 +966,9 @@ impl ChapTui {
                             break 'key;
                         }
                         event::Event::Paste(mut pasted_string) => {
+                            if matches!(self.view_mode, ViewMode::SearchResult) {
+                                break 'key;
+                            }
                             pasted_string = pasted_string.replace('\r', "\n");
                             if matches!(self.chap_mod, ChapMod::Edit) && self.in_command_mode() {
                                 self.elem.cmd_inp.push_str(&pasted_string);
