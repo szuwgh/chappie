@@ -8,6 +8,7 @@ use crate::handle::HandleBase;
 use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
+use crate::textwarp::Partten;
 use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarp;
@@ -263,7 +264,7 @@ fn build_search_result(
     width: usize,
     warp_type: TextWarpType,
 ) -> ChapResult<Option<SearchResultStore>> {
-    let result = td.search(pattern, start)?;
+    let result = td.search(Partten::exact(pattern), start)?;
     let Some(matches) = result else {
         return Ok(None);
     };
@@ -349,7 +350,7 @@ impl HandleCmdInpEdit {
         line_meta: &LineState,
         td: &TextDisplay,
     ) -> ChapResult<()> {
-        let result = td.search(pattern, line_meta)?;
+        let result = td.search(Partten::exact(pattern), line_meta)?;
         if let Some(r) = &result {
             if r.len() > 0 {
                 chap_tui.find_index = 0;

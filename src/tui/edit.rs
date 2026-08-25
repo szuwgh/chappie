@@ -44,7 +44,7 @@ impl BuildContent for EditBuildContent {
         let is_txt_model = ed_ctx.is_txt_model;
         //let mut find_highlight_offset = ed_ctx.find_highlight_offset;
         //let find_line_index = ed_ctx.find_line_index;
-        let mut highlight_len = ed_ctx.highlight_len;
+        let highlight_len = ed_ctx.highlight_len;
         assert!(txts.len() == line_meta.len());
         let mut lines = Vec::with_capacity(line_meta.len());
         let mut byte_cursor: usize = 0; //bytes的索引 表示光标在多少个u8

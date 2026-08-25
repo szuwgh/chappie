@@ -9,9 +9,6 @@ const MINDIMS: usize = 512;
 // Opt-3: Vec 缓冲区存入结构体，find() 只 clear+extend，不再重复 malloc/free
 pub(crate) struct SmithWaterman<'a> {
     cache: &'a mut [i16],
-    n: usize,
-    pattern_bytes: Vec<u8>,
-    text_bytes: Vec<u8>,
     pos: Vec<(usize, usize)>,
 }
 
@@ -19,9 +16,6 @@ impl<'a> SmithWaterman<'a> {
     pub(crate) fn new(cache: &'a mut [i16]) -> SmithWaterman<'a> {
         SmithWaterman {
             cache,
-            n: 0,
-            pattern_bytes: Vec::new(),
-            text_bytes: Vec::new(),
             pos: Vec::new(),
         }
     }
@@ -34,15 +28,196 @@ pub(crate) struct Match {
     pub end: usize,
 }
 
+struct SliceParts<'a, 'b> {
+    parts: &'a [&'b [u8]],
+    len: usize,
+}
+
+impl<'a, 'b> SliceParts<'a, 'b> {
+    #[inline]
+    fn new(parts: &'a [&'b [u8]]) -> Self {
+        Self {
+            len: parts.iter().map(|part| part.len()).sum(),
+            parts,
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    #[inline]
+    fn byte_at(&self, index: usize) -> u8 {
+        debug_assert!(index < self.len);
+        match self.parts.len() {
+            1 => unsafe { *self.parts[0].get_unchecked(index) },
+            2 => {
+                let p0 = self.parts[0];
+                if index < p0.len() {
+                    unsafe { *p0.get_unchecked(index) }
+                } else {
+                    unsafe { *self.parts[1].get_unchecked(index - p0.len()) }
+                }
+            }
+            3 => {
+                let p0 = self.parts[0];
+                let p1 = self.parts[1];
+                if index < p0.len() {
+                    unsafe { *p0.get_unchecked(index) }
+                } else if index < p0.len() + p1.len() {
+                    unsafe { *p1.get_unchecked(index - p0.len()) }
+                } else {
+                    unsafe { *self.parts[2].get_unchecked(index - p0.len() - p1.len()) }
+                }
+            }
+            4 => {
+                let p0 = self.parts[0];
+                let p1 = self.parts[1];
+                let p2 = self.parts[2];
+                let end1 = p0.len();
+                let end2 = end1 + p1.len();
+                let end3 = end2 + p2.len();
+                if index < end1 {
+                    unsafe { *p0.get_unchecked(index) }
+                } else if index < end2 {
+                    unsafe { *p1.get_unchecked(index - end1) }
+                } else if index < end3 {
+                    unsafe { *p2.get_unchecked(index - end2) }
+                } else {
+                    unsafe { *self.parts[3].get_unchecked(index - end3) }
+                }
+            }
+            _ => {
+                let mut offset = index;
+                for part in self.parts {
+                    if offset < part.len() {
+                        return unsafe { *part.get_unchecked(offset) };
+                    }
+                    offset -= part.len();
+                }
+                unreachable!("SliceParts::byte_at index out of bounds")
+            }
+        }
+    }
+}
+
 impl<'a> SmithWaterman<'a> {
-    pub(crate) fn find(&mut self, pattern: &[u8], text: &[u8]) -> Vec<Match> {
-        // Opt-3: clear 复用，不重新分配
-        self.pattern_bytes.clear();
-        self.pattern_bytes.extend_from_slice(pattern);
-        self.text_bytes.clear();
-        self.text_bytes.extend_from_slice(text);
-        let len1 = self.pattern_bytes.len();
-        let len2 = self.text_bytes.len();
+    pub(crate) fn find_parts(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
+        let text_len = SliceParts::new(parts).len();
+        self.find_parts_in_range(pattern, parts, 0, text_len)
+    }
+
+    pub(crate) fn find_parts_prefiltered(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
+        let text_len = SliceParts::new(parts).len();
+        if pattern.is_empty() || text_len == 0 {
+            return Vec::new();
+        }
+
+        let max_text_len = (MAXDIMS / (pattern.len() + 1)).saturating_sub(1);
+        if max_text_len == 0 {
+            panic!("Cannot be larger than the maximum dimension 9182");
+        }
+
+        let radius = pattern.len().saturating_mul(2).max(pattern.len() + 8);
+        let radius = radius.min((max_text_len / 2).max(1));
+        let mut seen = [false; 256];
+        let mut windows = Vec::new();
+
+        for &anchor in pattern {
+            let anchor_idx = anchor as usize;
+            if seen[anchor_idx] {
+                continue;
+            }
+            seen[anchor_idx] = true;
+
+            let mut base = 0usize;
+            for part in parts {
+                let mut offset = 0usize;
+                while offset < part.len() {
+                    let Some(found) = crate::searcher::memchr::memchr(&part[offset..], anchor)
+                    else {
+                        break;
+                    };
+                    let pos = base + offset + found;
+                    let start = pos.saturating_sub(radius);
+                    let end = (pos + radius + 1).min(text_len);
+                    windows.push((start, end));
+                    offset += found + 1;
+                }
+                base += part.len();
+            }
+        }
+
+        if windows.is_empty() {
+            return Vec::new();
+        }
+
+        windows.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(windows.len());
+        for (start, end) in windows {
+            if let Some(last) = merged.last_mut() {
+                let merged_end = last.1.max(end);
+                if start <= last.1 && merged_end - last.0 <= max_text_len {
+                    last.1 = merged_end;
+                    continue;
+                }
+            }
+            merged.push((start, end));
+        }
+
+        let full_cells = (pattern.len() + 1).saturating_mul(text_len + 1);
+        if full_cells <= MAXDIMS {
+            let candidate_cells = merged
+                .iter()
+                .map(|(start, end)| (pattern.len() + 1) * (end - start + 1))
+                .sum::<usize>();
+            if candidate_cells >= full_cells {
+                return self.find_parts(pattern, parts);
+            }
+        }
+
+        let mut matches = Vec::new();
+        for (start, end) in merged {
+            matches.extend(self.find_parts_in_range(pattern, parts, start, end));
+        }
+
+        let Some(max_score) = matches.iter().map(|m| m.score).max() else {
+            return Vec::new();
+        };
+        let threshold = (2 * pattern.len()) as i16;
+        if max_score < threshold {
+            return Vec::new();
+        }
+
+        matches.retain(|m| m.score == max_score);
+        matches.sort_by(|a, b| {
+            a.start
+                .cmp(&b.start)
+                .then(a.end.cmp(&b.end))
+                .then(b.score.cmp(&a.score))
+        });
+        matches.dedup_by(|a, b| a.start == b.start && a.end == b.end && a.score == b.score);
+        matches
+    }
+
+    fn find_parts_in_range(
+        &mut self,
+        pattern: &[u8],
+        parts: &[&[u8]],
+        range_start: usize,
+        range_end: usize,
+    ) -> Vec<Match> {
+        let text = SliceParts::new(parts);
+        let len1 = pattern.len();
+        let range_end = range_end.min(text.len());
+        if range_start >= range_end {
+            return Vec::new();
+        }
+        let len2 = range_end - range_start;
+        if len1 == 0 || len2 == 0 {
+            return Vec::new();
+        }
 
         let m = (len1 + 1) * (len2 + 1);
         if m > MAXDIMS {
@@ -57,36 +232,54 @@ impl<'a> SmithWaterman<'a> {
         self.pos.clear();
         let pattern_len = len1;
 
-        for (i, &b1) in self.pattern_bytes.iter().enumerate() {
+        for (i, &b1) in pattern.iter().enumerate() {
             // Opt-2: 行偏移提到外层循环，消除内层重复乘法
             let row_i = i * col;
             let row_i1 = row_i + col;
+            let mut j = 0usize;
+            let mut base = 0usize;
 
-            for (j, &b2) in self.text_bytes.iter().enumerate() {
-                let score = if b1 == b2 { MATCH } else { MISMATCH };
-                // Opt-1+2: get_unchecked + 预算行偏移，消除 O(m×n) bounds check 与乘法
-                // SAFETY: row_i+j < (len1+1)*(len2+1) == alloc.len() 由上方 panic 保证
-                let (a, b, c) = unsafe {
-                    (
-                        *alloc.get_unchecked(row_i + j),     // get(i,   j)
-                        *alloc.get_unchecked(row_i + j + 1), // get(i,   j+1)
-                        *alloc.get_unchecked(row_i1 + j),    // get(i+1, j)
-                    )
-                };
-                let cur_score = max(0, max(a + score, max(b + GAP, c + GAP)));
-                unsafe {
-                    *alloc.get_unchecked_mut(row_i1 + j + 1) = cur_score;
+            for part in parts {
+                let part_start = base;
+                let part_end = base + part.len();
+                base = part_end;
+                if part_end <= range_start {
+                    continue;
+                }
+                if part_start >= range_end {
+                    break;
                 }
 
-                if cur_score > max_score {
-                    max_score = cur_score;
-                    self.pos.clear();
-                    self.pos.push((i + 1, j + 1));
-                } else if cur_score == max_score && max_score > 0 {
-                    // Opt-4: max_score==0 时不积累无效位置
-                    self.pos.push((i + 1, j + 1));
+                let local_start = range_start.saturating_sub(part_start);
+                let local_end = (range_end - part_start).min(part.len());
+                for &b2 in &part[local_start..local_end] {
+                    let score = if b1 == b2 { MATCH } else { MISMATCH };
+                    // Opt-1+2: get_unchecked + 预算行偏移，消除 O(m×n) bounds check 与乘法
+                    // SAFETY: row_i+j < (len1+1)*(len2+1) == alloc.len() 由上方 panic 保证
+                    let (a, b, c) = unsafe {
+                        (
+                            *alloc.get_unchecked(row_i + j),     // get(i,   j)
+                            *alloc.get_unchecked(row_i + j + 1), // get(i,   j+1)
+                            *alloc.get_unchecked(row_i1 + j),    // get(i+1, j)
+                        )
+                    };
+                    let cur_score = max(0, max(a + score, max(b + GAP, c + GAP)));
+                    unsafe {
+                        *alloc.get_unchecked_mut(row_i1 + j + 1) = cur_score;
+                    }
+
+                    if cur_score > max_score {
+                        max_score = cur_score;
+                        self.pos.clear();
+                        self.pos.push((i + 1, j + 1));
+                    } else if cur_score == max_score && max_score > 0 {
+                        // Opt-4: max_score==0 时不积累无效位置
+                        self.pos.push((i + 1, j + 1));
+                    }
+                    j += 1;
                 }
             }
+            debug_assert_eq!(j, len2);
         }
 
         let mut matchs: Vec<Match> = Vec::new();
@@ -100,7 +293,7 @@ impl<'a> SmithWaterman<'a> {
                     if cur == 0 {
                         break;
                     }
-                    let diag = if self.pattern_bytes[i - 1] == self.text_bytes[j - 1] {
+                    let diag = if pattern[i - 1] == text.byte_at(range_start + j - 1) {
                         MATCH
                     } else {
                         MISMATCH
@@ -119,8 +312,8 @@ impl<'a> SmithWaterman<'a> {
                     }
                 }
 
-                let start = j;
-                let end = max_j;
+                let start = range_start + j;
+                let end = range_start + max_j;
                 matchs.push(Match {
                     score: max_score,
                     start,
@@ -131,12 +324,20 @@ impl<'a> SmithWaterman<'a> {
         matchs.sort_by(|a, b| a.start.cmp(&b.start));
         matchs
     }
+
+    pub(crate) fn find(&mut self, pattern: &[u8], text: &[u8]) -> Vec<Match> {
+        self.find_parts(pattern, &[text])
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::str;
+
+    fn match_tuples(matches: &[Match]) -> Vec<(i16, usize, usize)> {
+        matches.iter().map(|m| (m.score, m.start, m.end)).collect()
+    }
 
     // ── ASCII exact ──────────────────────────────────────────────────────────
 
@@ -183,6 +384,117 @@ mod tests {
         assert_eq!(matches[0].start, 0);
         assert_eq!(matches[0].end, text.len());
         assert_eq!(matches[0].score, MATCH * 5);
+    }
+
+    #[test]
+    fn test_find_parts_exact_match_across_slice_boundary() {
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let parts: &[&[u8]] = &[b"say he", b"llo world"];
+
+        let matches = sw.find_parts(b"hello", parts);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start, 4);
+        assert_eq!(matches[0].end, 9);
+        assert_eq!(matches[0].score, MATCH * 5);
+    }
+
+    #[test]
+    fn test_find_parts_fuzzy_match_across_slice_boundary() {
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let parts: &[&[u8]] = &[b"abc h", b"xllo xyz"];
+
+        let matches = sw.find_parts(b"hello", parts);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start, 4);
+        assert_eq!(matches[0].end, 9);
+        assert_eq!(matches[0].score, 4 * MATCH + MISMATCH);
+    }
+
+    #[test]
+    fn test_find_parts_keeps_byte_offsets_after_multibyte_parts() {
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let parts: &[&[u8]] = &["中".as_bytes(), "文he".as_bytes(), b"llo"];
+
+        let matches = sw.find_parts(b"hello", parts);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start, 6);
+        assert_eq!(matches[0].end, 11);
+    }
+
+    #[test]
+    fn test_find_parts_matches_joined_find_for_many_splits() {
+        let text = b"prefix hello middle hxllo suffix";
+        let pattern = b"hello";
+
+        for split1 in 0..text.len() {
+            for split2 in split1..text.len() {
+                let mut joined_cache = vec![0i16; MAXDIMS];
+                let mut joined_sw = SmithWaterman::new(&mut joined_cache);
+                let joined = joined_sw.find(pattern, text);
+
+                let mut parts_cache = vec![0i16; MAXDIMS];
+                let mut parts_sw = SmithWaterman::new(&mut parts_cache);
+                let parts = [&text[..split1], &text[split1..split2], &text[split2..]];
+                let split = parts_sw.find_parts(pattern, &parts);
+
+                assert_eq!(match_tuples(&split), match_tuples(&joined));
+            }
+        }
+    }
+
+    #[test]
+    fn test_find_parts_prefiltered_matches_full_on_sparse_text() {
+        let pattern = b"abcdefghijklmnop";
+        let mut text = vec![b'x'; 512];
+        text[460..476].copy_from_slice(b"abcdxfghijklmnop");
+
+        let mut full_cache = vec![0i16; MAXDIMS];
+        let mut full_sw = SmithWaterman::new(&mut full_cache);
+        let full = full_sw.find(pattern, &text);
+
+        let mut prefiltered_cache = vec![0i16; MAXDIMS];
+        let mut prefiltered_sw = SmithWaterman::new(&mut prefiltered_cache);
+        let prefiltered = prefiltered_sw.find_parts_prefiltered(pattern, &[&text]);
+
+        assert_eq!(match_tuples(&prefiltered), match_tuples(&full));
+    }
+
+    #[test]
+    fn test_find_parts_prefiltered_matches_across_slice_boundary() {
+        let pattern = b"hello";
+        let parts: &[&[u8]] = &[b"abc h", b"xllo xyz"];
+
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let matches = sw.find_parts_prefiltered(pattern, parts);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start, 4);
+        assert_eq!(matches[0].end, 9);
+        assert_eq!(matches[0].score, 4 * MATCH + MISMATCH);
+    }
+
+    #[test]
+    fn test_find_parts_prefiltered_handles_large_sparse_text() {
+        let pattern = b"abcdefghijklmnop";
+        let mut text = vec![b'x'; 4096];
+        text[3500..3516].copy_from_slice(b"abcdxfghijklmnop");
+        let parts = [&text[..1200], &text[1200..3000], &text[3000..]];
+
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let matches = sw.find_parts_prefiltered(pattern, &parts);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start, 3500);
+        assert_eq!(matches[0].end, 3516);
+        assert_eq!(matches[0].score, 15 * MATCH + MISMATCH);
     }
 
     // ── score verification ───────────────────────────────────────────────────
@@ -563,5 +875,104 @@ mod tests {
                 str::from_utf8(&text.as_bytes()[v.start..v.end]).unwrap()
             );
         }
+    }
+
+    #[test]
+    #[ignore = "benchmark-style perf test; run with `cargo test --release bench_smith_waterman_current_performance -- --ignored --nocapture`"]
+    fn bench_smith_waterman_current_performance() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn report(name: &str, rounds: usize, cells_per_round: usize, elapsed: std::time::Duration) {
+            let ns_per_op = elapsed.as_nanos() as f64 / rounds as f64;
+            let cells_per_sec = cells_per_round as f64 * rounds as f64 / elapsed.as_secs_f64();
+            eprintln!(
+                "{name}: rounds={rounds}, cells/op={cells_per_round}, elapsed={elapsed:?}, ns/op={ns_per_op:.1}, Mcells/s={:.2}",
+                cells_per_sec / 1_000_000.0
+            );
+        }
+
+        let rounds = if cfg!(debug_assertions) {
+            2_000
+        } else {
+            80_000
+        };
+        let pattern = b"abcdefghijklmnop";
+        let mut text = vec![b'x'; 512];
+        text[460..476].copy_from_slice(b"abcdxfghijklmnop");
+        let cells_per_round = (pattern.len() + 1) * (text.len() + 1);
+
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let mut found = 0usize;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            let matches = sw.find(black_box(pattern), black_box(&text));
+            found = found.wrapping_add(matches.len());
+            black_box(&matches);
+        }
+        let elapsed = start.elapsed();
+        assert!(found > 0);
+        report(
+            "smith_waterman_find_single_slice",
+            rounds,
+            cells_per_round,
+            elapsed,
+        );
+
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let mut found = 0usize;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            let matches = sw.find_parts_prefiltered(black_box(pattern), black_box(&[&text]));
+            found = found.wrapping_add(matches.len());
+            black_box(&matches);
+        }
+        let elapsed = start.elapsed();
+        assert!(found > 0);
+        report(
+            "smith_waterman_prefiltered_single_slice",
+            rounds,
+            cells_per_round,
+            elapsed,
+        );
+
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let parts = [&text[..173], &text[173..349], &text[349..]];
+        let mut found = 0usize;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            let matches = sw.find_parts(black_box(pattern), black_box(&parts));
+            found = found.wrapping_add(matches.len());
+            black_box(&matches);
+        }
+        let elapsed = start.elapsed();
+        assert!(found > 0);
+        report(
+            "smith_waterman_find_parts_3_slices",
+            rounds,
+            cells_per_round,
+            elapsed,
+        );
+
+        let mut cache = vec![0i16; MAXDIMS];
+        let mut sw = SmithWaterman::new(&mut cache);
+        let mut found = 0usize;
+        let start = Instant::now();
+        for _ in 0..rounds {
+            let matches = sw.find_parts_prefiltered(black_box(pattern), black_box(&parts));
+            found = found.wrapping_add(matches.len());
+            black_box(&matches);
+        }
+        let elapsed = start.elapsed();
+        assert!(found > 0);
+        report(
+            "smith_waterman_prefiltered_3_slices",
+            rounds,
+            cells_per_round,
+            elapsed,
+        );
     }
 }

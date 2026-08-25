@@ -5,6 +5,7 @@ use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStateBuilder;
 use crate::textwarp::LineStr;
+use crate::textwarp::Partten;
 use crate::textwarp::Path;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
@@ -259,20 +260,24 @@ impl Text for MmapText {
         Vec::new().into_iter() // MmapText 不支持 u8 迭代
     }
 
-    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(
+        &mut self,
+        partten: Partten,
+        state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
         let i = MmapScrollTextIter {
             iter: MmapTextIter::new(&self.mmap, state.line_file_start, self.mmap.len(), None),
             line_index: state.line_index,
         };
         let mut results = Vec::new();
         for (line_idx, (line, mut index)) in i.enumerate() {
-            let mut hits = line.search(partten);
+            let mut hits = line.search(&partten);
             // if line_idx == 0 {
             //     hits.retain(|pos| *pos >= state.line_offset);
             // }
             if !hits.is_empty() {
                 index.line_offset = 0;
-                let mut hits = line.search(partten);
+                let mut hits = line.search(&partten);
 
                 if line_idx == 0 {
                     hits.retain(|pos| *pos >= state.line_offset);

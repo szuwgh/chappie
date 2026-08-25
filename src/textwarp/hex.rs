@@ -7,6 +7,7 @@ use crate::textwarp::Line;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
+use crate::textwarp::Partten;
 use crate::textwarp::RingVec;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
@@ -952,7 +953,11 @@ impl Text for HexText {
         return HexTextU8Iter::new(self, line_file_start - self.chk_iter.source_file_start);
     }
 
-    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(
+        &mut self,
+        partten: Partten,
+        state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
         Ok(None)
     }
 }

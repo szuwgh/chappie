@@ -786,7 +786,7 @@ impl<'a> Line<'a> for LineStr<'a> {
 }
 
 #[inline]
-fn find_in_parts(parts: &[&[u8]], key: &[u8]) -> Option<usize> {
+fn find_in_parts(parts: &[&[u8]], key: &[u8], is_fuzzy: bool) -> Option<usize> {
     match parts.len() {
         0 => None,
         1 => memmem(parts[0], key),
@@ -835,7 +835,8 @@ impl<'a> LineStr<'a> {
         }
     }
 
-    pub(crate) fn search(&self, key: &[u8]) -> Vec<usize> {
+    pub(crate) fn search(&self, partten: &Partten) -> Vec<usize> {
+        let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
         }
@@ -844,7 +845,8 @@ impl<'a> LineStr<'a> {
         let mut search_start = 0;
         while search_start < total_len {
             let (suffix, suffix_len) = suffix_parts(&[self.data.as_slice()], search_start);
-            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key) else {
+            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key, partten.is_fuzzy)
+            else {
                 break;
             };
 
@@ -975,7 +977,8 @@ impl<'a> LineBlockStr<'a> {
         result
     }
 
-    pub(crate) fn search(&self, key: &[u8]) -> Vec<usize> {
+    pub(crate) fn search(&self, partten: &Partten) -> Vec<usize> {
+        let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
         }
@@ -1017,7 +1020,8 @@ impl<'a> LineBlockStr<'a> {
 
         while search_start < total_len {
             let (suffix, suffix_len) = suffix_parts(&parts[..parts_len], search_start);
-            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key) else {
+            let Some(relative_pos) = find_in_parts(&suffix[..suffix_len], key, partten.is_fuzzy)
+            else {
                 break;
             };
 
@@ -1273,7 +1277,11 @@ pub(crate) trait TextOper {
 
     fn find(&self, pattern: &[u8], line_file_start: usize) -> Option<usize>;
 
-    fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>>;
+    fn search(
+        &self,
+        pattern: Partten,
+        line_state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>>;
 
     fn get_file_size(&self) -> usize;
 }
@@ -1460,6 +1468,27 @@ impl LineStateBuilder {
     }
 }
 
+pub(crate) struct Partten<'a> {
+    partten: &'a [u8],
+    is_fuzzy: bool,
+}
+
+impl Partten<'_> {
+    pub(crate) fn fuzzy(partten: &[u8]) -> Partten {
+        Partten {
+            partten,
+            is_fuzzy: true,
+        }
+    }
+
+    pub(crate) fn exact(partten: &[u8]) -> Partten {
+        Partten {
+            partten,
+            is_fuzzy: false,
+        }
+    }
+}
+
 impl LineState {
     pub(crate) fn builder() -> LineStateBuilder {
         LineStateBuilder::new()
@@ -1507,7 +1536,8 @@ pub(crate) trait Text {
         line_file_start: usize,
     ) -> impl Iterator<Item = u8>;
 
-    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>>;
+    fn search(&mut self, partten: Partten, state: &LineState)
+        -> ChapResult<Option<Vec<LineState>>>;
 }
 
 pub(crate) trait TextIndex {
@@ -1731,7 +1761,11 @@ impl TextOper for TextDisplay {
         }
     }
 
-    fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(
+        &self,
+        pattern: Partten,
+        line_state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
         match self {
             TextDisplay::Text(v) => v.search(pattern, line_state),
             TextDisplay::Hex(v) => Ok(None),
@@ -2920,7 +2954,11 @@ impl<T: Text + TextIndex> TextWarp<T> {
         self.borrow_lines().text_from_sel(sel)
     }
 
-    fn search(&self, pattern: &[u8], line_state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(
+        &self,
+        pattern: Partten,
+        line_state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
         self.borrow_lines_mut().search(pattern, line_state)
     }
 }
@@ -3005,7 +3043,7 @@ impl<T: Text + TextIndex + EditText> EditTextWarp<T> {
 
     pub(crate) fn search(
         &self,
-        pattern: &[u8],
+        pattern: Partten,
         line_state: &LineState,
     ) -> ChapResult<Option<Vec<LineState>>> {
         self.edit_text.search(pattern, line_state)
@@ -3187,14 +3225,14 @@ mod tests {
     fn test_line_block_str_search_finds_match_in_single_slice() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha needle omega", b"")), None);
 
-        assert_eq!(line.search(b"needle"), vec![6]);
+        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
     }
 
     #[test]
     fn test_line_block_str_search_finds_match_across_two_slices() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha nee", b"dle omega")), None);
 
-        assert_eq!(line.search(b"needle"), vec![6]);
+        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
     }
 
     #[test]
@@ -3204,7 +3242,7 @@ mod tests {
             Some(gap_block_line(b"needle omega", b"")),
         );
 
-        assert_eq!(line.search(b"needle"), vec![6]);
+        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
     }
 
     #[test]
@@ -3214,7 +3252,7 @@ mod tests {
             Some(gap_block_line(b"dle omega", b"")),
         );
 
-        assert_eq!(line.search(b"needle"), vec![6]);
+        assert_eq!(line.search(&Partten::exact(b"needle")), vec![6]);
     }
 
     #[test]
@@ -3224,14 +3262,14 @@ mod tests {
             Some(gap_block_line(b"needle zz ne", b"edle")),
         );
 
-        assert_eq!(line.search(b"needle"), vec![2, 12, 22]);
+        assert_eq!(line.search(&Partten::exact(b"needle")), vec![2, 12, 22]);
     }
 
     #[test]
     fn test_line_block_str_search_returns_empty_for_empty_or_missing_key() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha", b" beta")), None);
 
-        assert_eq!(line.search(b""), Vec::<usize>::new());
-        assert_eq!(line.search(b"needle"), Vec::<usize>::new());
+        assert_eq!(line.search(&Partten::exact(b"")), Vec::<usize>::new());
+        assert_eq!(line.search(&Partten::exact(b"needle")), Vec::<usize>::new());
     }
 }

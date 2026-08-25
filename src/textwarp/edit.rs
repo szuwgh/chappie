@@ -4,6 +4,7 @@ use crate::textwarp::GapBuffer;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStr;
+use crate::textwarp::Partten;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
@@ -173,7 +174,11 @@ impl Text for GapText {
         Vec::new().into_iter() // GapText 不支持 u8 迭代
     }
 
-    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(
+        &mut self,
+        partten: Partten,
+        state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
         Ok(None)
     }
 }

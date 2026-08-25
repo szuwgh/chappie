@@ -17,6 +17,7 @@ use crate::textwarp::LineBlockStr;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStateBuilder;
+use crate::textwarp::Partten;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
@@ -909,7 +910,11 @@ impl Text for GapBlockText {
     }
 
     //搜索
-    fn search(&mut self, partten: &[u8], state: &LineState) -> ChapResult<Option<Vec<LineState>>> {
+    fn search(
+        &mut self,
+        partten: Partten,
+        state: &LineState,
+    ) -> ChapResult<Option<Vec<LineState>>> {
         let scroll_iter = GapBlockScollTextIter::new(
             self,
             state.block_num,
@@ -920,7 +925,7 @@ impl Text for GapBlockText {
         let mut results = Vec::new();
         // let boy = BoyerMoore::new(partten);
         for (line_idx, (line, mut index)) in scroll_iter.enumerate() {
-            let mut hits = line.search(partten);
+            let mut hits = line.search(&partten);
 
             if line_idx == 0 {
                 hits.retain(|pos| *pos >= state.line_offset);
@@ -5058,7 +5063,7 @@ mod tests {
         let start_state = make_line_state_for_abs_line_start(&gbt, &content, 1, 0);
 
         let matches = gbt
-            .search(b"needle", &start_state)
+            .search(Partten::exact(b"needle"), &start_state)
             .expect("find should succeed")
             .expect("find should return matching lines");
 
@@ -5158,7 +5163,7 @@ mod tests {
 
         let start_state = make_line_state_for_abs_line_start(&gbt, &expected, 1, 0);
         let matches = gbt
-            .search(b"make", &start_state)
+            .search(Partten::exact(b"make"), &start_state)
             .expect("search should succeed")
             .expect("search should find make");
         let target = matches
@@ -5296,7 +5301,7 @@ mod tests {
 
             let start_state = make_line_state_for_abs_line_start(&gbt, &expected, 1, 0);
             let matches = gbt
-                .search(b"ENV", &start_state)
+                .search(Partten::exact(b"ENV"), &start_state)
                 .expect("search should succeed")
                 .expect("search should find ENV");
             let target = matches
@@ -5394,7 +5399,7 @@ mod tests {
         // Read/Search: every returned state must point to a line containing the queried bytes.
         let start_state = make_line_state_for_abs_line_start(&gbt, &expected, 1, 0);
         let matches = gbt
-            .search(b"ENV", &start_state)
+            .search(Partten::exact(b"ENV"), &start_state)
             .expect("search should succeed")
             .expect("search should return ENV matches");
         assert!(
