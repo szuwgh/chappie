@@ -5,7 +5,6 @@ use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
 use crate::handle::Handle;
 use crate::handle::HandleBase;
-use crate::pg::parse_heap_tuple_header;
 use crate::textwarp::text::MmapText;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
@@ -14,6 +13,7 @@ use crate::textwarp::TextDisplay;
 use crate::textwarp::TextOper;
 use crate::textwarp::TextWarp;
 use crate::textwarp::TextWarpType;
+use crate::tui::InputFocus;
 use crate::tui::SearchResultEntry;
 use crate::tui::SearchResultStore;
 use crate::tui::ViewMode;
@@ -395,13 +395,13 @@ impl HandleCmdInpEdit {
             chap_tui.highlight_len = partten_len;
             chap_tui.search_result = Some(store);
             chap_tui.view_mode = ViewMode::SearchResult;
+            chap_tui.input_focus = InputFocus::Text;
             chap_tui.search_result_index = 0;
             chap_tui.cursor_y = 0;
             chap_tui.cursor_x = 0;
         } else {
             chap_tui.assist_tv2_data = "no matches".to_string();
         }
-        chap_tui.chap_mod = crate::tui::ChapMod::Text;
         Ok(())
     }
 
@@ -730,6 +730,26 @@ impl Handle for HandleEdit {
         line_meta: &'a RingVec<LineState>,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
+        if matches!(chap_tui.view_mode, ViewMode::SearchResult) {
+            let Some(store) = &chap_tui.search_result else {
+                return Ok(());
+            };
+            let result_row = chap_tui.cursor_y;
+            let Some(result_meta) = line_meta.get(result_row) else {
+                return Ok(());
+            };
+            let entry_index = result_meta.line_index;
+            let Some(entry) = store.entries.get(entry_index) else {
+                return Ok(());
+            };
+
+            chap_tui.view_mode = ViewMode::Normal;
+            td.get_one_page_from_state(&entry.source_state)?;
+            chap_tui.start_line_state = entry.source_state.clone();
+            chap_tui.cursor_y = 0;
+            chap_tui.cursor_x = 0;
+            return Ok(());
+        }
         if chap_tui.in_command_mode() {
             if let Some(cur_meta) = line_meta.get(chap_tui.cursor_y) {
                 self.cmdinp_edit

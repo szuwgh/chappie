@@ -256,7 +256,7 @@ impl TextView {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-enum InputFocus {
+pub(crate) enum InputFocus {
     Text,
     Command,
 }
@@ -374,7 +374,7 @@ pub(crate) struct ChapTui {
     pub(crate) find_highlight_index: usize, //一行搜索的关键字中 高亮第几个关键字
     pub(crate) highlight_len: usize, //关键字高亮的长度
     pub(crate) cur_cmd: Command,
-    input_focus: InputFocus,
+    pub(crate) input_focus: InputFocus,
 
     pub(crate) search_result: Option<SearchResultStore>,
     pub(crate) view_mode: ViewMode,
@@ -719,43 +719,68 @@ impl ChapTui {
                     } else {
                         &td as *const TextDisplay
                     };
-                let (line_meta, content) = match self.chap_mod {
-                    ChapMod::Edit => {
-                        self.get_content::<EditBuildContent>(&mut lines, self.column_offset, &td)?
-                    }
-                    ChapMod::EditBlock => {
-                        self.get_content::<EditBuildContent>(&mut lines, self.column_offset, &td)?
-                    }
-                    ChapMod::Text => {
-                        unsafe {
-                            self.get_content::<TextBuildContent>(
-                                &mut lines,
-                                self.column_offset,
-                                &*active_td,
-                            )?
+
+                let (line_meta, content) = match self.view_mode {
+                    ViewMode::Normal => match self.chap_mod {
+                        ChapMod::Edit => self.get_content::<EditBuildContent>(
+                            &mut lines,
+                            self.column_offset,
+                            &td,
+                        )?,
+                        ChapMod::EditBlock => self.get_content::<EditBuildContent>(
+                            &mut lines,
+                            self.column_offset,
+                            &td,
+                        )?,
+                        ChapMod::Text => {
+                            unsafe {
+                                self.get_content::<TextBuildContent>(
+                                    &mut lines,
+                                    self.column_offset,
+                                    &*active_td,
+                                )?
+                            }
+                            //  }
                         }
-                        //  }
-                    }
-                    ChapMod::Hex => self.get_hex_content(
-                        self.cursor_x,
-                        self.cursor_y,
-                        self.txt_sel.clone(),
-                        &td,
-                    )?,
-                    _ => {
-                        todo!()
-                    }
+                        ChapMod::Hex => self.get_hex_content(
+                            self.cursor_x,
+                            self.cursor_y,
+                            self.txt_sel.clone(),
+                            &td,
+                        )?,
+                        _ => {
+                            todo!()
+                        }
+                    },
+                    ViewMode::SearchResult => unsafe {
+                        self.get_content::<TextBuildContent>(
+                            &mut lines,
+                            self.column_offset,
+                            &*active_td,
+                        )?
+                    },
                 };
+
                 let text = Text::from(lines);
-                match self.chap_mod {
-                    ChapMod::Edit => self.render_content::<EditBuildContent>(text, content)?,
-                    ChapMod::EditBlock => self.render_content::<EditBuildContent>(text, content)?,
-                    ChapMod::Text => self.render_content::<TextBuildContent>(text, content)?,
-                    ChapMod::Hex => self.render_hex(text, content, self.txt_sel.clone(), &td)?,
-                    _ => {
-                        todo!()
+                match self.view_mode {
+                    ViewMode::Normal => match self.chap_mod {
+                        ChapMod::Edit => self.render_content::<EditBuildContent>(text, content)?,
+                        ChapMod::EditBlock => {
+                            self.render_content::<EditBuildContent>(text, content)?
+                        }
+                        ChapMod::Text => self.render_content::<TextBuildContent>(text, content)?,
+                        ChapMod::Hex => {
+                            self.render_hex(text, content, self.txt_sel.clone(), &td)?
+                        }
+                        _ => {
+                            todo!()
+                        }
+                    },
+                    ViewMode::SearchResult => {
+                        self.render_content::<TextBuildContent>(text, content)?
                     }
                 }
+
                 if let Some(start_line_meta) = line_meta.get(0) {
                     // self.start_line_num = start_line_meta.get_line_num();
                     self.start_line_state = start_line_meta.clone();

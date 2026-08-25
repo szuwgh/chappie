@@ -985,7 +985,7 @@ impl<'a> LineBlockStr<'a> {
         result
     }
 
-    pub(crate) fn search(&self, partten: &Partten) -> Vec<Match> {
+    pub(crate) fn search(&self, partten: &Partten, sw: &mut SmithWaterman) -> Vec<Match> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
@@ -1020,6 +1020,10 @@ impl<'a> LineBlockStr<'a> {
                 append_line_data_parts(&v2.data, &mut parts, &mut parts_len);
             }
             (None, None) => {}
+        }
+
+        if partten.is_fuzzy {
+            return sw.find_parts(key, &parts);
         }
 
         let total_len = parts[..parts_len].iter().map(|part| part.len()).sum();
@@ -3228,6 +3232,11 @@ mod tests {
         matches.iter().map(|m| (m.start, m.end)).collect()
     }
 
+    fn search_ranges(line: &LineBlockStr<'_>, pattern: &[u8]) -> Vec<(usize, usize)> {
+        let mut sw = SmithWaterman::new();
+        match_ranges(&line.search(&Partten::exact(pattern), &mut sw))
+    }
+
     #[test]
     fn test_line_block_str_u8_iter_yields_block1_then_block2_bytes() {
         let mut iter = LineBlockStrU8Iter {
@@ -3244,20 +3253,14 @@ mod tests {
     fn test_line_block_str_search_finds_match_in_single_slice() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha needle omega", b"")), None);
 
-        assert_eq!(
-            match_ranges(&line.search(&Partten::exact(b"needle"))),
-            vec![(6, 12)]
-        );
+        assert_eq!(search_ranges(&line, b"needle"), vec![(6, 12)]);
     }
 
     #[test]
     fn test_line_block_str_search_finds_match_across_two_slices() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha nee", b"dle omega")), None);
 
-        assert_eq!(
-            match_ranges(&line.search(&Partten::exact(b"needle"))),
-            vec![(6, 12)]
-        );
+        assert_eq!(search_ranges(&line, b"needle"), vec![(6, 12)]);
     }
 
     #[test]
@@ -3267,10 +3270,7 @@ mod tests {
             Some(gap_block_line(b"needle omega", b"")),
         );
 
-        assert_eq!(
-            match_ranges(&line.search(&Partten::exact(b"needle"))),
-            vec![(6, 12)]
-        );
+        assert_eq!(search_ranges(&line, b"needle"), vec![(6, 12)]);
     }
 
     #[test]
@@ -3280,10 +3280,7 @@ mod tests {
             Some(gap_block_line(b"dle omega", b"")),
         );
 
-        assert_eq!(
-            match_ranges(&line.search(&Partten::exact(b"needle"))),
-            vec![(6, 12)]
-        );
+        assert_eq!(search_ranges(&line, b"needle"), vec![(6, 12)]);
     }
 
     #[test]
@@ -3294,7 +3291,7 @@ mod tests {
         );
 
         assert_eq!(
-            match_ranges(&line.search(&Partten::exact(b"needle"))),
+            search_ranges(&line, b"needle"),
             vec![(2, 8), (12, 18), (22, 28)]
         );
     }
@@ -3303,7 +3300,7 @@ mod tests {
     fn test_line_block_str_search_returns_empty_for_empty_or_missing_key() {
         let line = LineBlockStr(Some(gap_block_line(b"alpha", b" beta")), None);
 
-        assert!(line.search(&Partten::exact(b"")).is_empty());
-        assert!(line.search(&Partten::exact(b"needle")).is_empty());
+        assert!(search_ranges(&line, b"").is_empty());
+        assert!(search_ranges(&line, b"needle").is_empty());
     }
 }
