@@ -57,7 +57,7 @@ impl Chappie {
                     None
                 }
             }
-            RenderSource::StdinTemp(_) => None,
+            RenderSource::Dir(_) | RenderSource::Temp(_) => None,
         };
 
         let chap_ui = ChapTui::new(cli.get_chap_mod(), cli.get_ui_type(), cli.get_que(), undo)?;

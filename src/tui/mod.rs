@@ -31,6 +31,7 @@ use crate::tui::hex::get_data_inspector_content;
 use crate::tui::hex::get_hex_content;
 use crate::tui::text::TextBuildContent;
 use crate::undo::undo::UndoFile;
+use crate::ChapError;
 use crossterm::event::EnableBracketedPaste;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -53,13 +54,151 @@ use ratatui::text::Text;
 use ratatui::widgets::Block;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
+use std::fs::OpenOptions;
 use std::io;
+use std::io::BufWriter;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Instant;
 use tempfile::NamedTempFile;
 use utf8_iter::Utf8CharsEx;
 
-pub(crate) struct Content<'a> {
+pub(crate) enum MsgEvent {
+    Input(crossterm::event::Event),
+    DirBatch {
+        count: usize,
+        file_len: u64,
+        finished: bool,
+    },
+    DirError(String),
+}
+
+struct DirListingSession {
+    temp_file: NamedTempFile,
+    scanned_count: Arc<AtomicUsize>,
+    finished: Arc<AtomicBool>,
+    error: Arc<Mutex<Option<String>>>,
+    last_mmap_len: u64,
+    last_refresh: Instant,
+}
+
+impl DirListingSession {
+    fn new() -> ChapResult<Self> {
+        let temp_file = NamedTempFile::new()?;
+        //let temp_path = temp_file.path().to_path_buf();
+
+        let scanned_count = Arc::new(AtomicUsize::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        let error = Arc::new(Mutex::new(None));
+
+        Ok(Self {
+            temp_file,
+            scanned_count,
+            finished,
+            error,
+            last_mmap_len: 0,
+            last_refresh: Instant::now(),
+        })
+    }
+
+    fn scan_dir_to_writer(
+        dir: &Path,
+        writer: &mut BufWriter<std::fs::File>,
+        scanned_count: &AtomicUsize,
+        tx: &Sender<MsgEvent>,
+        pending_flush: &mut usize,
+        temp_path: &Path,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+
+            if path.is_dir() {
+                Self::scan_dir_to_writer(
+                    &path,
+                    writer,
+                    scanned_count,
+                    &tx,
+                    pending_flush,
+                    temp_path,
+                )?;
+            } else if path.is_file() {
+                writeln!(writer, "{}", path.canonicalize()?.display())?;
+                let count = scanned_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+                *pending_flush += 1;
+                if *pending_flush >= 512 {
+                    writer.flush()?;
+                    *pending_flush = 0;
+                    let file_len = temp_path.metadata()?.len();
+                    let _ = tx.send(MsgEvent::DirBatch {
+                        count,
+                        file_len,
+                        finished: false,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn start(&self, root: PathBuf, tx: Sender<MsgEvent>) -> ChapResult<()> {
+        let temp_path = self.temp_file.path().to_path_buf();
+        let scanned_count: Arc<AtomicUsize> = self.scanned_count.clone();
+        let finished: Arc<AtomicBool> = self.finished.clone();
+        let error: Arc<Mutex<Option<String>>> = self.error.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> std::io::Result<()> {
+                let file = OpenOptions::new().append(true).open(&temp_path)?;
+                let mut writer = BufWriter::new(file);
+                let mut pending_flush = 0usize;
+                Self::scan_dir_to_writer(
+                    &root,
+                    &mut writer,
+                    &scanned_count,
+                    &tx,
+                    &mut pending_flush,
+                    &temp_path,
+                )?;
+                writer.flush()?;
+
+                let count = scanned_count.load(Ordering::Relaxed);
+                let file_len = temp_path.metadata()?.len();
+
+                let _ = tx.send(MsgEvent::DirBatch {
+                    count,
+                    file_len,
+                    finished: true,
+                });
+                Ok(())
+            })();
+
+            if let Err(e) = result {
+                if let Ok(mut slot) = error.lock() {
+                    *slot = Some(e.to_string());
+                    let _ = tx.send(MsgEvent::DirError(e.to_string()));
+                }
+            }
+            finished.store(true, Ordering::Release);
+        });
+        Ok(())
+    }
+
+    fn path(&self) -> &Path {
+        self.temp_file.path()
+    }
+}
+
+pub(crate) struct RenderContent<'a> {
     pub(crate) navi: Text<'a>,
     //pub(crate) visible_content: Text<'a>,
     pub(crate) byte_cursor: usize,
@@ -113,9 +252,6 @@ pub(crate) struct EditContext<'a> {
     pub(crate) cursor_y: usize,
     pub(crate) cursor_x: usize,
     pub(crate) is_txt_model: bool,
-    // pub(crate) find_highlight_offset: usize,
-    // pub(crate) find_line_index: Option<usize>,
-    // pub(crate) highlight_len: usize,
     pub(crate) highlights: HighlightSource<'a>,
     pub(crate) highlight_len: usize,
 }
@@ -129,7 +265,7 @@ pub(crate) trait BuildContent {
         cur_line: usize,
         select_line: &Option<(usize, usize)>,
         ed_ctx: &EditContext<'_>,
-    ) -> Content<'a>;
+    ) -> RenderContent<'a>;
 
     fn command_focus() -> bool;
 }
@@ -331,6 +467,7 @@ pub(crate) struct HexWindow {
 pub(crate) struct TuiElement {
     pub(crate) navi: Navigation,
     pub(crate) tv: TextView,
+    pub(crate) file_count: TextView, //用来展示文件数量
     pub(crate) cmd_title: Rect,
     pub(crate) cmd_inp: CmdInput,
     pub(crate) assist_tv1: TextView,
@@ -343,8 +480,9 @@ pub(crate) enum ViewMode {
 }
 
 pub(crate) enum RenderSource {
+    Dir(PathBuf),
     File(PathBuf),
-    StdinTemp(NamedTempFile),
+    Temp(NamedTempFile),
 }
 
 pub(crate) struct ChapTui {
@@ -368,6 +506,7 @@ pub(crate) struct ChapTui {
     pub(crate) is_last_line: bool,          // 是否是最后一行
     pub(crate) endian: Endian,              // 字节序
     pub(crate) assist_tv2_data: String,     // 辅助窗口2数据
+    pub(crate) file_count_data: String,     //文件数量内容
     pub(crate) undo: Option<UndoFile>,
     pub(crate) find_list: Option<Vec<LineState>>,
     pub(crate) find_index: usize, // 搜索的时候跳转到第几个find_list的条目
@@ -429,6 +568,7 @@ impl ChapTui {
             is_last_line: false,
             endian: Endian::Little, // 默认字节序为小端
             assist_tv2_data: String::new(),
+            file_count_data: String::new(),
             undo: undo,
             find_list: None,
             find_index: 0,
@@ -466,7 +606,6 @@ impl ChapTui {
 
         //let assist_tv_width = (tui_width as f32 * 0.5) as usize; //(tui_width as f32 * 0.0) as usize - 3;
 
-        let max_line = (tui_height - 3) as usize;
         let hex_with = if 82 < tui_width { 82 } else { tui_width };
         let p = match chap_mod {
             ChapMod::EditBlock => 100,
@@ -481,12 +620,27 @@ impl ChapTui {
             .constraints([Constraint::Percentage(p), Constraint::Percentage(100 - p)].as_ref())
             .split(rect);
 
-        let (nav_chk, tv_chk, inp_title_chk, seach_chk, assist_tv_chk1, assist_tv_chk2) = {
+        let (
+            nav_chk,
+            tv_chk,
+            file_count_chk,
+            inp_title_chk,
+            seach_chk,
+            assist_tv_chk1,
+            assist_tv_chk2,
+        ) = {
             //文本框和输入框
             let left_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(100), Constraint::Length(1)].as_ref())
-                .split(chunks[0]); // chunks[1] 是左侧区域
+                .constraints(
+                    [
+                        Constraint::Min(0),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                    ]
+                    .as_ref(),
+                )
+                .split(chunks[0]);
 
             //LLM聊天和输入框
             let right_chunks = Layout::default()
@@ -503,17 +657,18 @@ impl ChapTui {
             let search_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(4), Constraint::Percentage(100)].as_ref())
-                .split(left_chunks[1]); // chunks[1] 是左侧区域
+                .split(left_chunks[2]); // chunks[1] 是左侧区域
             (
                 nav_text_chunks[0],
                 nav_text_chunks[1],
+                left_chunks[1],
                 search_chunks[0],
                 search_chunks[1],
                 right_chunks[0],
                 right_chunks[1],
             )
         };
-
+        let max_line = tv_chk.height as usize;
         let navi = Navigation {
             max_line: max_line,
             min_line: 0,
@@ -528,7 +683,12 @@ impl ChapTui {
             scroll: 1,
             rect: tv_chk,
         };
-
+        let file_count = TextView {
+            height: file_count_chk.height as usize,
+            width: file_count_chk.width as usize,
+            scroll: 1,
+            rect: file_count_chk,
+        };
         let cmd_inp = CmdInput::new(seach_chk);
 
         let assist_tv1 = TextView {
@@ -547,6 +707,7 @@ impl ChapTui {
         Ok(TuiElement {
             navi: navi,
             tv: tv,
+            file_count,
             cmd_title: inp_title_chk,
             cmd_inp: cmd_inp,
             assist_tv1: assist_tv1,
@@ -561,7 +722,7 @@ impl ChapTui {
     fn render_hex<'a>(
         &mut self,
         visible_content: Text,
-        content: Content,
+        content: RenderContent,
         hex_sel: TextSelect,
         td: &'a TextDisplay,
     ) -> ChapResult<()> {
@@ -602,13 +763,15 @@ impl ChapTui {
 
     fn get_hex_content<'a>(
         &mut self,
+        lines: &mut Vec<Line<'a>>,
         cursor_x: usize,
         cursor_y: usize,
         hex_sel: TextSelect,
         td: &'a TextDisplay,
-    ) -> ChapResult<(&'a RingVec<LineState>, Content<'a>)> {
+    ) -> ChapResult<(&'a RingVec<LineState>, RenderContent<'a>)> {
         let (content, meta) = td.get_current_page()?;
         let visible_content = get_hex_content(
+            lines,
             content,
             &meta,
             self.elem.navi.get_cur_line(),
@@ -626,14 +789,24 @@ impl ChapTui {
         source: RenderSource,
         plugin: P2,
     ) -> ChapResult<()> {
+        let (tx, rx) = mpsc::channel::<MsgEvent>();
+        spawn_keyboard_thread(tx.clone());
         match source {
             RenderSource::File(path) => {
-                if let Err(e) = self.render(path, plugin) {
+                if let Err(e) = self.render(path, plugin, rx) {
                     eprintln!("Error rendering file: {}", e);
                 }
             }
-            RenderSource::StdinTemp(temp_file) => {
-                if let Err(e) = self.render(temp_file.path(), plugin) {
+            RenderSource::Temp(temp_file) => {
+                if let Err(e) = self.render(temp_file.path(), plugin, rx) {
+                    eprintln!("Error rendering temp file: {}", e);
+                }
+            }
+            RenderSource::Dir(dir) => {
+                //这里要开一个线程,写到临时文件
+                let session = DirListingSession::new()?;
+                session.start(dir, tx)?;
+                if let Err(e) = self.render(session.path(), plugin, rx) {
                     eprintln!("Error rendering temp file: {}", e);
                 }
             }
@@ -641,18 +814,59 @@ impl ChapTui {
         Ok(())
     }
 
-    fn active_text_display<'a>(&'a self, td: &'a TextDisplay) -> &'a TextDisplay {
-        if matches!(self.view_mode, ViewMode::SearchResult) {
-            self.search_result.as_ref().map(|s| &s.td).unwrap_or(td)
+    // fn active_text_display<'a>(&'a self, td: &'a TextDisplay) -> &'a TextDisplay {
+    //     if matches!(self.view_mode, ViewMode::SearchResult) {
+    //         self.search_result.as_ref().map(|s| &s.td).unwrap_or(td)
+    //     } else {
+    //         td
+    //     }
+    // }
+
+    fn update_dir_file_count(&mut self, count: usize, finished: bool) {
+        self.file_count_data = if finished {
+            format!("files: {}", count)
         } else {
-            td
+            format!("files: {} scanning...", count)
+        };
+    }
+
+    fn remap_dir_text_if_needed<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        td: &mut TextDisplay,
+        file_len: u64,
+    ) -> ChapResult<()> {
+        if file_len == 0 {
+            return Ok(());
         }
+
+        // let Some(session) = self.dir_listing.as_mut() else {
+        //     return Ok(());
+        // };
+
+        // if session.last_mmap_len == file_len {
+        //     return Ok(());
+        // }
+
+        // session.last_mmap_len = file_len;
+
+        *td = TextDisplay::Text(TextWarp::new(
+            MmapText::from_file_path(path.as_ref())?,
+            self.elem.tv.get_height(),
+            self.elem.tv.get_width(),
+            self.warp_type,
+        ));
+
+        td.get_one_page_from_state(&self.start_line_state)?;
+
+        Ok(())
     }
 
     pub(crate) fn render<P1: AsRef<Path>, P2: AsRef<Path>>(
         &mut self,
         p: P1,
         plugin: P2,
+        rx: Receiver<MsgEvent>,
     ) -> ChapResult<()> {
         let hand = match self.chap_mod {
             ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
@@ -706,13 +920,14 @@ impl ChapTui {
             };
 
             td.get_one_page_from_state(&self.start_line_state)?;
+            let td_ptr = &mut td as *mut TextDisplay;
             'tui: loop {
                 let mut lines = Vec::with_capacity(self.elem.tv.get_height());
                 let size = self.terminal.size()?;
                 if size != self.size {
                     break 'tui;
                 }
-                let active_td: *const TextDisplay =
+                let view_td: *const TextDisplay =
                     if matches!(self.view_mode, ViewMode::SearchResult) {
                         // SearchResult view is only valid while search_result exists. If state
                         // becomes stale, fall back to the source document instead of panicking.
@@ -739,17 +954,15 @@ impl ChapTui {
                             self.column_offset,
                             &td,
                         )?,
-                        ChapMod::Text => {
-                            unsafe {
-                                self.get_content::<TextBuildContent>(
-                                    &mut lines,
-                                    self.column_offset,
-                                    &*active_td,
-                                )?
-                            }
-                            //  }
-                        }
+                        ChapMod::Text => unsafe {
+                            self.get_content::<TextBuildContent>(
+                                &mut lines,
+                                self.column_offset,
+                                &*view_td,
+                            )?
+                        },
                         ChapMod::Hex => self.get_hex_content(
+                            &mut lines,
                             self.cursor_x,
                             self.cursor_y,
                             self.txt_sel.clone(),
@@ -763,12 +976,13 @@ impl ChapTui {
                         self.get_content::<TextBuildContent>(
                             &mut lines,
                             self.column_offset,
-                            &*active_td,
+                            &*view_td,
                         )?
                     },
                 };
 
                 let text = Text::from(lines);
+
                 match self.view_mode {
                     ViewMode::Normal => match self.chap_mod {
                         ChapMod::Edit => self.render_content::<EditBuildContent>(text, content)?,
@@ -789,200 +1003,37 @@ impl ChapTui {
                 }
 
                 if let Some(start_line_meta) = line_meta.get(0) {
-                    // self.start_line_num = start_line_meta.get_line_num();
                     self.start_line_state = start_line_meta.clone();
                 }
                 'key: loop {
-                    match event::read()? {
-                        event::Event::Key(KeyEvent {
-                            code, modifiers, ..
-                        }) => {
-                            if matches!(self.view_mode, ViewMode::SearchResult) {
-                                // Search-result metadata belongs to the temporary MmapText page.
-                                // Only Enter intentionally uses the source td to jump back.
-                                match (code, modifiers) {
-                                    (KeyCode::Esc, _) => {
-                                        hand.handle_esc(self)?;
-                                    }
-                                    (KeyCode::Up, _) => {
-                                        if let Err(e) =
-                                            hand.handle_up(self, &line_meta, unsafe { &*active_td })
-                                        {
-                                            self.assist_tv2_data = e.to_string();
-                                        }
-                                    }
-                                    (KeyCode::Down, _) => {
-                                        if let Err(e) = hand
-                                            .handle_down(self, &line_meta, unsafe { &*active_td })
-                                        {
-                                            self.assist_tv2_data = e.to_string();
-                                        }
-                                    }
-                                    (KeyCode::Left, _) => {
-                                        if let Err(e) = hand
-                                            .handle_left(self, &line_meta, unsafe { &*active_td })
-                                        {
-                                            self.assist_tv2_data = e.to_string();
-                                        }
-                                    }
-                                    (KeyCode::Right, _) => {
-                                        if let Err(e) =
-                                            hand.handle_right(self, &line_meta, unsafe {
-                                                &*active_td
-                                            })
-                                        {
-                                            self.assist_tv2_data = e.to_string();
-                                        }
-                                    }
-                                    (KeyCode::Enter, _) => {
-                                        if let Err(e) = hand.handle_enter(self, line_meta, &td) {
-                                            self.assist_tv2_data = e.to_string();
-                                        }
-                                    }
-                                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                        if let Err(e) = hand.handle_ctrl_c(self) {
-                                            self.assist_tv2_data = e.to_string();
-                                        }
-                                    }
-                                    (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                                        if let Some(meta) = line_meta.get(self.cursor_y) {
-                                            let line =
-                                                unsafe { (&*active_td).get_line_data(meta)? };
-                                            ratatui::restore();
-                                            use std::io::Write;
-                                            let mut stdout = std::io::stdout();
-                                            stdout.write_all(line.as_slice())?;
-                                            stdout.write_all(b"\n")?;
-                                            stdout.flush()?;
-                                            std::process::exit(0);
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                                break 'key;
-                            }
-                            match (code, modifiers) {
-                                (KeyCode::Esc, _) => {
-                                    hand.handle_esc(self)?;
-                                }
-                                (KeyCode::Up, KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_shift_up(self, &line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Down, KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_shift_down(self, &line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Right, KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_shift_right(self, &line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Left, KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_shift_left(self, &line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Up, _) => {
-                                    if let Err(e) =
-                                        hand.handle_up(self, &line_meta, unsafe { &*active_td })
-                                    {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Down, _) => {
-                                    if let Err(e) =
-                                        hand.handle_down(self, &line_meta, unsafe { &*active_td })
-                                    {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Left, _) => {
-                                    if let Err(e) = hand.handle_left(self, &line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Right, _) => {
-                                    if let Err(e) = hand.handle_right(self, &line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_ctrl_c(self) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_ctrl_s(self, &p, &mut td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
-                                    if let Err(e) = hand.handle_ctrl_z(self, &td) {
-                                        self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
-                                    self.elem.cmd_inp.clear();
-                                    self.enter_text_mode();
-                                }
-                                (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
-                                    if let Some(meta) = line_meta.get(self.cursor_y) {
-                                        let line = unsafe { (&*active_td).get_line_data(meta)? };
-                                        ratatui::restore();
-                                        use std::io::Write;
-                                        let mut stdout = std::io::stdout();
-                                        stdout.write_all(line.as_slice())?;
-                                        stdout.write_all(b"\n")?;
-                                        stdout.flush()?;
-                                        std::process::exit(0);
-                                    }
-                                }
-                                (KeyCode::Enter, _) => {
-                                    if let Err(e) = hand.handle_enter(self, line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string();
-                                        // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Backspace, _) => {
-                                    if let Err(e) = hand.handle_backspace(self, line_meta, &td) {
-                                        self.assist_tv2_data = e.to_string();
-                                        // 记录错误信息
-                                    }
-                                }
-                                (KeyCode::Char(c), _) => {
-                                    if let Err(e) = hand.handle_char(self, line_meta, &td, c) {
-                                        self.assist_tv2_data = e.to_string();
-                                        // 记录错误信息
-                                    }
-                                }
-
-                                _ => {
-                                    continue;
-                                }
-                            }
+                    let app_event = rx
+                        .recv()
+                        .map_err(|e| ChapError::Unexpected(e.to_string()))?;
+                    match app_event {
+                        MsgEvent::DirBatch {
+                            count,
+                            file_len,
+                            finished,
+                        } => {
+                            self.update_dir_file_count(count, finished);
+                            self.remap_dir_text_if_needed(&p, &mut td, file_len)?;
                             break 'key;
                         }
-                        event::Event::Paste(mut pasted_string) => {
-                            if matches!(self.view_mode, ViewMode::SearchResult) {
-                                break 'key;
-                            }
-                            pasted_string = pasted_string.replace('\r', "\n");
-                            if matches!(self.chap_mod, ChapMod::Edit) && self.in_command_mode() {
-                                self.elem.cmd_inp.push_str(&pasted_string);
-                            } else {
-                                if let Err(e) =
-                                    hand.handle_paste(self, &line_meta, &td, &pasted_string)
-                                {
-                                    self.assist_tv2_data = e.to_string(); // 记录错误信息
-                                }
-                            }
+                        MsgEvent::DirError(e) => {
+                            self.file_count_data = format!("scan error: {}", e);
                             break 'key;
                         }
-                        _ => {
-                            continue;
+                        MsgEvent::Input(input_event) => {
+                            if self.handle_keyboard(
+                                input_event,
+                                &hand,
+                                line_meta,
+                                td_ptr,
+                                view_td,
+                                p.as_ref(),
+                            )? {
+                                break 'key;
+                            }
                         }
                     }
                 }
@@ -990,70 +1041,259 @@ impl ChapTui {
         }
     }
 
-    fn current_highlight_for_render(
-        &self,
-        meta: &RingVec<LineState>,
-    ) -> (usize, Option<usize>, usize) {
-        if matches!(self.view_mode, ViewMode::SearchResult) {
-            let Some(store) = &self.search_result else {
-                return (0, None, 0);
-            };
+    fn handle_keyboard(
+        &mut self,
+        ev: event::Event,
+        hand: &HandleImpl,
+        line_meta: &RingVec<LineState>,
+        td: *mut TextDisplay,
+        view_td: *const TextDisplay,
+        p: &Path,
+    ) -> ChapResult<bool> {
+        match ev {
+            event::Event::Key(KeyEvent {
+                code, modifiers, ..
+            }) => {
+                if matches!(self.view_mode, ViewMode::SearchResult) {
+                    // Search-result metadata belongs to the temporary MmapText page.
+                    // Only Enter intentionally uses the source td to jump back.
+                    match (code, modifiers) {
+                        (KeyCode::Esc, _) => {
+                            hand.handle_esc(self)?;
+                        }
+                        (KeyCode::Up, _) => {
+                            if let Err(e) = hand.handle_up(self, &line_meta, unsafe { &*view_td }) {
+                                self.assist_tv2_data = e.to_string();
+                            }
+                        }
+                        (KeyCode::Down, _) => {
+                            if let Err(e) = hand.handle_down(self, &line_meta, unsafe { &*view_td })
+                            {
+                                self.assist_tv2_data = e.to_string();
+                            }
+                        }
+                        (KeyCode::Left, _) => {
+                            if let Err(e) = hand.handle_left(self, &line_meta, unsafe { &*view_td })
+                            {
+                                self.assist_tv2_data = e.to_string();
+                            }
+                        }
+                        (KeyCode::Right, _) => {
+                            if let Err(e) =
+                                hand.handle_right(self, &line_meta, unsafe { &*view_td })
+                            {
+                                self.assist_tv2_data = e.to_string();
+                            }
+                        }
+                        (KeyCode::Enter, _) => {
+                            if let Err(e) = hand.handle_enter(self, line_meta, unsafe { &*td }) {
+                                self.assist_tv2_data = e.to_string();
+                            }
+                        }
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            if let Err(e) = hand.handle_ctrl_c(self) {
+                                self.assist_tv2_data = e.to_string();
+                            }
+                        }
+                        (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                            if let Some(meta) = line_meta.get(self.cursor_y) {
+                                let line = unsafe { (&*view_td).get_line_data(meta)? };
+                                ratatui::restore();
+                                use std::io::Write;
+                                let mut stdout = std::io::stdout();
+                                stdout.write_all(line.as_slice())?;
+                                stdout.write_all(b"\n")?;
+                                stdout.flush()?;
+                                std::process::exit(0);
+                            }
+                        }
+                        _ => {}
+                    }
+                    return Ok(true);
+                }
+                match (code, modifiers) {
+                    (KeyCode::Esc, _) => {
+                        hand.handle_esc(self)?;
+                    }
+                    (KeyCode::Up, KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_shift_up(self, &line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Down, KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_shift_down(self, &line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Right, KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_shift_right(self, &line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Left, KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_shift_left(self, &line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Up, _) => {
+                        if let Err(e) = hand.handle_up(self, &line_meta, unsafe { &*view_td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Down, _) => {
+                        if let Err(e) = hand.handle_down(self, &line_meta, unsafe { &*view_td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Left, _) => {
+                        if let Err(e) = hand.handle_left(self, &line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Right, _) => {
+                        if let Err(e) = hand.handle_right(self, &line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_ctrl_c(self) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_ctrl_s(self, &p, unsafe { &mut *td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Char('z'), KeyModifiers::CONTROL) => {
+                        if let Err(e) = hand.handle_ctrl_z(self, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string(); // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Char('y'), KeyModifiers::CONTROL) => {
+                        self.elem.cmd_inp.clear();
+                        self.enter_text_mode();
+                    }
+                    (KeyCode::Char('x'), KeyModifiers::CONTROL) => {
+                        if let Some(meta) = line_meta.get(self.cursor_y) {
+                            let line = unsafe { (&*view_td).get_line_data(meta)? };
+                            ratatui::restore();
+                            use std::io::Write;
+                            let mut stdout = std::io::stdout();
+                            stdout.write_all(line.as_slice())?;
+                            stdout.write_all(b"\n")?;
+                            stdout.flush()?;
+                            std::process::exit(0);
+                        }
+                    }
+                    (KeyCode::Enter, _) => {
+                        if let Err(e) = hand.handle_enter(self, line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string();
+                            // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Backspace, _) => {
+                        if let Err(e) = hand.handle_backspace(self, line_meta, unsafe { &*td }) {
+                            self.assist_tv2_data = e.to_string();
+                            // 记录错误信息
+                        }
+                    }
+                    (KeyCode::Char(c), _) => {
+                        if let Err(e) = hand.handle_char(self, line_meta, unsafe { &*td }, c) {
+                            self.assist_tv2_data = e.to_string();
+                            // 记录错误信息
+                        }
+                    }
 
-            let row = self.cursor_y.min(meta.len().saturating_sub(1));
-            let Some(result_meta) = meta.get(row) else {
-                return (0, None, 0);
-            };
-
-            let Some(entry) = store.entries.get(result_meta.line_index) else {
-                return (0, None, 0);
-            };
-
-            let Some(offset) = entry.highlight.get(self.find_highlight_index) else {
-                return (0, None, 0);
-            };
-
-            return (
-                offset.start,
-                Some(result_meta.line_index),
-                store.pattern_len,
-            );
-        }
-
-        if let Some(find_list) = self.find_list.as_ref() {
-            let state = &find_list[self.find_index];
-            if let Some(h) = &state.highlight {
-                return (
-                    h[self.find_highlight_index].start,
-                    Some(state.line_index),
-                    self.highlight_len,
-                );
+                    _ => {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
             }
+            event::Event::Paste(mut pasted_string) => {
+                if matches!(self.view_mode, ViewMode::SearchResult) {
+                    return Ok(true);
+                }
+                pasted_string = pasted_string.replace('\r', "\n");
+                if matches!(self.chap_mod, ChapMod::Edit) && self.in_command_mode() {
+                    self.elem.cmd_inp.push_str(&pasted_string);
+                } else {
+                    if let Err(e) =
+                        hand.handle_paste(self, &line_meta, unsafe { &*td }, &pasted_string)
+                    {
+                        self.assist_tv2_data = e.to_string(); // 记录错误信息
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
         }
-
-        (0, None, 0)
     }
+    // fn current_highlight_for_render(
+    //     &self,
+    //     meta: &RingVec<LineState>,
+    // ) -> (usize, Option<usize>, usize) {
+    //     if matches!(self.view_mode, ViewMode::SearchResult) {
+    //         let Some(store) = &self.search_result else {
+    //             return (0, None, 0);
+    //         };
+
+    //         let row = self.cursor_y.min(meta.len().saturating_sub(1));
+    //         let Some(result_meta) = meta.get(row) else {
+    //             return (0, None, 0);
+    //         };
+
+    //         let Some(entry) = store.entries.get(result_meta.line_index) else {
+    //             return (0, None, 0);
+    //         };
+
+    //         let Some(offset) = entry.highlight.get(self.find_highlight_index) else {
+    //             return (0, None, 0);
+    //         };
+
+    //         return (
+    //             offset.start,
+    //             Some(result_meta.line_index),
+    //             store.pattern_len,
+    //         );
+    //     }
+
+    //     if let Some(find_list) = self.find_list.as_ref() {
+    //         let state = &find_list[self.find_index];
+    //         if let Some(h) = &state.highlight {
+    //             return (
+    //                 h[self.find_highlight_index].start,
+    //                 Some(state.line_index),
+    //                 self.highlight_len,
+    //             );
+    //         }
+    //     }
+
+    //     (0, None, 0)
+    // }
 
     pub(crate) fn render_content<T: BuildContent>(
         &mut self,
         text: Text,
-        content: Content,
+        content: RenderContent,
     ) -> ChapResult<()> {
         let command_focus = matches!(self.chap_mod, ChapMod::EditBlock) && self.in_command_mode();
         let cmd_rect = self.elem.cmd_inp.get_rect();
         // let cmd_input_len = self.elem.cmd_inp.get_inp().len() as u16;
         let tv_rect = self.elem.tv.get_rect();
-        let tv_height = self.elem.tv.get_height();
-        let tv_width = self.elem.tv.get_width();
+        //let tv_height = self.elem.tv.get_height();
+        //let tv_width = self.elem.tv.get_width();
         let navi_rect = self.elem.navi.get_rect();
-        let navi_cur_line = self.elem.navi.get_cur_line();
+        //let navi_cur_line = self.elem.navi.get_cur_line();
         self.terminal.draw(|f| {
             let text_para = Paragraph::new(text)
                 .block(Block::default())
                 .style(Style::default().fg(Color::White));
-            f.render_widget(text_para, tv_rect);
-
+            let file_count_para = Paragraph::new(Text::raw(&self.file_count_data))
+                .block(Block::default())
+                .style(Style::default().fg(Color::DarkGray));
             let nav_paragraph = Paragraph::new(content.navi);
-            f.render_widget(nav_paragraph, navi_rect);
 
             let prompt = if command_focus || T::command_focus() {
                 ">: "
@@ -1063,7 +1303,6 @@ impl ChapTui {
             let input_title_box = Paragraph::new(Text::raw(prompt))
                 .block(Block::default())
                 .style(Style::default().fg(Color::White));
-            f.render_widget(input_title_box, self.elem.cmd_title);
 
             let input = self.elem.cmd_inp.get_inp();
             let input_text = if command_focus || T::command_focus() {
@@ -1078,6 +1317,10 @@ impl ChapTui {
             let input_para = Paragraph::new(input_text)
                 .block(Block::default())
                 .style(Style::default().fg(Color::White));
+            f.render_widget(text_para, tv_rect);
+            f.render_widget(nav_paragraph, navi_rect);
+            f.render_widget(file_count_para, self.elem.file_count.get_rect());
+            f.render_widget(input_title_box, self.elem.cmd_title);
             f.render_widget(input_para, cmd_rect);
         })?;
         Ok(())
@@ -1088,16 +1331,16 @@ impl ChapTui {
         lines: &mut Vec<Line<'a>>,
         offset: usize,
         td: &'a TextDisplay,
-    ) -> ChapResult<(&'a RingVec<LineState>, Content<'a>)> {
+    ) -> ChapResult<(&'a RingVec<LineState>, RenderContent<'a>)> {
         //let line_meta = {
         let (line_content, line_meta) = td.get_current_page()?;
         let command_focus = matches!(self.chap_mod, ChapMod::EditBlock) && self.in_command_mode();
-        let cmd_rect = self.elem.cmd_inp.get_rect();
+        //let cmd_rect = self.elem.cmd_inp.get_rect();
         // let cmd_input_len = self.elem.cmd_inp.get_inp().len() as u16;
-        let tv_rect = self.elem.tv.get_rect();
+        //let tv_rect = self.elem.tv.get_rect();
         let tv_height = self.elem.tv.get_height();
         let tv_width = self.elem.tv.get_width();
-        let navi_rect = self.elem.navi.get_rect();
+        //let navi_rect = self.elem.navi.get_rect();
         let navi_cur_line = self.elem.navi.get_cur_line();
         let select_line = self.elem.navi.select_line;
         let cursor_x_vis = self.cursor_x;
@@ -1184,6 +1427,23 @@ impl ChapTui {
         //};
         return Ok((line_meta, content));
     }
+}
+
+//监听键盘线程
+pub(crate) fn spawn_keyboard_thread(tx: Sender<MsgEvent>) {
+    std::thread::spawn(move || loop {
+        match event::read() {
+            Ok(ev) => {
+                if tx.send(MsgEvent::Input(ev)).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(MsgEvent::DirError(e.to_string()));
+                break;
+            }
+        }
+    });
 }
 
 trait GetNonControlLen {
@@ -1326,48 +1586,6 @@ fn content_column_offset(warp_type: TextWarpType, offset: usize, width: usize) -
     match warp_type {
         TextWarpType::SoftWrap => 0,
         TextWarpType::NoWrap => offset.saturating_sub(width),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn soft_wrap_render_does_not_apply_horizontal_column_offset() {
-        assert_eq!(content_column_offset(TextWarpType::SoftWrap, 82, 80), 0);
-    }
-
-    #[test]
-    fn no_wrap_render_keeps_horizontal_column_offset() {
-        assert_eq!(content_column_offset(TextWarpType::NoWrap, 82, 80), 2);
-    }
-
-    #[test]
-    fn char_range_to_visible_with_cursor_byte_maps_multibyte_cursor_in_one_scan() {
-        let left = "中a".as_bytes();
-        let right = "文bc\n".as_bytes();
-
-        let (visible, start, end, cursor) =
-            char_range_to_visible_with_cursor_byte(&[left, right], 1, 4, Some(1));
-
-        assert_eq!(visible.as_parts(), [&b"a"[..], "文b".as_bytes()]);
-        assert_eq!(start, 3);
-        assert_eq!(end, 8);
-        assert_eq!(cursor, Some(1));
-    }
-
-    #[test]
-    fn char_range_to_visible_with_cursor_byte_maps_visible_end() {
-        let line = "中abc".as_bytes();
-
-        let (visible, start, end, cursor) =
-            char_range_to_visible_with_cursor_byte(&[line], 1, 4, Some(3));
-
-        assert_eq!(visible.as_parts(), [&b"abc"[..]]);
-        assert_eq!(start, 3);
-        assert_eq!(end, 6);
-        assert_eq!(cursor, Some(3));
     }
 }
 
@@ -1739,6 +1957,48 @@ pub fn build_nav_text(line_meta: &RingVec<LineState>, height: usize) -> Text<'_>
         )));
     }
     Text::from(nav_lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn soft_wrap_render_does_not_apply_horizontal_column_offset() {
+        assert_eq!(content_column_offset(TextWarpType::SoftWrap, 82, 80), 0);
+    }
+
+    #[test]
+    fn no_wrap_render_keeps_horizontal_column_offset() {
+        assert_eq!(content_column_offset(TextWarpType::NoWrap, 82, 80), 2);
+    }
+
+    #[test]
+    fn char_range_to_visible_with_cursor_byte_maps_multibyte_cursor_in_one_scan() {
+        let left = "中a".as_bytes();
+        let right = "文bc\n".as_bytes();
+
+        let (visible, start, end, cursor) =
+            char_range_to_visible_with_cursor_byte(&[left, right], 1, 4, Some(1));
+
+        assert_eq!(visible.as_parts(), [&b"a"[..], "文b".as_bytes()]);
+        assert_eq!(start, 3);
+        assert_eq!(end, 8);
+        assert_eq!(cursor, Some(1));
+    }
+
+    #[test]
+    fn char_range_to_visible_with_cursor_byte_maps_visible_end() {
+        let line = "中abc".as_bytes();
+
+        let (visible, start, end, cursor) =
+            char_range_to_visible_with_cursor_byte(&[line], 1, 4, Some(3));
+
+        assert_eq!(visible.as_parts(), [&b"abc"[..]]);
+        assert_eq!(start, 3);
+        assert_eq!(end, 6);
+        assert_eq!(cursor, Some(3));
+    }
 }
 
 #[cfg(test)]

@@ -25,12 +25,11 @@ mod vb;
 use crate::cli::Cli;
 use crate::handle::tui_retore;
 use crate::tui::RenderSource;
-
 use chap::Chappie;
 use clap::Parser;
 use crossterm::execute;
-
 use std::error::Error;
+
 use tui::ChapTui;
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
@@ -39,16 +38,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     if atty::is(atty::Stream::Stdin) {
         let filename = cli.get_filepath()?;
         //校验文件是否存在
-        if !std::path::Path::new(filename).exists() {
+        let path_buf = std::path::PathBuf::from(filename);
+        if !path_buf.exists() {
             return Err(ChapError::FileNotFound(filename.to_string()).into());
         }
-        if let Err(e) = run_app(&cli, RenderSource::File(std::path::PathBuf::from(filename))) {
-            println!("chap error: {}", e);
+        if path_buf.is_dir() {
+            if let Err(e) = run_app(&cli, RenderSource::Dir(path_buf)) {
+                println!("chap error: {}", e);
+            }
+        } else {
+            if let Err(e) = run_app(&cli, RenderSource::File(path_buf)) {
+                println!("chap error: {}", e);
+            }
         }
     } else {
         let mut temp_file = tempfile::NamedTempFile::new()?;
         std::io::copy(&mut std::io::stdin(), &mut temp_file)?;
-        if let Err(e) = run_app(&cli, RenderSource::StdinTemp(temp_file)) {
+        if let Err(e) = run_app(&cli, RenderSource::Temp(temp_file)) {
             println!("chap error: {}", e);
         }
     }

@@ -12,9 +12,9 @@ use crate::tui::char_range_to_visible_with_byte_range;
 use crate::tui::cut_highlight_part;
 use crate::tui::n_chars_skip_control_mem_opt;
 use crate::tui::BuildContent;
-use crate::tui::Content;
 use crate::tui::EditContext;
 use crate::tui::HighlightSource;
+use crate::tui::RenderContent;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
@@ -38,7 +38,7 @@ impl BuildContent for EditBuildContent {
         cur_line: usize,
         select_line: &Option<(usize, usize)>,
         ed_ctx: &EditContext<'_>,
-    ) -> super::Content<'a> {
+    ) -> super::RenderContent<'a> {
         let height = ed_ctx.height;
         let column_offset = ed_ctx.column_offset;
         let cursor_y = ed_ctx.cursor_y;
@@ -177,7 +177,7 @@ impl BuildContent for EditBuildContent {
         append_padding_lines(lines, cursor_y, cursor_x, line_meta.len());
         let nav_text = build_nav_text(line_meta, height);
         //let text = Text::from(lines);
-        return Content {
+        return RenderContent {
             navi: nav_text,
             //visible_content: text,
             byte_cursor,

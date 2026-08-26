@@ -215,7 +215,7 @@ impl BuildContent for TextBuildContent {
         cur_line: usize,
         select_line: &Option<(usize, usize)>,
         ed_ctx: &EditContext<'_>,
-    ) -> super::Content<'a> {
+    ) -> super::RenderContent<'a> {
         lines.clear();
         let height = ed_ctx.height;
         let column_offset = ed_ctx.column_offset;
@@ -264,7 +264,7 @@ impl BuildContent for TextBuildContent {
             lines.push(Line::from(spans));
         }
         let nav_text = build_nav_text(line_meta, height);
-        return super::Content {
+        return super::RenderContent {
             navi: nav_text,
             byte_cursor: 0,
             last_char_bytes_size: 0,

@@ -4,7 +4,7 @@ use crate::common::ring_vec::RingVec;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
 use crate::textwarp::TextSelect;
-use crate::tui::Content;
+use crate::tui::RenderContent;
 use ratatui::style::Color;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
@@ -319,6 +319,7 @@ pub(crate) fn get_data_inspector_content<'a>(
 const HEX_TOP: &'static str = "00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F     ASCII";
 
 pub(crate) fn get_hex_content<'a>(
+    lines: &mut Vec<Line<'a>>,
     txts: &'a RingVec<CacheStr>,
     line_meta: &'a RingVec<LineState>,
     cur_line: usize,
@@ -326,8 +327,8 @@ pub(crate) fn get_hex_content<'a>(
     height: usize,
     cursor_y: usize,
     cursor_x: usize,
-) -> Content<'a> {
-    let mut lines = Vec::with_capacity(line_meta.len() + 2);
+) -> RenderContent<'a> {
+    //let mut lines = Vec::with_capacity(line_meta.len() + 2);
 
     // 添加头部
     let top = Span::styled(
@@ -356,11 +357,11 @@ pub(crate) fn get_hex_content<'a>(
     }
 
     // 处理光标超出范围的情况
-    add_cursor_padding(&mut lines, cursor_y, line_meta.len(), cursor_x);
+    add_cursor_padding(lines, cursor_y, line_meta.len(), cursor_x);
 
     let nav_text = create_navigation_text(height, line_meta);
     // let text = Text::from(lines);
-    Content {
+    RenderContent {
         navi: nav_text,
         byte_cursor: 0,
         last_char_bytes_size: 0,
