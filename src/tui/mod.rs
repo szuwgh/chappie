@@ -793,12 +793,12 @@ impl ChapTui {
         spawn_keyboard_thread(tx.clone());
         match source {
             RenderSource::File(path) => {
-                if let Err(e) = self.render(path, plugin, rx) {
+                if let Err(e) = self.render(path, plugin, rx, false) {
                     eprintln!("Error rendering file: {}", e);
                 }
             }
             RenderSource::Temp(temp_file) => {
-                if let Err(e) = self.render(temp_file.path(), plugin, rx) {
+                if let Err(e) = self.render(temp_file.path(), plugin, rx, false) {
                     eprintln!("Error rendering temp file: {}", e);
                 }
             }
@@ -806,7 +806,7 @@ impl ChapTui {
                 //这里要开一个线程,写到临时文件
                 let session = DirListingSession::new()?;
                 session.start(dir, tx)?;
-                if let Err(e) = self.render(session.path(), plugin, rx) {
+                if let Err(e) = self.render(session.path(), plugin, rx, true) {
                     eprintln!("Error rendering temp file: {}", e);
                 }
             }
@@ -851,7 +851,7 @@ impl ChapTui {
         // session.last_mmap_len = file_len;
 
         *td = TextDisplay::Text(TextWarp::new(
-            MmapText::from_file_path(path.as_ref())?,
+            MmapText::from_path_filter_file(path.as_ref())?,
             self.elem.tv.get_height(),
             self.elem.tv.get_width(),
             self.warp_type,
@@ -867,6 +867,7 @@ impl ChapTui {
         p: P1,
         plugin: P2,
         rx: Receiver<MsgEvent>,
+        use_v1: bool,
     ) -> ChapResult<()> {
         let hand = match self.chap_mod {
             ChapMod::Edit => HandleImpl::Edit(HandleEdit::new()),
@@ -896,7 +897,11 @@ impl ChapTui {
                 ChapMod::Text => {
                     // return Ok(());
                     TextDisplay::Text(TextWarp::new(
-                        MmapText::from_file_path(&p)?,
+                        if use_v1 {
+                            MmapText::from_path_filter_file(&p)?
+                        } else {
+                            MmapText::from_file_path(&p)?
+                        },
                         self.elem.tv.get_height(),
                         self.elem.tv.get_width(),
                         twy,

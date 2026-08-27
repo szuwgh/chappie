@@ -12,7 +12,6 @@ use crate::common::gap_buffer::GapBytesCharIter;
 use crate::common::gap_buffer::GapBytesIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
-use crate::fuzzy::smithwaterman::SmithWaterman;
 use crate::fuzzy::FuzzySearch;
 use crate::fuzzy::Match;
 use crate::searcher::boyermoore::BoyerMoore;
@@ -838,13 +837,22 @@ impl<'a> LineStr<'a> {
         }
     }
 
-    pub(crate) fn search(&self, partten: &Partten, fs: &mut FuzzySearch) -> Vec<Match> {
+    pub(crate) fn search(
+        &self,
+        partten: &Partten,
+        fs: &mut FuzzySearch,
+        use_v1: bool,
+    ) -> Vec<Match> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
         }
         if partten.is_fuzzy {
-            return fs.find_parts(key, &[self.data.as_slice()]);
+            return if use_v1 {
+                fs.find_parts_v1(key, &[self.data.as_slice()])
+            } else {
+                fs.find_parts_v2(key, &[self.data.as_slice()])
+            };
         }
         let total_len = self.data.len();
         let mut matches = Vec::new();
@@ -987,7 +995,7 @@ impl<'a> LineBlockStr<'a> {
         result
     }
 
-    pub(crate) fn search(&self, partten: &Partten, sw: &mut SmithWaterman) -> Vec<Match> {
+    pub(crate) fn search(&self, partten: &Partten, fs: &mut FuzzySearch) -> Vec<Match> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
@@ -1025,7 +1033,7 @@ impl<'a> LineBlockStr<'a> {
         }
 
         if partten.is_fuzzy {
-            return sw.find_parts(key, &parts);
+            return fs.find_parts_v2(key, &parts);
         }
 
         let total_len = parts[..parts_len].iter().map(|part| part.len()).sum();
@@ -3239,8 +3247,26 @@ mod tests {
     }
 
     fn search_ranges(line: &LineBlockStr<'_>, pattern: &[u8]) -> Vec<(usize, usize)> {
-        let mut sw = SmithWaterman::new();
-        match_ranges(&line.search(&Partten::exact(pattern), &mut sw))
+        let mut fuzzy = FuzzySearch::new();
+        match_ranges(&line.search(&Partten::exact(pattern), &mut fuzzy))
+    }
+
+    #[test]
+    fn test_line_block_str_fuzzy_search_uses_fzf_v2() {
+        let line = LineBlockStr(
+            Some(gap_block_line(b"/.oh-my-z", b"sh")),
+            Some(gap_block_line(b"/cache", b"")),
+        );
+        let mut fuzzy = FuzzySearch::new();
+
+        let matches = line.search(&Partten::fuzzy(b"zshc"), &mut fuzzy);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            (matches[0].start, matches[0].end, matches[0].score),
+            (8, 13, 102)
+        );
+        assert_eq!(matches[0].positions, [8, 9, 10, 12]);
     }
 
     #[test]

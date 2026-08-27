@@ -1,6 +1,7 @@
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::ring_vec::RingVec;
+use crate::fuzzy::FuzzySearch;
 use crate::textwarp::block::Block;
 use crate::textwarp::block::BlockId;
 use crate::textwarp::block::BlockIndex;
@@ -18,7 +19,6 @@ use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStateBuilder;
 use crate::textwarp::Partten;
-use crate::textwarp::SmithWaterman;
 use crate::textwarp::Text;
 use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
@@ -41,7 +41,7 @@ pub(crate) struct GapBlockText {
     source_file_size: usize,        // 原始 backing file 大小，未索引块懒加载用
     block_indexs: Vec<BlockIndex>, // 每一块的索引（Vec位置是位置索引，block_id是稳定标识） 只保留块级索引 block_indexs，块内行信息按需扫描
     next_id: BlockId,              // 下一个分配的 block_id
-    sw: SmithWaterman,
+    fuzzy: FuzzySearch,
 }
 
 impl TextIndex for GapBlockText {
@@ -113,7 +113,7 @@ impl GapBlockText {
             source_file_size: file_size as usize,
             block_indexs: block_indexs,
             next_id: next_id,
-            sw: SmithWaterman::new(),
+            fuzzy: FuzzySearch::new(),
         })
     }
 
@@ -947,7 +947,7 @@ impl Text for GapBlockText {
         partten: Partten,
         state: &LineState,
     ) -> ChapResult<Option<Vec<LineState>>> {
-        let sw = std::ptr::addr_of_mut!(self.sw);
+        let fuzzy = std::ptr::addr_of_mut!(self.fuzzy);
         let scroll_iter = GapBlockScollTextIter::new(
             self,
             state.block_num,
@@ -959,9 +959,9 @@ impl Text for GapBlockText {
 
         // let boy = BoyerMoore::new(partten);
         for (line_idx, (line, mut index)) in scroll_iter.enumerate() {
-            // SAFETY: search() owns exclusive access to GapBlockText. The scroll iterator may
-            // access blocks/metadata, but it does not read or write self.sw.
-            let mut hits = line.search(&partten, unsafe { &mut *sw });
+            // SAFETY: the scroll iterator only reads text blocks and metadata; it never accesses
+            // the independent reusable fuzzy matcher.
+            let mut hits = line.search(&partten, unsafe { &mut *fuzzy });
 
             if line_idx == 0 {
                 hits.retain(|pos| pos.start >= state.line_offset);

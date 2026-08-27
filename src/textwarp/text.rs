@@ -17,34 +17,37 @@ use tempfile::NamedTempFile;
 pub(crate) struct MmapText {
     mmap: Mmap,
     sw: FuzzySearch,
+    use_v1: bool,
     _temp: Option<tempfile::NamedTempFile>,
 }
 
 impl MmapText {
     pub(crate) fn from_file_path<P: AsRef<Path>>(filename: P) -> ChapResult<MmapText> {
         let mmap = mmap_file(filename)?;
-        Ok(MmapText {
-            mmap,
-            sw: FuzzySearch::new(),
-            _temp: None,
-        })
+        Ok(Self::from_mmap(mmap, false, None))
+    }
+
+    pub(crate) fn from_path_filter_file<P: AsRef<Path>>(filename: P) -> ChapResult<MmapText> {
+        let mmap = mmap_file(filename)?;
+        Ok(Self::from_mmap(mmap, true, None))
     }
 
     pub(crate) fn from_temp_file(temp: NamedTempFile) -> ChapResult<MmapText> {
         temp.as_file().sync_all()?;
         let mmap = unsafe { Mmap::map(temp.as_file())? };
-        Ok(MmapText {
-            mmap,
-            sw: FuzzySearch::new(),
-            _temp: Some(temp),
-        })
+        Ok(Self::from_mmap(mmap, false, Some(temp)))
     }
 
     pub(crate) fn new(mmap: Mmap) -> MmapText {
+        Self::from_mmap(mmap, false, None)
+    }
+
+    fn from_mmap(mmap: Mmap, use_v1: bool, temp: Option<tempfile::NamedTempFile>) -> MmapText {
         MmapText {
             mmap,
             sw: FuzzySearch::new(),
-            _temp: None,
+            use_v1,
+            _temp: temp,
         }
     }
 }
@@ -285,7 +288,7 @@ impl Text for MmapText {
         };
         let mut results = Vec::new();
         for (line_idx, (line, mut index)) in i.enumerate() {
-            let mut hits = line.search(&partten, &mut self.sw);
+            let mut hits = line.search(&partten, &mut self.sw, self.use_v1);
             if line_idx == 0 {
                 hits.retain(|pos| pos.start >= state.line_offset);
             }
