@@ -2050,6 +2050,12 @@ impl ChapTui {
             ),
         };
         let cmd_inp = CmdInput::new(Rect::new(4, tv_height as u16, tv_width as u16, 1));
+        let file_count = TextView {
+            height: 1,
+            width: tv_width,
+            scroll: 1,
+            rect: Rect::new(5, tv_height as u16, tv_width as u16, 1),
+        };
         ChapTui {
             chap_mod: ChapMod::EditBlock,
             ui_type: crate::cli::UIType::Full,
@@ -2059,6 +2065,7 @@ impl ChapTui {
             elem: TuiElement {
                 navi,
                 tv,
+                file_count,
                 cmd_title: Rect::new(0, tv_height as u16, 4, 1),
                 cmd_inp,
                 assist_tv1,
@@ -2077,6 +2084,7 @@ impl ChapTui {
             is_last_line: false,
             endian: crate::byteutil::Endian::Little,
             assist_tv2_data: String::new(),
+            file_count_data: String::new(),
             undo: None,
             find_list: None,
             find_index: 0,

@@ -290,6 +290,7 @@ mod tests {
             score: 0,
             start: "中文".len(),
             end: "中文abc".len(),
+            positions: ("中文".len().."中文abc".len()).collect(),
         }];
 
         let spans = build_text_spans(
@@ -316,6 +317,7 @@ mod tests {
             score: 0,
             start: 3,
             end: 6,
+            positions: (3..6).collect(),
         }];
 
         let parts: &[&[u8]] = &[line.as_slice()];

@@ -278,15 +278,9 @@ fn build_search_result(
         let data = td.get_line_data(&source_state)?;
 
         let result_line_index = entries.len();
-        // data.as_parts()
-        //     .as_parts()
-        //     .iter()
-        //     .for_each(|part| temp.write_all(part).unwrap());
         for part in data.as_parts().as_parts() {
             temp.write_all(part)?;
         }
-        //temp.write_all(b"\n")?;
-
         entries.push(SearchResultEntry {
             result_line_index,
             source_state: source_state.clone(),
@@ -430,27 +424,6 @@ impl HandleCmdInpEdit {
             Command::Search(v) => match v {
                 Value::Ascii(s) => {
                     self.search_jump(Partten::exact(s.as_bytes()), chap_tui, line_meta, td)?;
-                    // let pattern = s.as_bytes();
-                    // let store = build_search_result(
-                    //     td,
-                    //     line_meta,
-                    //     Partten::exact(pattern),
-                    //     chap_tui.elem.tv.get_height(),
-                    //     chap_tui.elem.tv.get_width(),
-                    //     chap_tui.warp_type,
-                    // )?;
-
-                    // if let Some(store) = store {
-                    //     chap_tui.highlight_len = pattern.len();
-                    //     chap_tui.search_result = Some(store);
-                    //     chap_tui.view_mode = ViewMode::SearchResult;
-                    //     chap_tui.search_result_index = 0;
-                    //     chap_tui.cursor_y = 0;
-                    //     chap_tui.cursor_x = 0;
-                    // } else {
-                    //     chap_tui.assist_tv2_data = "no matches".to_string();
-                    // }
-                    // chap_tui.chap_mod = crate::tui::ChapMod::Text;
                 }
                 _ => {}
             },

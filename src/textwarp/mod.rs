@@ -13,6 +13,7 @@ use crate::common::gap_buffer::GapBytesIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
 use crate::fuzzy::smithwaterman::SmithWaterman;
+use crate::fuzzy::FuzzySearch;
 use crate::fuzzy::Match;
 use crate::searcher::boyermoore::BoyerMoore;
 use crate::searcher::memmem::{memmem, memmem_small_slices_no_alloc, memmem_two_slices_no_alloc};
@@ -837,13 +838,13 @@ impl<'a> LineStr<'a> {
         }
     }
 
-    pub(crate) fn search(&self, partten: &Partten, sw: &mut SmithWaterman) -> Vec<Match> {
+    pub(crate) fn search(&self, partten: &Partten, fs: &mut FuzzySearch) -> Vec<Match> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
         }
         if partten.is_fuzzy {
-            return sw.find_parts(key, &[self.data.as_slice()]);
+            return fs.find_parts(key, &[self.data.as_slice()]);
         }
         let total_len = self.data.len();
         let mut matches = Vec::new();
@@ -859,6 +860,7 @@ impl<'a> LineStr<'a> {
                 score: 0,
                 start: match_pos,
                 end: match_pos + key.len(),
+                positions: (match_pos..match_pos + key.len()).collect(),
             });
             search_start = match_pos + key.len();
         }
@@ -1041,6 +1043,7 @@ impl<'a> LineBlockStr<'a> {
                 score: 0,
                 start: match_pos,
                 end: match_pos + key.len(),
+                positions: (match_pos..match_pos + key.len()).collect(),
             });
             search_start = match_pos + key.len();
         }

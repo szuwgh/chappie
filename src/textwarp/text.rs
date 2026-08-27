@@ -1,5 +1,5 @@
 use crate::common::util::mmap_file;
-use crate::fuzzy::smithwaterman::SmithWaterman;
+use crate::fuzzy::FuzzySearch;
 use crate::searcher::memchr::memchr;
 use crate::textwarp::ChapResult;
 use crate::textwarp::LineData;
@@ -16,7 +16,7 @@ use std::io::Write;
 use tempfile::NamedTempFile;
 pub(crate) struct MmapText {
     mmap: Mmap,
-    sw: SmithWaterman,
+    sw: FuzzySearch,
     _temp: Option<tempfile::NamedTempFile>,
 }
 
@@ -25,7 +25,7 @@ impl MmapText {
         let mmap = mmap_file(filename)?;
         Ok(MmapText {
             mmap,
-            sw: SmithWaterman::new(),
+            sw: FuzzySearch::new(),
             _temp: None,
         })
     }
@@ -35,7 +35,7 @@ impl MmapText {
         let mmap = unsafe { Mmap::map(temp.as_file())? };
         Ok(MmapText {
             mmap,
-            sw: SmithWaterman::new(),
+            sw: FuzzySearch::new(),
             _temp: Some(temp),
         })
     }
@@ -43,7 +43,7 @@ impl MmapText {
     pub(crate) fn new(mmap: Mmap) -> MmapText {
         MmapText {
             mmap,
-            sw: SmithWaterman::new(),
+            sw: FuzzySearch::new(),
             _temp: None,
         }
     }

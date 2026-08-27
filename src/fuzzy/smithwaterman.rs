@@ -324,6 +324,7 @@ impl SmithWaterman {
                     score: max_score,
                     start,
                     end,
+                    positions: (start..end).collect(),
                 });
             }
         }
