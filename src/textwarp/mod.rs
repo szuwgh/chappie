@@ -12,8 +12,8 @@ use crate::common::gap_buffer::GapBytesCharIter;
 use crate::common::gap_buffer::GapBytesIter;
 use crate::common::ring_vec::RingVec;
 use crate::common::util;
-use crate::fuzzy::FuzzySearch;
-use crate::fuzzy::Match;
+use crate::fuzzy::MatchBounds;
+use crate::fuzzy::{CompiledPattern, FuzzyAlgorithm, FuzzySearch, FuzzySession};
 use crate::searcher::boyermoore::BoyerMoore;
 use crate::searcher::memmem::{memmem, memmem_small_slices_no_alloc, memmem_two_slices_no_alloc};
 use crate::textwarp::edit::GapText;
@@ -842,17 +842,31 @@ impl<'a> LineStr<'a> {
         partten: &Partten,
         fs: &mut FuzzySearch,
         use_v1: bool,
-    ) -> Vec<Match> {
+    ) -> Vec<MatchBounds> {
+        let compiled = CompiledPattern::new(partten.partten);
+        let algorithm = if use_v1 {
+            FuzzyAlgorithm::V1
+        } else {
+            FuzzyAlgorithm::V2
+        };
+        let mut session = fs.begin(algorithm, &compiled);
+        self.search_compiled(partten, &mut session)
+    }
+
+    pub(crate) fn search_compiled(
+        &self,
+        partten: &Partten,
+        session: &mut FuzzySession,
+    ) -> Vec<MatchBounds> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
         }
         if partten.is_fuzzy {
-            return if use_v1 {
-                fs.find_parts_v1(key, &[self.data.as_slice()])
-            } else {
-                fs.find_parts_v2(key, &[self.data.as_slice()])
-            };
+            return session
+                .find_bounds(&[self.data.as_slice()])
+                .into_iter()
+                .collect();
         }
         let total_len = self.data.len();
         let mut matches = Vec::new();
@@ -864,11 +878,10 @@ impl<'a> LineStr<'a> {
             };
 
             let match_pos = search_start + relative_pos;
-            matches.push(Match {
+            matches.push(MatchBounds {
                 score: 0,
                 start: match_pos,
                 end: match_pos + key.len(),
-                positions: (match_pos..match_pos + key.len()).collect(),
             });
             search_start = match_pos + key.len();
         }
@@ -995,7 +1008,17 @@ impl<'a> LineBlockStr<'a> {
         result
     }
 
-    pub(crate) fn search(&self, partten: &Partten, fs: &mut FuzzySearch) -> Vec<Match> {
+    pub(crate) fn search(&self, partten: &Partten, fs: &mut FuzzySearch) -> Vec<MatchBounds> {
+        let compiled = CompiledPattern::new(partten.partten);
+        let mut session = fs.begin(FuzzyAlgorithm::V2, &compiled);
+        self.search_compiled(partten, &mut session)
+    }
+
+    pub(crate) fn search_compiled(
+        &self,
+        partten: &Partten,
+        session: &mut FuzzySession,
+    ) -> Vec<MatchBounds> {
         let key = partten.partten;
         if key.is_empty() {
             return Vec::new();
@@ -1033,7 +1056,10 @@ impl<'a> LineBlockStr<'a> {
         }
 
         if partten.is_fuzzy {
-            return fs.find_parts_v2(key, &parts);
+            return session
+                .find_bounds(&parts[..parts_len])
+                .into_iter()
+                .collect();
         }
 
         let total_len = parts[..parts_len].iter().map(|part| part.len()).sum();
@@ -1047,11 +1073,10 @@ impl<'a> LineBlockStr<'a> {
             };
 
             let match_pos = search_start + relative_pos;
-            matches.push(Match {
+            matches.push(MatchBounds {
                 score: 0,
                 start: match_pos,
                 end: match_pos + key.len(),
-                positions: (match_pos..match_pos + key.len()).collect(),
             });
             search_start = match_pos + key.len();
         }
@@ -1340,7 +1365,7 @@ pub(crate) struct LineState {
     pub(crate) line_file_end: usize, //行在文件结束的位置
     // pub(crate) start_line_num: usize, //开始的行数
     //pub(crate) start_page_num: usize,   //这一行在第几页开始
-    pub(crate) highlight: Option<Vec<Match>>, //高亮范围  有搜索的时候
+    pub(crate) highlight: Option<Vec<MatchBounds>>, //高亮范围  有搜索的时候
 }
 
 impl LineState {
@@ -3242,7 +3267,7 @@ mod tests {
         }
     }
 
-    fn match_ranges(matches: &[Match]) -> Vec<(usize, usize)> {
+    fn match_ranges(matches: &[MatchBounds]) -> Vec<(usize, usize)> {
         matches.iter().map(|m| (m.start, m.end)).collect()
     }
 
@@ -3266,7 +3291,6 @@ mod tests {
             (matches[0].start, matches[0].end, matches[0].score),
             (8, 13, 102)
         );
-        assert_eq!(matches[0].positions, [8, 9, 10, 12]);
     }
 
     #[test]

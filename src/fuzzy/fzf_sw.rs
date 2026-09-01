@@ -1,6 +1,5 @@
 use crate::fuzzy::fzf::FzfMatcher;
-use crate::fuzzy::smart_case;
-use crate::fuzzy::Match;
+use crate::fuzzy::{CompiledPattern, Match, MatchBounds};
 use crate::searcher::memchr::memchr;
 
 const SCORE_MATCH: i16 = 16;
@@ -28,7 +27,7 @@ enum CharClass {
     Number = 6,
 }
 
-pub(crate) struct FzfV2Matcher {
+pub(super) struct FzfV2Matcher {
     pattern: Vec<u8>,
     text: Vec<u8>,
     h0: Vec<i16>,
@@ -39,10 +38,11 @@ pub(crate) struct FzfV2Matcher {
     c: Vec<i16>,
     positions: Vec<usize>,
     fallback: FzfMatcher,
+    with_positions: bool,
 }
 
 impl FzfV2Matcher {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             pattern: Vec::new(),
             text: Vec::new(),
@@ -54,56 +54,68 @@ impl FzfV2Matcher {
             c: Vec::new(),
             positions: Vec::new(),
             fallback: FzfMatcher::new(),
+            with_positions: true,
         }
     }
 
-    pub(crate) fn find_parts(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
-        self.find_best(pattern, parts).into_iter().collect()
+    pub(super) fn prepare(&mut self, pattern: &CompiledPattern) {
+        self.pattern.clear();
+        self.pattern.extend_from_slice(&pattern.bytes);
     }
 
-    pub(crate) fn find_parts_smart_case(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
-        self.find_best_smart_case(pattern, parts)
-            .into_iter()
-            .collect()
-    }
-
-    pub(crate) fn find_best(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Option<Match> {
-        self.find_best_impl(pattern, parts, false)
-    }
-
-    pub(crate) fn find_best_smart_case(
+    pub(super) fn find_best_bounds_prepared(
         &mut self,
-        pattern: &[u8],
         parts: &[&[u8]],
-    ) -> Option<Match> {
-        self.find_best_impl(pattern, parts, smart_case(pattern))
+        case_sensitive: bool,
+    ) -> Option<MatchBounds> {
+        self.with_positions = false;
+        self.find_best_prepared(parts, case_sensitive)
+            .map(|matched| MatchBounds {
+                score: matched.score,
+                start: matched.start,
+                end: matched.end,
+            })
     }
 
-    pub(crate) fn find_best_case_sensitive(
+    pub(super) fn find_best_with_positions_prepared(
         &mut self,
-        pattern: &[u8],
-        parts: &[&[u8]],
-    ) -> Option<Match> {
-        self.find_best_impl(pattern, parts, true)
-    }
-
-    fn find_best_impl(
-        &mut self,
-        pattern: &[u8],
         parts: &[&[u8]],
         case_sensitive: bool,
     ) -> Option<Match> {
-        let pattern_len = pattern.len();
+        self.with_positions = true;
+        self.find_best_prepared(parts, case_sensitive)
+    }
+
+    #[cfg(test)]
+    fn find_best(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Option<Match> {
+        let compiled = CompiledPattern {
+            bytes: pattern.iter().map(|&byte| ascii_lower(byte)).collect(),
+            case_sensitive: false,
+        };
+        self.prepare(&compiled);
+        self.find_best_with_positions_prepared(parts, false)
+    }
+
+    #[cfg(test)]
+    fn find_parts(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
+        self.find_best(pattern, parts).into_iter().collect()
+    }
+
+    #[cfg(test)]
+    fn find_best_case_sensitive(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Option<Match> {
+        let compiled = CompiledPattern {
+            bytes: pattern.to_vec(),
+            case_sensitive: true,
+        };
+        self.prepare(&compiled);
+        self.find_best_with_positions_prepared(parts, true)
+    }
+
+    fn find_best_prepared(&mut self, parts: &[&[u8]], case_sensitive: bool) -> Option<Match> {
+        let pattern_len = self.pattern.len();
         let text_len = parts_len(parts);
         if pattern_len == 0 || pattern_len > text_len {
             return None;
-        }
-
-        self.pattern.clear();
-        if case_sensitive {
-            self.pattern.extend_from_slice(pattern);
-        } else {
-            self.pattern.extend(pattern.iter().map(|&b| ascii_lower(b)));
         }
 
         if pattern_len > V2_PATTERN_LIMIT
@@ -112,7 +124,19 @@ impl FzfV2Matcher {
             if case_sensitive {
                 return self.greedy_fallback(parts, true);
             }
-            return self.fallback.find_best(pattern, parts);
+            return if self.with_positions {
+                self.fallback
+                    .find_best_with_positions_prepared(parts, false)
+            } else {
+                self.fallback
+                    .find_best_bounds_prepared(parts, false)
+                    .map(|bounds| Match {
+                        score: bounds.score,
+                        start: bounds.start,
+                        end: bounds.end,
+                        positions: Vec::new(),
+                    })
+            };
         }
 
         if pattern_len == 1 {
@@ -156,7 +180,11 @@ impl FzfV2Matcher {
             score: max_score,
             start: pos,
             end: pos + 1,
-            positions: vec![pos],
+            positions: if self.with_positions {
+                vec![pos]
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -311,7 +339,7 @@ impl FzfV2Matcher {
             j -= 1;
         }
         self.positions.reverse();
-        match_from_positions(max_score, &self.positions)
+        self.match_from_positions(max_score)
     }
 
     fn find_general(
@@ -493,7 +521,7 @@ impl FzfV2Matcher {
         }
 
         self.positions.reverse();
-        match_from_positions(max_score, &self.positions)
+        self.match_from_positions(max_score)
     }
 
     fn greedy_fallback(&mut self, parts: &[&[u8]], case_sensitive: bool) -> Option<Match> {
@@ -527,18 +555,21 @@ impl FzfV2Matcher {
         }
         self.positions.reverse();
         let score = score_window(parts, &self.positions);
-        match_from_positions(score, &self.positions)
+        self.match_from_positions(score)
     }
-}
 
-#[inline]
-fn match_from_positions(score: i16, positions: &[usize]) -> Option<Match> {
-    Some(Match {
-        score,
-        start: *positions.first()?,
-        end: positions.last()? + 1,
-        positions: positions.to_vec(),
-    })
+    fn match_from_positions(&self, score: i16) -> Option<Match> {
+        Some(Match {
+            score,
+            start: *self.positions.first()?,
+            end: self.positions.last()? + 1,
+            positions: if self.with_positions {
+                self.positions.clone()
+            } else {
+                Vec::new()
+            },
+        })
+    }
 }
 
 #[inline]

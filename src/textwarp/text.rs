@@ -1,11 +1,12 @@
 use crate::common::util::mmap_file;
-use crate::fuzzy::FuzzySearch;
+use crate::fuzzy::{CompiledPattern, FuzzyAlgorithm, FuzzySearch};
 use crate::searcher::memchr::memchr;
 use crate::textwarp::ChapResult;
 use crate::textwarp::LineData;
 use crate::textwarp::LineState;
 use crate::textwarp::LineStateBuilder;
 use crate::textwarp::LineStr;
+use crate::textwarp::MatchBounds;
 use crate::textwarp::Partten;
 use crate::textwarp::Path;
 use crate::textwarp::Text;
@@ -13,9 +14,59 @@ use crate::textwarp::TextIndex;
 use crate::textwarp::TextSelect;
 use memmap2::Mmap;
 use std::io::Write;
+use std::sync::Arc;
 use tempfile::NamedTempFile;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SearchChunk {
+    pub(crate) index: usize, // 全局递增序号，用于 UI 恢复源文件顺序。
+    // 在 mmap 中的闭区间起点和开区间终点。
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    // 当前 chunk 第一条物理行的全局逻辑行号。
+    pub(crate) first_line_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SearchHit {
+    // 结果行的内容坐标；不依赖视觉行号。
+    pub(crate) line_index: usize,
+    pub(crate) line_file_start: usize,
+    pub(crate) line_file_end: usize,
+    // 过滤阶段只保留 start/end/score，不分配 positions。
+    pub(crate) bounds: MatchBounds,
+}
+
+#[derive(Debug)]
+pub(crate) struct SearchBatch {
+    // 防止取消后的旧任务污染新查询。
+    pub(crate) generation: u64,
+    pub(crate) chunk_index: usize,
+    pub(crate) hits: Vec<SearchHit>,
+}
+
+#[derive(Debug)]
+pub(crate) enum TextSearchEvent {
+    Batch(SearchBatch),
+    Finished { generation: u64, chunk_count: usize },
+}
+
+#[inline]
+fn next_line_end(mmap: &Mmap, start: usize, limit: usize) -> usize {
+    // 空范围直接返回，避免构造非法 slice。
+    if start >= limit {
+        return limit;
+    }
+
+    // 返回换行符之后的位置，因此返回值可以直接作为下一行起点。
+    memchr(&mmap[start..limit], b'\n')
+        .map(|offset| start + offset + 1)
+        .unwrap_or(limit)
+}
+
 pub(crate) struct MmapText {
-    mmap: Mmap,
+    // 后台搜索任务持有 Arc，因此 UI 重绘期间 mmap 仍然有效。
+    mmap: Arc<Mmap>,
     sw: FuzzySearch,
     use_v1: bool,
     _temp: Option<tempfile::NamedTempFile>,
@@ -44,12 +95,19 @@ impl MmapText {
 
     fn from_mmap(mmap: Mmap, use_v1: bool, temp: Option<tempfile::NamedTempFile>) -> MmapText {
         MmapText {
-            mmap,
+            mmap: Arc::new(mmap),
             sw: FuzzySearch::new(),
             use_v1,
             _temp: temp,
         }
     }
+}
+
+struct SearchChunkIter<'a> {
+    mmap: &'a Mmap,
+    next_start: usize,
+    next_line_index: usize,
+    next_chunk_index: usize,
 }
 
 pub struct MmapTextIter<'a> {
@@ -286,9 +344,16 @@ impl Text for MmapText {
             iter: MmapTextIter::new(&self.mmap, state.line_file_start, self.mmap.len(), None),
             line_index: state.line_index,
         };
+        let compiled = CompiledPattern::new(partten.partten);
+        let algorithm = if self.use_v1 {
+            FuzzyAlgorithm::V1
+        } else {
+            FuzzyAlgorithm::V2
+        };
+        let mut session = self.sw.begin(algorithm, &compiled);
         let mut results = Vec::new();
         for (line_idx, (line, mut index)) in i.enumerate() {
-            let mut hits = line.search(&partten, &mut self.sw, self.use_v1);
+            let mut hits = line.search_compiled(&partten, &mut session);
             if line_idx == 0 {
                 hits.retain(|pos| pos.start >= state.line_offset);
             }

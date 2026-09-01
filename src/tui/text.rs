@@ -1,5 +1,5 @@
 use crate::common::ring_vec::RingVec;
-use crate::fuzzy::Match;
+use crate::fuzzy::MatchBounds;
 use crate::textwarp::CacheStr;
 use crate::textwarp::LineState;
 use crate::tui::build_nav_text;
@@ -16,7 +16,7 @@ fn build_text_spans<'a>(
     meta: &LineState,
     visible_byte_start: usize,
     visible_byte_end: usize,
-    offsets: &[Match],
+    offsets: &[MatchBounds],
     cursor_byte: Option<usize>,
     current_physical_line: bool,
 ) -> Vec<Span<'a>> {
@@ -286,11 +286,10 @@ mod tests {
         let (visible, visible_byte_start, visible_byte_end) =
             crate::tui::char_range_to_visible_with_byte_range(&[line], 2, 5);
         let meta = LineState::builder().line_offset(0).build();
-        let offsets = vec![Match {
+        let offsets = vec![MatchBounds {
             score: 0,
             start: "中文".len(),
             end: "中文abc".len(),
-            positions: ("中文".len().."中文abc".len()).collect(),
         }];
 
         let spans = build_text_spans(
@@ -313,11 +312,10 @@ mod tests {
     fn text_spans_composes_search_foreground_with_current_physical_line_background() {
         let line = b"abcDEFghi";
         let meta = LineState::builder().line_offset(0).build();
-        let offsets = vec![Match {
+        let offsets = vec![MatchBounds {
             score: 0,
             start: 3,
             end: 6,
-            positions: (3..6).collect(),
         }];
 
         let parts: &[&[u8]] = &[line.as_slice()];

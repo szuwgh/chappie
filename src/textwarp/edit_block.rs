@@ -1,7 +1,7 @@
 use crate::common::error::ChapError;
 use crate::common::gap_buffer::GapBuffer;
 use crate::common::ring_vec::RingVec;
-use crate::fuzzy::FuzzySearch;
+use crate::fuzzy::{CompiledPattern, FuzzyAlgorithm, FuzzySearch};
 use crate::textwarp::block::Block;
 use crate::textwarp::block::BlockId;
 use crate::textwarp::block::BlockIndex;
@@ -948,6 +948,8 @@ impl Text for GapBlockText {
         state: &LineState,
     ) -> ChapResult<Option<Vec<LineState>>> {
         let fuzzy = std::ptr::addr_of_mut!(self.fuzzy);
+        let compiled = CompiledPattern::new(partten.partten);
+        let mut session = unsafe { (&mut *fuzzy).begin(FuzzyAlgorithm::V2, &compiled) };
         let scroll_iter = GapBlockScollTextIter::new(
             self,
             state.block_num,
@@ -961,7 +963,7 @@ impl Text for GapBlockText {
         for (line_idx, (line, mut index)) in scroll_iter.enumerate() {
             // SAFETY: the scroll iterator only reads text blocks and metadata; it never accesses
             // the independent reusable fuzzy matcher.
-            let mut hits = line.search(&partten, unsafe { &mut *fuzzy });
+            let mut hits = line.search_compiled(&partten, &mut session);
 
             if line_idx == 0 {
                 hits.retain(|pos| pos.start >= state.line_offset);

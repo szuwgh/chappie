@@ -1,5 +1,4 @@
-use crate::fuzzy::smart_case;
-use crate::fuzzy::Match;
+use crate::fuzzy::{CompiledPattern, Match, MatchBounds};
 use crate::searcher::memchr::memchr;
 
 const SCORE_MATCH: i16 = 16;
@@ -14,69 +13,72 @@ const BONUS_CONSECUTIVE: i16 = -(SCORE_GAP_START + SCORE_GAP_EXT);
 const BONUS_FIRST_CHAR_MULTIPLIER: i16 = 2;
 const MAX_MATCH_SPAN_PER_PATTERN_BYTE: usize = 4;
 
-pub(crate) struct FzfMatcher {
+pub(super) struct FzfMatcher {
     pattern: Vec<u8>,
     positions: Vec<usize>,
+    with_positions: bool,
 }
 
 impl FzfMatcher {
-    pub(crate) fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             pattern: Vec::new(),
             positions: Vec::new(),
+            with_positions: true,
         }
     }
 
-    pub(crate) fn find_parts(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
-        self.find_best(pattern, parts).into_iter().collect()
+    pub(super) fn prepare(&mut self, pattern: &CompiledPattern) {
+        self.pattern.clear();
+        self.pattern.extend_from_slice(&pattern.bytes);
     }
 
-    pub(crate) fn find_parts_smart_case(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
-        self.find_best_smart_case(pattern, parts)
-            .into_iter()
-            .collect()
-    }
-
-    pub(crate) fn find_best(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Option<Match> {
-        self.find_best_impl(pattern, parts, false)
-    }
-
-    pub(crate) fn find_best_smart_case(
+    pub(super) fn find_best_bounds_prepared(
         &mut self,
-        pattern: &[u8],
         parts: &[&[u8]],
-    ) -> Option<Match> {
-        self.find_best_impl(pattern, parts, smart_case(pattern))
+        case_sensitive: bool,
+    ) -> Option<MatchBounds> {
+        self.with_positions = false;
+        self.find_best_prepared(parts, case_sensitive)
+            .map(|matched| MatchBounds {
+                score: matched.score,
+                start: matched.start,
+                end: matched.end,
+            })
     }
 
-    pub(crate) fn find_best_case_sensitive(
+    pub(super) fn find_best_with_positions_prepared(
         &mut self,
-        pattern: &[u8],
-        parts: &[&[u8]],
-    ) -> Option<Match> {
-        self.find_best_impl(pattern, parts, true)
-    }
-
-    fn find_best_impl(
-        &mut self,
-        pattern: &[u8],
         parts: &[&[u8]],
         case_sensitive: bool,
     ) -> Option<Match> {
-        if pattern.is_empty() {
+        self.with_positions = true;
+        self.find_best_prepared(parts, case_sensitive)
+    }
+
+    #[cfg(test)]
+    pub(super) fn find_best(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Option<Match> {
+        let compiled = CompiledPattern {
+            bytes: pattern.iter().map(|&byte| ascii_lower(byte)).collect(),
+            case_sensitive: false,
+        };
+        self.prepare(&compiled);
+        self.find_best_with_positions_prepared(parts, false)
+    }
+
+    #[cfg(test)]
+    pub(super) fn find_parts(&mut self, pattern: &[u8], parts: &[&[u8]]) -> Vec<Match> {
+        self.find_best(pattern, parts).into_iter().collect()
+    }
+
+    fn find_best_prepared(&mut self, parts: &[&[u8]], case_sensitive: bool) -> Option<Match> {
+        if self.pattern.is_empty() {
             return None;
         }
 
         let text_len = parts_len(parts);
-        if text_len == 0 || pattern.len() > text_len {
+        if text_len == 0 || self.pattern.len() > text_len {
             return None;
-        }
-
-        self.pattern.clear();
-        if case_sensitive {
-            self.pattern.extend_from_slice(pattern);
-        } else {
-            self.pattern.extend(pattern.iter().map(|&b| ascii_lower(b)));
         }
 
         let end = self.forward_scan(parts, case_sensitive)?;
@@ -84,8 +86,14 @@ impl FzfMatcher {
         if is_overly_sparse_match(self.pattern.len(), start, end) {
             return None;
         }
-        let (score, positions) =
-            calculate_score_window(parts, &self.pattern, start, end, case_sensitive);
+        let (score, positions) = calculate_score_window(
+            parts,
+            &self.pattern,
+            start,
+            end,
+            case_sensitive,
+            self.with_positions,
+        );
 
         Some(Match {
             score,
@@ -265,13 +273,14 @@ fn calculate_score_window(
     start: usize,
     end: usize,
     case_sensitive: bool,
+    with_positions: bool,
 ) -> (i16, Vec<usize>) {
     let mut score = 0i16;
     let mut in_gap = false;
     let mut consecutive = 0i16;
     let mut first_bonus = 0i16;
     let mut pidx = 0usize;
-    let mut positions = Vec::with_capacity(pattern.len());
+    let mut positions = with_positions.then(|| Vec::with_capacity(pattern.len()));
     let mut previous = if start > 0 {
         Some(byte_at(parts, start - 1))
     } else {
@@ -287,7 +296,9 @@ fn calculate_score_window(
         };
 
         if match_byte == pattern[pidx] {
-            positions.push(idx);
+            if let Some(positions) = &mut positions {
+                positions.push(idx);
+            }
             score += SCORE_MATCH;
             let mut bonus = bonus_for(previous, current);
             if consecutive == 0 {
@@ -322,7 +333,7 @@ fn calculate_score_window(
         previous = Some(current);
     }
 
-    (score, positions)
+    (score, positions.unwrap_or_default())
 }
 
 #[inline]

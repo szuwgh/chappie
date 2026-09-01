@@ -6,7 +6,7 @@ use crate::cli::UIType;
 use crate::command::Command;
 use crate::common::error::ChapResult;
 use crate::common::ring_vec::RingVec;
-use crate::fuzzy::Match;
+use crate::fuzzy::MatchBounds;
 use crate::handle::text::HandleText;
 use crate::handle::Handle;
 use crate::handle::HandleEdit;
@@ -208,7 +208,7 @@ pub(crate) struct RenderContent<'a> {
 pub(crate) struct SearchResultEntry {
     pub(crate) result_line_index: usize,
     pub(crate) source_state: LineState,
-    pub(crate) highlight: Vec<Match>,
+    pub(crate) highlight: Vec<MatchBounds>,
 }
 
 pub(crate) struct SearchResultStore {
@@ -221,7 +221,7 @@ pub(crate) enum HighlightSource<'a> {
     None,
     CurrentFind {
         line_index: usize,
-        matches: &'a [Match],
+        matches: &'a [MatchBounds],
     },
     SearchResult {
         entries: &'a [SearchResultEntry],
@@ -229,7 +229,7 @@ pub(crate) enum HighlightSource<'a> {
 }
 
 impl<'a> HighlightSource<'a> {
-    pub(crate) fn for_line(&self, line_index: usize) -> &'a [Match] {
+    pub(crate) fn for_line(&self, line_index: usize) -> &'a [MatchBounds] {
         match self {
             HighlightSource::None => &[],
             HighlightSource::CurrentFind {
@@ -1646,7 +1646,7 @@ fn build_text_spans<'a>(
     meta: &LineState,
     visible_byte_start: usize,
     visible_byte_end: usize,
-    offsets: &[Match],
+    offsets: &[MatchBounds],
     cursor_x: Option<usize>,
 ) -> Vec<Span<'a>> {
     let visible_abs_start = meta.line_offset + visible_byte_start;
